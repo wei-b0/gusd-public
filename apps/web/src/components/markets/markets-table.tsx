@@ -1,0 +1,109 @@
+"use client";
+
+/**
+ * MarketsTable — the discovery table. Every GPU asset market as a pair on
+ * one ruled board: market price, 24h movement, Index price, premium or
+ * discount, volume, liquidity. Built for scanning and comparison; a row
+ * routes to the market's own page.
+ */
+
+import Link from "next/link";
+import { pairName, type Market } from "@/domain/types";
+import { fmtGusdCompact, fmtGusdPrecise, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
+import { TickFlash } from "@/components/ui/tick-flash";
+
+export function MarketsTable({ markets }: { markets: Market[] }) {
+  return (
+    <div className="relative">
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-[12.5px]">
+          <thead>
+            <tr className="border-b border-rule text-left">
+              <th scope="col" className="slug py-2 pl-3 pr-4 font-normal text-dim">Market</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                Price <span className="tracking-normal normal-case">/ gUSD</span>
+              </th>
+              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">24h</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                Index price <span className="tracking-normal">/ GPU-hour</span>
+              </th>
+              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Premium / Discount</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                Volume <span className="tracking-normal normal-case">/ gUSD</span>
+              </th>
+              <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right font-normal text-dim">
+                Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {markets.map((m) => (
+              <MarketRow key={m.asset.id} market={m} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Advertise the horizontal swipe where the table clips */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-[linear-gradient(to_left,var(--color-ground),transparent)] lg:hidden"
+      />
+    </div>
+  );
+}
+
+/** Figure emphasis scales with the size of the move — never color alone. */
+function moveScale(pct: number): { size: string; weight: string } {
+  const abs = Math.abs(pct);
+  if (abs >= 4) return { size: "text-[15px]", weight: "font-bold" };
+  if (abs >= 2) return { size: "text-[13.5px]", weight: "font-medium" };
+  return { size: "text-[12.5px]", weight: "font-normal" };
+}
+
+function MarketRow({ market: m }: { market: Market }) {
+  const premium = m.basisPct >= 0;
+  const scale = moveScale(m.change24hPct);
+  const flat24 = isFlatPct(m.change24hPct);
+
+  return (
+    <tr className="group border-b border-rule transition-colors last:border-b-0 hover:bg-panel-deep">
+      <td className="py-2.5 pl-3 pr-4">
+        <Link href={`/markets/${m.asset.id}`} className="block outline-none">
+          <span className="num block whitespace-nowrap text-[14px] font-bold leading-tight text-data transition-colors group-hover:text-bright">
+            {pairName(m.asset.id)}
+          </span>
+          <span className="mt-0.5 block whitespace-nowrap text-[10.5px] leading-tight text-dim">
+            {m.asset.referenceSku}
+          </span>
+        </Link>
+      </td>
+      <td className="px-2.5 py-2.5 text-right">
+        <TickFlash value={m.marketPrice} className="num inline-block text-[13.5px] font-bold text-bright">
+          {fmtGusdPrecise(m.marketPrice)}
+        </TickFlash>
+      </td>
+      <td
+        className={`px-2.5 py-2.5 text-right ${
+          flat24 ? "text-dim" : m.change24hPct >= 0 ? "text-up" : "text-down"
+        }`}
+      >
+        <span className={`${scale.size} ${scale.weight} inline-flex items-baseline gap-1`}>
+          {flat24 ? null : (
+            <span aria-hidden className="text-[9px]">{m.change24hPct >= 0 ? "▲" : "▼"}</span>
+          )}
+          {fmtPctSigned(m.change24hPct)}
+        </span>
+      </td>
+      <td className="px-2.5 py-2.5 text-right">
+        <TickFlash value={m.indexPrice} flash="wire" className="num inline-block text-[13.5px] text-wire">
+          {fmtUsdPrecise(m.indexPrice)}
+        </TickFlash>
+      </td>
+      <td className={`px-2.5 py-2.5 text-right ${premium ? "text-amber" : "text-wire"}`}>
+        {fmtPctSigned(m.basisPct)}
+      </td>
+      <td className="px-2.5 py-2.5 text-right text-dim">{fmtGusdCompact(m.volume24hUsd)}</td>
+      <td className="py-2.5 pl-2.5 pr-3 text-right text-dim">{fmtGusdCompact(m.liquidityUsd)}</td>
+    </tr>
+  );
+}

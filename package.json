@@ -4,9 +4,18 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:oracle": "turbo run dev --filter=@gusd/oracle",
+    "dev:publisher": "turbo run dev --filter=@gusd/publisher",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "check-types": "turbo run check-types"
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:generate": "turbo run db:generate --filter=@gusd/db",
+    "db:migrate": "turbo run db:migrate --filter=@gusd/db",
+    "replay": "ORACLE_REPLAY_FIXTURES=1 turbo run build --filter=@gusd/oracle... && ORACLE_REPLAY_FIXTURES=1 node apps/oracle/dist/main.js",
+    "replay:verify": "node apps/oracle/dist/replay-candidate.js"
   },
   "devDependencies": {
     "prettier": "3.9.6",

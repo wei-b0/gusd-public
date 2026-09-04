@@ -1,0 +1,31 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.26" # v4-core 1.0.2 pins `pragma solidity 0.8.26` exactly
+evm_version = "cancun" # v4-core transient storage (Lock, CurrencyDelta)
+via_ir = true
+optimizer = true
+# 100 runs keeps v4-periphery's PositionDescriptor runtime bytecode under
+# EIP-170's 24576-byte limit (it is 30200 at 10k runs -> CREATE fails on
+# broadcast; 500 trips a via-ir Yul stack-too-deep in v4-core's swap path).
+# Upstream solves this with per-path compilation restrictions, which this
+# foundry build does not apply across vendored lib paths.
+optimizer_runs = 100
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[fuzz]
+runs = 1_000
+
+[invariant]
+runs = 256
+depth = 128
+fail_on_revert = false
+show_metrics = true
+
+# Fast iteration profile: forge build/test --profile debug
+[profile.debug]
+via_ir = false
+optimizer = false
+fuzz = { runs = 100 }
+invariant = { runs = 16, depth = 32 }

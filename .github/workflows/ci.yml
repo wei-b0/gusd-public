@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Everything except the DB-backed suites. No network: every collector test
+  # runs against recorded, sanitized fixtures — CI never touches upstream
+  # providers. @gusd/contracts is excluded (tracked separately).
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: build
+        run: pnpm turbo build --filter='!@gusd/contracts'
+      - name: lint
+        run: pnpm turbo lint --filter='!@gusd/contracts'
+      - name: check-types
+        run: pnpm turbo check-types --filter='!@gusd/contracts'
+      - name: test
+        run: pnpm turbo test --filter='!@gusd/contracts'
+
+  # DB-backed verification against a real Postgres 16: migrations, append-only
+  # triggers, ingest idempotency, the oracle e2e (replay → API → WS/SSE), the
+  # publisher's publication ledger, and the byte-compare replay audit.
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gusd
+          POSTGRES_PASSWORD: gusd
+          POSTGRES_DB: gusd
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U gusd"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RUN_DB_TESTS: "1"
+      DATABASE_URL: postgres://gusd:gusd@localhost:54329/gusd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: db tests (migrations, append-only, repos)
+        run: pnpm --filter @gusd/db test
+      - name: build oracle + publisher
+        run: pnpm turbo build --filter='!@gusd/contracts'
+      - name: offline replay into the ci database
+        run: ORACLE_REPLAY_FIXTURES=1 node apps/oracle/dist/main.js
+      - name: oracle e2e (replay → API → WS/SSE)
+        run: pnpm --filter @gusd/oracle test
+      - name: publisher tests (publication ledger)
+        run: pnpm --filter @gusd/publisher test
+      - name: replay byte-compare of stored candidates
+        run: node apps/oracle/dist/replay-candidate.js

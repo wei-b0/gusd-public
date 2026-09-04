@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gusd-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gusd
+      POSTGRES_PASSWORD: gusd
+      POSTGRES_DB: gusd
+    ports:
+      - "54329:5432"
+    volumes:
+      - gusd-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gusd -d gusd"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  gusd-postgres-data:

@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+/*
+ * The multi-phosphor terminal.
+ *
+ * The palette of a full-color CRT text terminal, rendered clean: green
+ * phosphor is the data field at stepped luminance (bright / data / dim /
+ * deep), amber is function, cyan is the wire, red is down. CRT is a color
+ * reference only — no scanlines, glow, flicker, or curvature effects.
+ * One role per hue, always; the deep step is decorative and never carries
+ * words. Zero radius, zero shadow, zero icons.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Tube glass */
+  --color-ground: #050807;
+  --color-panel: #090e0b;
+  --color-panel-deep: #0e1511;
+
+  /* The phosphor ink ramp — the entire text system; no gray exists */
+  --ph-primary: #e6f5ec; /* primary readable text — pale neutral above the ramp */
+  --ph-bright: #66f79a;
+  --ph-data: #3ecf72;
+  --ph-dim: #2a9455;
+  --ph-deep: #1e6b40; /* decorative strokes only — never words */
+
+  /* Function, wire, direction */
+  --color-amber: #ffb000;
+  --color-wire: #45d4e8;
+  --color-down: #ff6b63;
+  --color-up: var(--ph-bright);
+
+  /* Rules — green-family strokes on the glass */
+  --color-rule: #1a2b20;
+  --color-rule-strong: #24402e;
+  --color-rule-active: #3a6a4a;
+
+  /* Text on reverse video */
+  --color-rev-fg: #050807;
+
+  --font-terminal: var(--font-jb), ui-monospace, "SF Mono", monospace;
+}
+
+@theme inline {
+  --color-ground: var(--color-ground);
+  --color-panel: var(--color-panel);
+  --color-panel-deep: var(--color-panel-deep);
+  --color-primary: var(--ph-primary);
+  --color-bright: var(--ph-bright);
+  --color-data: var(--ph-data);
+  --color-dim: var(--ph-dim);
+  --color-deep: var(--ph-deep);
+  --color-amber: var(--color-amber);
+  --color-wire: var(--color-wire);
+  --color-up: var(--color-up);
+  --color-down: var(--color-down);
+  --color-rule: var(--color-rule);
+  --color-rule-strong: var(--color-rule-strong);
+  --color-rule-active: var(--color-rule-active);
+  --color-rev-fg: var(--color-rev-fg);
+  --font-terminal: var(--font-terminal);
+}
+
+body {
+  background: var(--color-ground);
+  color: var(--ph-primary);
+  font-family: var(--font-terminal);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Every figure and numeral: tabular-locked, the machine's only face. */
+.num {
+  font-family: var(--font-terminal);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+
+/* Function labels: mono caps on the tracking floor. */
+.slug {
+  font-family: var(--font-terminal);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Hero figures: the same face, heaviest weight, tightened. */
+.disp {
+  font-family: var(--font-terminal);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+/* Reverse video — the terminal's active states. */
+.rev {
+  background: var(--color-amber);
+  color: var(--color-rev-fg);
+}
+.rev-g {
+  background: var(--ph-bright);
+  color: var(--color-rev-fg);
+}
+.rev-w {
+  background: var(--color-wire);
+  color: var(--color-rev-fg);
+}
+.rev-d {
+  background: var(--color-down);
+  color: var(--color-rev-fg);
+}
+
+/* Tick flash: a changed figure re-prints with one pulse of its role color. */
+@keyframes flash-cell {
+  from {
+    background-color: var(--flash, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.flash-up,
+.flash-down,
+.flash-wire {
+  animation: flash-cell 0.7s ease-out both;
+}
+.flash-up {
+  --flash: rgba(102, 247, 154, 0.2);
+}
+.flash-down {
+  --flash: rgba(255, 107, 99, 0.2);
+}
+.flash-wire {
+  --flash: rgba(69, 212, 232, 0.18);
+}
+
+/* Abnormal rows: the ░ texture plus a text tag — never color alone. */
+.hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--ph-deep) 45%, transparent) 5px 6px
+  );
+}
+
+/* Browser surfaces carry the world too. */
+::selection {
+  background: color-mix(in srgb, var(--ph-data) 32%, transparent);
+  color: var(--ph-bright);
+}
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--color-amber);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule-active) var(--color-ground);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-ground);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-rule-strong);
+  border: 2px solid var(--color-ground);
+}
+input {
+  caret-color: var(--color-amber);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up,
+  .flash-down,
+  .flash-wire,
+  .motion-safe\:animate-pulse {
+    animation: none;
+  }
+}
