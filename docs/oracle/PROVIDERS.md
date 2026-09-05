@@ -7,17 +7,31 @@ index), `COLLECTED` (stored for coverage, zero settlement weight),
 `WATCHDOG_ONLY` (comparison feeds only — structurally excluded from the
 index), `EXCLUDED`.
 
-## Settlement panels (v1)
+## Settlement panels (v0.2.0 — full PROTOCOL.md §3 universe)
 
-| Panel | GPU id | Eligible providers in v0.1.0 |
-|---|---|---|
-| H100_PANEL_V1 | H100_SXM_80GB | vast, lium, hyperbolic, runpod |
-| H200_PANEL_V1 | H200_141GB | vast, lium, hyperbolic, runpod |
-| B200_PANEL_V1 | B200_192GB | vast, lium, hyperbolic, runpod |
+| Panel | GPU id | Eligible providers | Per-panel quorum (v0.2.0) |
+|---|---|---|---|
+| A100_PANEL_V1 | A100_SXM_80GB | vast, lium, hyperbolic, runpod + datacrunch, lambda, coreweave, crusoe (panel-only) | 3, executable floor lifted |
+| H100_PANEL_V1 | H100_SXM_80GB | vast, lium, hyperbolic, runpod | global (4) |
+| H200_PANEL_V1 | H200_141GB | vast, lium, hyperbolic, runpod | global (4) |
+| B200_PANEL_V1 | B200_192GB | vast, lium, hyperbolic, runpod | global (4) |
+| B300_PANEL_V1 | B300_288GB | vast, lium, hyperbolic, runpod + datacrunch, nebius, scaleway (panel-only) | 2, executable floor lifted |
+| GB200_PANEL_V1 | GB200_192GB | vast, lium, hyperbolic, runpod + oracle-oci (panel-only) | 1, executable floor lifted |
+| GB300_PANEL_V1 | GB300_288GB | vast, lium, hyperbolic, runpod + datacrunch, oracle-oci (panel-only) | 2, executable floor lifted |
 
-Membership changes are config-only (never code): a provider is promoted by
-changing its role in the registry and re-seeding; the engine reads roles from
-the `providers` table at computation time.
+The flagship SXM panels keep the full executable quorum (order-book makers
+vast/lium/hyperbolic are the only `executable` contributors). A100/B300 have
+no executable market left — no order-book maker quotes them and Lium's B300
+book runs thin — so their overrides promote named rate-card principals and
+lift the executable floor; GB200/GB300 are pre-production and settle on a
+minimal quorum of list prices. Any panel contributing fewer than the global
+quorum of 4 is capped at `degraded` by the engine, never `healthy`.
+
+Membership changes are config-only (never code): `additionalProviders` in
+`panelOverrides` promotes a `COLLECTED` principal for one panel without
+touching its global role, and the engine reads roles from the `providers`
+table at computation time. Watchdog and excluded providers can never be
+promoted.
 
 ## FAST tier (10–30s cadence)
 

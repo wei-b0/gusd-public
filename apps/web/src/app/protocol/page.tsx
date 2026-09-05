@@ -63,7 +63,7 @@ export default function ProtocolPage() {
                   <tr key={id} className="border-b border-rule last:border-b-0">
                     <td className="py-2.5 pl-3.5 pr-4">
                       <Link
-                        href={`/markets/${id}`}
+                        href={`/terminal/${id}`}
                         className="num text-[13px] font-bold text-data transition-colors hover:text-bright"
                       >
                         {id} / gUSD

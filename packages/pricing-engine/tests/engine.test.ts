@@ -5,6 +5,7 @@ import {
   DEFAULT_METHODOLOGY_CONFIG,
   aggregateProviderPrice,
   computeIndex,
+  effectiveConfigFor,
   validateMethodologyConfig,
   type AggregationObservation,
   type IndexInput,
@@ -24,13 +25,18 @@ let priceSeq = 0;
 function providerPrice(
   providerId: string,
   price: number | null,
-  opts: { executable?: boolean; sampleSize?: number; method?: ProviderPriceResult["method"] } = {},
+  opts: {
+    executable?: boolean;
+    sampleSize?: number;
+    method?: ProviderPriceResult["method"];
+    panelId?: string;
+  } = {},
 ): ProviderPriceResult {
   priceSeq += 1;
   return {
     providerId,
     gpuId: GPU.id,
-    panelId: "H100_PANEL_V1",
+    panelId: opts.panelId ?? "H100_PANEL_V1",
     price,
     executable: opts.executable ?? true,
     method: opts.method ?? "volume_weighted_median",
@@ -71,11 +77,12 @@ function makeInput(
     prior?: IndexInput["prior"];
     config?: MethodologyConfig;
     now?: Date;
+    panelId?: string;
   } = {},
 ): IndexInput {
   return {
     gpu: GPU,
-    panelId: "H100_PANEL_V1",
+    panelId: opts.panelId ?? "H100_PANEL_V1",
     providerPrices: prices,
     providerRoles:
       opts.roleMap ?? roles(...prices.map((p) => p.providerId)),
@@ -617,5 +624,127 @@ describe("computeIndex", () => {
     const b = computeIndex(makeInput(prices));
     expect(a.receipt).toBe(b.receipt);
     expect(a.receipt).toContain('"price":2.008');
+  });
+});
+
+// === panelOverrides (v0.2.0) ==================================================
+
+describe("panelOverrides", () => {
+  const A100 = CATALOG.find((g) => g.id === "A100_SXM_80GB")!;
+
+  /** Input for a thin panel: all contributors rate-card, global config. */
+  function thinInput(
+    prices: ProviderPriceResult[],
+    opts: Partial<Parameters<typeof makeInput>[1]> = {},
+  ): IndexInput {
+    return {
+      ...makeInput(prices, opts),
+      gpu: A100,
+      panelId: "A100_PANEL_V1",
+    };
+  }
+
+  it("accepts the default config's panel overrides", () => {
+    expect(validateMethodologyConfig(DEFAULT_METHODOLOGY_CONFIG).panelOverrides).toEqual(
+      DEFAULT_METHODOLOGY_CONFIG.panelOverrides,
+    );
+  });
+
+  it("rejects an override for an unknown panel id", () => {
+    const bad = {
+      ...DEFAULT_METHODOLOGY_CONFIG,
+      panelOverrides: { NOT_A_PANEL: { gates: { minProviders: 2 } } },
+    };
+    expect(() => validateMethodologyConfig(bad)).toThrow(/not a known settlement panel/);
+  });
+
+  it("rejects an empty override and unknown gate keys", () => {
+    expect(() =>
+      validateMethodologyConfig({ ...DEFAULT_METHODOLOGY_CONFIG, panelOverrides: {} }),
+    ).not.toThrow();
+    expect(() =>
+      validateMethodologyConfig({
+        ...DEFAULT_METHODOLOGY_CONFIG,
+        panelOverrides: { A100_PANEL_V1: {} },
+      }),
+    ).toThrow(/empty override/);
+    expect(() =>
+      validateMethodologyConfig({
+        ...DEFAULT_METHODOLOGY_CONFIG,
+        panelOverrides: { A100_PANEL_V1: { gates: { minProvidersForScreen: 2 } } },
+      }),
+    ).toThrow(/unknown gate/);
+  });
+
+  it("rejects a dispersion patch that strands warn ≥ max", () => {
+    expect(() =>
+      validateMethodologyConfig({
+        ...DEFAULT_METHODOLOGY_CONFIG,
+        panelOverrides: { GB300_PANEL_V1: { dispersion: { max: 0.2 } } },
+      }),
+    ).toThrow(/dispersion/);
+    // ...but a patched max above the inherited warn is coherent
+    expect(() =>
+      validateMethodologyConfig({
+        ...DEFAULT_METHODOLOGY_CONFIG,
+        panelOverrides: { GB300_PANEL_V1: { dispersion: { max: 0.9 } } },
+      }),
+    ).not.toThrow();
+  });
+
+  it("effectiveConfigFor merges the patch and is identity without one", () => {
+    const plain = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H100_PANEL_V1");
+    expect(plain).toBe(DEFAULT_METHODOLOGY_CONFIG);
+
+    const a100 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "A100_PANEL_V1");
+    expect(a100.gates.minProviders).toBe(3);
+    expect(a100.gates.minObservations).toBe(DEFAULT_METHODOLOGY_CONFIG.gates.minObservations);
+    expect(a100.dispersion).toEqual(DEFAULT_METHODOLOGY_CONFIG.dispersion);
+
+    const gb200 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "GB200_PANEL_V1");
+    expect(gb200.gates.minProviders).toBe(1);
+    expect(gb200.gates.requireExecutable).toBe(false);
+
+    const gb300 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "GB300_PANEL_V1");
+    expect(gb300.dispersion.max).toBe(0.9);
+    expect(gb300.dispersion.warn).toBe(DEFAULT_METHODOLOGY_CONFIG.dispersion.warn);
+  });
+
+  it("a thin panel passes its relaxed quorum but is capped at degraded", () => {
+    // 3 rate-card contributors in a tight cluster (dispersion well under the
+    // warn threshold, so the only thing standing between this and `healthy` is
+    // the sub-quorum cap: 3 < the global quorum of 4).
+    const prices = ["datacrunch", "lambda", "coreweave"].map((id, i) =>
+      providerPrice(id, [1.3, 1.39, 1.5][i]!, { executable: false, panelId: "A100_PANEL_V1" }),
+    );
+    const r = computeIndex(thinInput(prices));
+    expect(r.gates.find((g) => g.name === "min_providers")?.passed).toBe(true);
+    expect(r.dispersion).toBeLessThan(DEFAULT_METHODOLOGY_CONFIG.dispersion.warn);
+    expect(r.status).toBe("degraded");
+    expect(r.price).toBeGreaterThan(0);
+    // The receipt records the effective config, not the global one.
+    const recorded = r.calcParams.config as MethodologyConfig;
+    expect(recorded.gates.minProviders).toBe(3);
+  });
+
+  it("a panel without an override still withholds below the global quorum", () => {
+    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0, { panelId: "H100_PANEL_V1" }));
+    const r = computeIndex(makeInput(prices));
+    expect(r.status).toBe("withheld");
+  });
+
+  it("a relaxed requireExecutable lets a single-source rate-card panel publish degraded", () => {
+    const gb200 = CATALOG.find((g) => g.id === "GB200_192GB")!;
+    const prices = [providerPrice("oracle-oci", 16.0, { executable: false, panelId: "GB200_PANEL_V1" })];
+    const input: IndexInput = {
+      ...makeInput(prices),
+      gpu: gb200,
+      panelId: "GB200_PANEL_V1",
+    };
+    const r = computeIndex(input);
+    expect(r.gates.find((g) => g.name === "require_executable")).toBeUndefined();
+    expect(r.gates.find((g) => g.name === "min_providers")?.passed).toBe(true);
+    expect(r.status).toBe("degraded");
+    expect(r.price).toBe(16);
   });
 });

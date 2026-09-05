@@ -9,12 +9,21 @@
  * src/domain/ports.
  */
 
-import type { AuthPort, EarnPort, MarketDataPort, MintPort, TradingPort } from "@/domain/ports";
+import type {
+  AuthPort,
+  EarnPort,
+  MarketDataPort,
+  MintPort,
+  TxPort,
+  TradingPort,
+} from "@/domain/ports";
 import type { Quote } from "@/domain/ports";
 import type {
   Account,
   AssetId,
   ChartRange,
+  ConnectFlow,
+  ConnectableWallet,
   DepositAssetId,
   EarnReceipt,
   EarnState,
@@ -23,8 +32,11 @@ import type {
   MarketTrade,
   MintQuote,
   MintReceipt,
+  SessionIdentity,
   TradeReceipt,
   TradeRequest,
+  TxRecord,
+  WalletSession,
 } from "@/domain/types";
 import { ASSET_IDS, parseAssetId } from "@/domain/types";
 import {
@@ -42,6 +54,39 @@ const PROTOTYPE_FEE_BPS = 6;
 const FILL_LATENCY_MS = 850;
 const TICK_MS = 1_800;
 const EARN_LATENCY_MS = 500;
+
+/**
+ * Frozen session snapshots for the prototype world. The prototype session
+ * has no wallet: address, kind, and chain stay null — the honest shape, not
+ * a stand-in for one. Frozen module constants keep useSyncExternalStore's
+ * Object.is comparison stable.
+ */
+const DISCONNECTED_SESSION: WalletSession = {
+  status: "idle",
+  did: null,
+  address: null,
+  walletKind: null,
+  walletLabel: null,
+  chainId: null,
+  networkOk: null,
+  syncState: "idle",
+  closedReason: null,
+};
+
+const CONNECTED_SESSION: WalletSession = {
+  status: "connected",
+  did: "did:mock:demo-01",
+  address: null,
+  walletKind: null,
+  walletLabel: null,
+  chainId: null,
+  networkOk: null,
+  syncState: "idle",
+  closedReason: null,
+};
+
+/** The one closed flow; connect() resolves without ever opening one. */
+const CLOSED_FLOW: ConnectFlow = { step: "closed" };
 
 interface WorldState {
   version: number;
@@ -83,9 +128,10 @@ function initialWorld(): WorldState {
   const tradesByAsset = {} as Record<AssetId, MarketTrade[]>;
   for (const id of ASSET_IDS) {
     const m = buildMarket(id);
-    prices[id] = m.marketPrice;
-    indexPrices[id] = m.indexPrice;
-    volumes[id] = m.volume24hUsd;
+    // The mock universe fills every market figure — always numbers here.
+    prices[id] = m.marketPrice!;
+    indexPrices[id] = m.indexPrice!;
+    volumes[id] = m.volume24hUsd!;
     tradesByAsset[id] = buildRecentTrades(id);
   }
   return {
@@ -98,6 +144,7 @@ function initialWorld(): WorldState {
     account: {
       connected: false,
       label: null,
+      address: null,
       gUsdBalance: 0,
       sGUsdBalance: 0,
       // Seeded prototype positions so the Sell side is demonstrable.
@@ -162,6 +209,7 @@ export class MockServices {
   auth: AuthPortImpl;
   earn: EarnPortImpl;
   mint: MintPortImpl;
+  tx: MockTxPort;
 
   constructor() {
     const world = { state: initialWorld() };
@@ -170,6 +218,7 @@ export class MockServices {
     this.auth = new AuthPortImpl(world, this.trading);
     this.earn = new EarnPortImpl(world);
     this.mint = new MintPortImpl(world, this.trading);
+    this.tx = new MockTxPort();
     // Live earn accrual rides the market tick loop, and the earn port
     // re-syncs when the account connects or disconnects.
     this.marketData.tickHooks.push(() => this.earn.accrue());
@@ -203,7 +252,7 @@ class MarketDataPortImpl {
     }).sort((a, b) => b.volume24hUsd - a.volume24hUsd);
   }
 
-  getSnapshot(asset: AssetId, range: ChartRange = "1D"): MarketSnapshot | null {
+  getSnapshot(asset: AssetId, range: ChartRange = "5m"): MarketSnapshot | null {
     if (!parseAssetId(asset)) return null;
     const providers = buildProviders(asset);
     const market = this.listMarkets().find((m) => m.asset.id === asset)!;
@@ -219,7 +268,8 @@ class MarketDataPortImpl {
         sourcesTotal: 10,
         coveragePct: 97.8,
         latencyMs: 412,
-        epoch: 48_213,
+        // Simulated rows have no publication identity — the UI renders "—".
+        publication: null,
         updatedAt: this.world.state.updatedAt,
       },
     };
@@ -290,6 +340,15 @@ class MarketDataPortImpl {
 class TradingPortImpl {
   private listeners = new Set<(account: Account) => void>();
 
+  /**
+   * Optional execution-price source. When set, prototype quotes, fills,
+   * receipts, and position marks price off it exclusively — the oracle wiring
+   * points it at the API's Index so the traded price matches the displayed
+   * one. A missing price rejects the order rather than falling back to the
+   * simulated walk. Null (mock data source) → the engine's own prices.
+   */
+  priceSource: ((asset: AssetId) => number | null) | null = null;
+
   constructor(private world: { state: WorldState }) {}
 
   getAccount(): Account {
@@ -302,12 +361,16 @@ class TradingPortImpl {
   }
 
   quote(request: TradeRequest): Quote | null {
-    return quoteFor(request, this.priceOf(request.asset));
+    const price = this.priceOf(request.asset);
+    return price === null ? null : quoteFor(request, price);
   }
 
   async execute(request: TradeRequest): Promise<TradeReceipt> {
     await delay(FILL_LATENCY_MS);
     const price = this.priceOf(request.asset);
+    if (price === null) {
+      throw new Error("No reference price for this asset — the feed asserts none right now.");
+    }
     const fee = (request.size * price * PROTOTYPE_FEE_BPS) / 10_000;
     const receipt: TradeReceipt = {
       asset: request.asset,
@@ -338,22 +401,38 @@ class TradingPortImpl {
   /** Connect the prototype session and fund it with demo capital. */
   async connectDemo(): Promise<Account> {
     await delay(600);
+    this.adoptSession({ label: "demo-01", address: null });
+    return this.world.state.account;
+  }
+
+  /**
+   * Adopt an identity into the account — the auth bridge's channel for
+   * real (Privy) sessions; the demo session passes its prototype label.
+   * Capital stays prototype data either way: no chain balances are read
+   * (the chain is not a display source).
+   */
+  adoptSession(identity: SessionIdentity | null): void {
+    if (!identity) {
+      this.disconnect();
+      return;
+    }
     const account: Account = {
       connected: true,
-      label: "demo-01",
+      label: identity.label,
+      address: identity.address,
       gUsdBalance: 25_000,
       sGUsdBalance: 8_000,
       positions: SEED_POSITIONS,
     };
     this.world.state = { ...this.world.state, account };
     for (const listener of this.listeners) listener(account);
-    return account;
   }
 
   disconnect(): void {
     const account: Account = {
       connected: false,
       label: null,
+      address: null,
       gUsdBalance: 0,
       sGUsdBalance: 0,
       positions: [],
@@ -362,8 +441,9 @@ class TradingPortImpl {
     for (const listener of this.listeners) listener(account);
   }
 
-  private priceOf(asset: AssetId): number {
-    return this.world.state.prices[asset] ?? 0;
+  private priceOf(asset: AssetId): number | null {
+    if (this.priceSource) return this.priceSource(asset);
+    return this.world.state.prices[asset] ?? null;
   }
 
   /** Broadcasts an externally mutated account (the mint layer) to listeners. */
@@ -372,20 +452,90 @@ class TradingPortImpl {
   }
 }
 
-class AuthPortImpl {
+class AuthPortImpl implements AuthPort {
+  private sessionListeners = new Set<(session: WalletSession) => void>();
+
   constructor(
     private world: { state: WorldState },
     private trading: TradingPortImpl,
-  ) {}
+  ) {
+    // The prototype session's wallet state is flat: connected or not.
+    this.trading.subscribe(() => {
+      const session = this.getSession();
+      for (const listener of this.sessionListeners) listener(session);
+    });
+  }
 
-  /** Prototype connect: opens a labeled session. No wallet involved. */
-  async connect(): Promise<Account> {
-    return this.trading.connectDemo();
+  /** Prototype connect: links a demo identity with demo capital. No dialog. */
+  async connect(): Promise<void> {
+    await this.trading.connectDemo();
+  }
+
+  /** Nothing opens a flow in the prototype world; nothing to cancel. */
+  cancelConnect(): void {}
+
+  /** The prototype never opens a flow, so no action can arrive. */
+  flowAction(): void {}
+
+  /** The prototype session has no wallet — there is nothing to list. */
+  listConnectableWallets(): ConnectableWallet[] {
+    return [];
   }
 
   disconnect(): void {
     this.trading.disconnect();
   }
+
+  getConnectFlow(): ConnectFlow {
+    return CLOSED_FLOW;
+  }
+
+  subscribeConnectFlow(): () => void {
+    return () => {};
+  }
+
+  getSession(): WalletSession {
+    return this.world.state.account.connected ? CONNECTED_SESSION : DISCONNECTED_SESSION;
+  }
+
+  subscribeSession(listener: (session: WalletSession) => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => {
+      this.sessionListeners.delete(listener);
+    };
+  }
+
+  getWalletClient(): Promise<never> {
+    return Promise.reject(new Error("No wallet — the prototype session has none."));
+  }
+
+  switchChain(): Promise<void> {
+    return Promise.reject(new Error("No wallet — the prototype session has none."));
+  }
+}
+
+/**
+ * The prototype has no chain access: transactions are simply refused rather
+ * than simulated. Real writes arrive with the protocol behind the same port.
+ */
+class MockTxPort implements TxPort {
+  list(): readonly TxRecord[] {
+    return [];
+  }
+
+  get(): TxRecord | null {
+    return null;
+  }
+
+  subscribe(): () => void {
+    return () => {};
+  }
+
+  run(): Promise<TxRecord> {
+    return Promise.reject(new Error("The prototype session has no wallet — transactions are not simulated."));
+  }
+
+  clear(): void {}
 }
 
 /** Trailing 30d earning rate — prototype data, not a real yield claim. */

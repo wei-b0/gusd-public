@@ -1,6 +1,8 @@
 import type { Logger } from "@gusd/types";
+import type { MethodologyConfig } from "@gusd/pricing-engine";
 import type { BreakerMap, PublisherConfig, PublisherTarget } from "./types.js";
 import { validateCandidate } from "./validate.js";
+import { resolvePanelThresholds } from "./thresholds.js";
 import type { PublisherStore } from "./store.js";
 
 /**
@@ -86,6 +88,26 @@ export class PublisherPoller {
       return { published: 0, rejected: 0, skipped: 0 };
     }
 
+    // The publication thresholds come from the stored methodology row for the
+    // pinned version — per-panel quorums and dispersion caps included. A
+    // missing row is fail-closed: without a methodology there is nothing to
+    // validate against, and guessing one would defeat the pin.
+    let methodology: MethodologyConfig | null;
+    try {
+      methodology = await store.methodologyConfig(config.pinnedMethodologyVersion);
+    } catch (err: unknown) {
+      logger.error("publisher could not read the methodology row", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return { published: 0, rejected: 0, skipped: 0 };
+    }
+    if (methodology === null) {
+      logger.warn("pinned methodology version missing from the database — refusing to publish", {
+        pinnedMethodologyVersion: config.pinnedMethodologyVersion,
+      });
+      return { published: 0, rejected: 0, skipped: 0 };
+    }
+
     for (const candidate of candidates) {
       try {
         if (await store.alreadyPublished(candidate.id, target.name)) {
@@ -98,7 +120,7 @@ export class PublisherPoller {
           target.name,
         );
         const verdict = validateCandidate(candidate, {
-          config,
+          config: resolvePanelThresholds(config, methodology, candidate.panelId),
           now,
           previousPublishedPrice,
           breakers,

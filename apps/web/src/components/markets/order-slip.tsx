@@ -3,8 +3,10 @@
 /**
  * OrderSlip — the trade furniture inside the Trade panel. Quotes and fills
  * come from the TradingPort adapter; trading requires a connection. The
- * quote ledger prints at ledger grade (fixed 4 decimals) so its rows
- * visibly sum.
+ * reference price is the one price the interfaces display (the API's in
+ * oracle mode); when the data layer asserts none, the slip goes dormant
+ * rather than quoting against nothing. The quote ledger prints at ledger
+ * grade (fixed 4 decimals) so its rows visibly sum.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -16,7 +18,8 @@ import { useAccount, useServices } from "@/data/services";
 
 export interface OrderSlipProps {
   assetId: string;
-  marketPrice: number;
+  /** The displayed price — execution quotes against it. Null → no quote. */
+  referencePrice: number | null;
 }
 
 type Status =
@@ -25,7 +28,7 @@ type Status =
   | { kind: "filled"; receipt: TradeReceipt }
   | { kind: "error"; message: string };
 
-export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
+export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
   const [side, setSide] = useState<TradeSide>("buy");
@@ -36,9 +39,12 @@ export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
   const validSize = Number.isFinite(size) && size > 0;
 
   const asset = parseAssetId(assetId);
+  // The quote prices off the reference price, so it re-quotes when the
+  // reference lands — the feed arrives async in oracle mode, and a memo
+  // computed before it must not stand as "no price".
   const quote = useMemo(
     () => (asset && validSize ? trading.quote({ asset, side, size }) : null),
-    [trading, asset, side, size, validSize],
+    [trading, asset, side, size, validSize, referencePrice],
   );
 
   const position = account.positions.find((p) => p.asset === assetId);
@@ -68,8 +74,10 @@ export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
   }
 
   // Ledger terms, each printed at 4 decimals so the rows visibly close.
-  const impactUsd = quote ? size * (quote.price - marketPrice) : null;
-  const total = quote?.notional ?? (validSize ? size * marketPrice : null);
+  // No reference price → no quote rows: sizing an order against nothing
+  // would fabricate the one number the ledger exists to show.
+  const impactUsd = quote && referencePrice !== null ? size * (quote.price - referencePrice) : null;
+  const total = quote?.notional ?? (validSize && referencePrice !== null ? size * referencePrice : null);
 
   return (
     <div className="space-y-3.5 p-3.5">
@@ -128,7 +136,16 @@ export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
 
       {/* Quote ledger — the rows sum: price × size ± impact + fee = total, in gUSD */}
       <dl className="space-y-1.5 text-[12.5px]">
-        <LedgerRow label="Est. price" value={quote ? fmtGusdLedger(quote.price) : fmtGusdLedger(marketPrice)} />
+        <LedgerRow
+          label="Est. price"
+          value={
+            quote
+              ? fmtGusdLedger(quote.price)
+              : referencePrice !== null
+                ? fmtGusdLedger(referencePrice)
+                : "—"
+          }
+        />
         {impactUsd != null && (
           <LedgerRow
             label="Est. impact"
@@ -142,6 +159,12 @@ export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
           strong
         />
       </dl>
+
+      {referencePrice === null && (
+        <p className="text-[11.5px] leading-relaxed text-dim">
+          No reference price yet — orders open when the feed asserts one.
+        </p>
+      )}
 
       {!account.connected && (
         <p className="text-[11.5px] leading-relaxed text-dim">
@@ -169,7 +192,7 @@ export function OrderSlip({ assetId, marketPrice }: OrderSlipProps) {
       <button
         type="button"
         onClick={onSubmit}
-        disabled={status.kind === "submitting" || !validSize}
+        disabled={status.kind === "submitting" || !validSize || referencePrice === null}
         className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
           side === "buy" ? "rev-g hover:opacity-90" : "rev-d hover:opacity-90"
         }`}

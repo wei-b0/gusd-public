@@ -8,6 +8,7 @@ import {
   createDb,
   ensureMethodologyVersion,
   getCandidateById,
+  getCurrentMethodology,
   getPublication,
   insertCollectionRun,
   insertIndexCandidate,
@@ -214,7 +215,8 @@ d("db integration (RUN_DB_TESTS=1)", () => {
       sql`select count(*)::text as n from methodology_versions where effective_to is null`,
     );
     expect(current.rows[0]?.n).toBe("1");
-    // A different version while still current violates the partial unique index.
+    // A different version while still current violates the partial unique index
+    // for a raw insert — superseding is only possible through the repo helper.
     await expectRejectionWithCode(
       db.execute(
         sql`insert into methodology_versions (id, version, config, config_hash, effective_from)
@@ -222,6 +224,19 @@ d("db integration (RUN_DB_TESTS=1)", () => {
       ),
       "methodology_versions_one_current_unique",
     );
+    // The repo helper supersedes: 0.2.0 lands, 0.1.0 closes, one open row.
+    await ensureMethodologyVersion(db, { version: "0.2.0", config: {}, configHash: "def" });
+    const open = await db.execute<{ version: string }>(
+      sql`select version from methodology_versions where effective_to is null`,
+    );
+    expect(open.rows.map((r) => r.version)).toEqual(["0.2.0"]);
+    expect((await getCurrentMethodology(db))?.version).toBe("0.2.0");
+    // Re-seeding the now-closed 0.1.0 is still an insert-once no-op.
+    await ensureMethodologyVersion(db, { version: "0.1.0", config: {}, configHash: "abc" });
+    const closed = await db.execute<{ n: string }>(
+      sql`select count(*)::text as n from methodology_versions where version = '0.1.0'`,
+    );
+    expect(closed.rows[0]?.n).toBe("1");
   });
 
   it("dedups index candidates on (gpuId, calcHash) except stale rows", async () => {

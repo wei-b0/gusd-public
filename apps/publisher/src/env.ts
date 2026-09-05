@@ -84,12 +84,24 @@ export function parsePublisherEnv(env: NodeJS.ProcessEnv = process.env): Publish
     oracleUrl: env.PUBLISHER_ORACLE_URL ?? "http://127.0.0.1:8080",
     pollMs: intEnv("PUBLISHER_POLL_MS", env.PUBLISHER_POLL_MS, 5_000),
     pinnedMethodologyVersion:
-      env.PUBLISHER_METHODOLOGY_VERSION ?? "0.1.0",
-    minContributors: intEnv("PUBLISHER_MIN_CONTRIBUTORS", env.PUBLISHER_MIN_CONTRIBUTORS, 3),
-    maxDispersion: Number(env.PUBLISHER_MAX_DISPERSION ?? 0.45),
+      env.PUBLISHER_METHODOLOGY_VERSION ?? "0.2.0",
+    // Contributor/dispersion/band limits default to the pinned methodology's
+    // per-panel values (panelOverrides included); an explicit env var is a
+    // tighten-only override, never a relaxation of the methodology.
+    minContributors:
+      env.PUBLISHER_MIN_CONTRIBUTORS === undefined || env.PUBLISHER_MIN_CONTRIBUTORS === ""
+        ? null
+        : intEnv("PUBLISHER_MIN_CONTRIBUTORS", env.PUBLISHER_MIN_CONTRIBUTORS, 1),
+    maxDispersion:
+      env.PUBLISHER_MAX_DISPERSION === undefined || env.PUBLISHER_MAX_DISPERSION === ""
+        ? null
+        : numEnv("PUBLISHER_MAX_DISPERSION", env.PUBLISHER_MAX_DISPERSION, 0),
     maxFreshnessMs: intEnv("PUBLISHER_MAX_FRESHNESS_MS", env.PUBLISHER_MAX_FRESHNESS_MS, 300_000),
     maxJumpPct: numEnv("PUBLISHER_MAX_JUMP_PCT", env.PUBLISHER_MAX_JUMP_PCT, 0.25),
-    maxBandWidthPct: numEnv("PUBLISHER_MAX_BAND_WIDTH_PCT", env.PUBLISHER_MAX_BAND_WIDTH_PCT, 0.1),
+    maxBandWidthPct:
+      env.PUBLISHER_MAX_BAND_WIDTH_PCT === undefined || env.PUBLISHER_MAX_BAND_WIDTH_PCT === ""
+        ? null
+        : numEnv("PUBLISHER_MAX_BAND_WIDTH_PCT", env.PUBLISHER_MAX_BAND_WIDTH_PCT, 0),
     target,
     logLevel: env.LOG_LEVEL ?? "info",
     ...chainEnv(target, env),

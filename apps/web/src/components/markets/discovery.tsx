@@ -4,30 +4,45 @@
  * MarketsDiscovery — the front door and the Markets surface. Discovery,
  * scanning, comparison: what GPU markets exist, what they trade at, how
  * they moved, where the Index stands, and whether each market carries a
- * premium or discount. Execution lives on the market pages and the
- * Terminal; this page deliberately has none.
+ * premium or discount. Execution lives on the Terminal — one roof for depth
+ * and the trade ticket; this page deliberately has none.
  */
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { pairName } from "@/domain/types";
+import { marketMove24h, pairName } from "@/domain/types";
 import { useMarkets } from "@/data/services";
 import { fmtGusdCompact, fmtGusdPrecise, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
 import { Gusd } from "@/components/ui/pair";
 import { MarketsTable } from "@/components/markets/markets-table";
 import { Sparkline } from "@/components/charts/sparkline";
+import { IndexStatusChip } from "@/components/ui/index-status-chip";
 import { TuiPanel } from "@/components/ui/panel";
 
 export function MarketsDiscovery() {
   const markets = useMarkets();
 
-  const totalVolume = markets.reduce((sum, m) => sum + m.volume24hUsd, 0);
-  const totalLiquidity = markets.reduce((sum, m) => sum + m.liquidityUsd, 0);
-  const byMove = [...markets].sort((a, b) => b.change24hPct - a.change24hPct);
+  // Totals over possibly-absent market figures: a sum exists only when at
+  // least one market has the figure — otherwise the cell prints "—".
+  const totalOf = (vals: (number | null)[]): number | null => {
+    const nums = vals.filter((v): v is number => v !== null);
+    return nums.length === 0 ? null : nums.reduce((sum, n) => sum + n, 0);
+  };
+  const hasVenue = markets.some((m) => m.marketPrice !== null);
+  const totalVolume = totalOf(markets.map((m) => m.volume24hUsd));
+  const totalLiquidity = totalOf(markets.map((m) => m.liquidityUsd));
+  const byMove = [...markets].sort(
+    (a, b) => (marketMove24h(b) ?? -Infinity) - (marketMove24h(a) ?? -Infinity),
+  );
   const leader = byMove[0];
   const laggard = byMove[byMove.length - 1];
-  const basisList = markets.map((m) => m.basisPct).sort((a, b) => a - b);
-  const medianBasis = basisList[Math.floor(basisList.length / 2)] ?? 0;
+  const leaderMove = leader ? marketMove24h(leader) : null;
+  const laggardMove = laggard ? marketMove24h(laggard) : null;
+  const basisList = markets
+    .map((m) => m.basisPct)
+    .filter((b): b is number => b !== null)
+    .sort((a, b) => a - b);
+  const medianBasis = basisList.length > 0 ? basisList[Math.floor(basisList.length / 2)]! : null;
 
   return (
     <div>
@@ -43,32 +58,32 @@ export function MarketsDiscovery() {
         <dl className="grid grid-cols-2 gap-x-8 p-3.5 md:grid-cols-3 xl:grid-cols-5">
           <Cell
             label={<>Total 24h volume / <span className="normal-case">gUSD</span></>}
-            value={fmtGusdCompact(totalVolume)}
+            value={totalVolume === null ? "—" : fmtGusdCompact(totalVolume)}
           />
           <Cell
             label={<>Total liquidity / <span className="normal-case">gUSD</span></>}
-            value={fmtGusdCompact(totalLiquidity)}
+            value={totalLiquidity === null ? "—" : fmtGusdCompact(totalLiquidity)}
           />
           {leader && (
             <Cell
               label="Leader 24h"
-              value={`${pairName(leader.asset.id)} ${fmtPctSigned(leader.change24hPct)}`}
-              tone={isFlatPct(leader.change24hPct) ? "dim" : "up"}
-              dir={isFlatPct(leader.change24hPct) ? undefined : leader.change24hPct >= 0 ? "up" : "down"}
+              value={`${pairName(leader.asset.id)} ${leaderMove === null ? "—" : fmtPctSigned(leaderMove)}`}
+              tone={leaderMove === null || isFlatPct(leaderMove) ? "dim" : "up"}
+              dir={leaderMove === null || isFlatPct(leaderMove) ? undefined : leaderMove >= 0 ? "up" : "down"}
             />
           )}
           {laggard && (
             <Cell
               label="Laggard 24h"
-              value={`${pairName(laggard.asset.id)} ${fmtPctSigned(laggard.change24hPct)}`}
-              tone={isFlatPct(laggard.change24hPct) ? "dim" : laggard.change24hPct >= 0 ? "up" : "down"}
-              dir={isFlatPct(laggard.change24hPct) ? undefined : laggard.change24hPct >= 0 ? "up" : "down"}
+              value={`${pairName(laggard.asset.id)} ${laggardMove === null ? "—" : fmtPctSigned(laggardMove)}`}
+              tone={laggardMove === null || isFlatPct(laggardMove) ? "dim" : "down"}
+              dir={laggardMove === null || isFlatPct(laggardMove) ? undefined : laggardMove >= 0 ? "up" : "down"}
             />
           )}
           <Cell
             label="Median premium"
-            value={fmtPctSigned(medianBasis)}
-            tone={medianBasis >= 0 ? "amber" : "wire"}
+            value={medianBasis === null ? "—" : fmtPctSigned(medianBasis)}
+            tone={medianBasis === null ? "dim" : medianBasis >= 0 ? "amber" : "wire"}
           />
         </dl>
       </TuiPanel>
@@ -85,11 +100,13 @@ export function MarketsDiscovery() {
         <TuiPanel no="03" title="48h charts" meta="every market · equal weight">
           <div className="grid gap-px bg-rule sm:grid-cols-2 xl:grid-cols-3">
             {markets.map((m) => {
-              const flat = isFlatPct(m.change24hPct);
+              const move = marketMove24h(m);
+              const flat = isFlatPct(move);
+              const hasVenue = m.marketPrice !== null;
               return (
                 <Link
                   key={m.asset.id}
-                  href={`/markets/${m.asset.id}`}
+                  href={`/terminal/${m.asset.id}`}
                   className="group bg-panel p-3 transition-colors hover:bg-panel-deep"
                 >
                   <div className="flex items-baseline justify-between gap-2">
@@ -98,30 +115,53 @@ export function MarketsDiscovery() {
                     </span>
                     <span
                       className={`num inline-flex items-baseline gap-1 text-[12px] ${
-                        flat ? "text-dim" : m.change24hPct >= 0 ? "text-up" : "text-down"
+                        move === null || flat ? "text-dim" : move >= 0 ? "text-up" : "text-down"
                       }`}
                     >
-                      {flat ? null : (
+                      {move === null || flat ? null : (
                         <span aria-hidden className="text-[9px]">
-                          {m.change24hPct >= 0 ? "▲" : "▼"}
+                          {move >= 0 ? "▲" : "▼"}
                         </span>
                       )}
-                      {fmtPctSigned(m.change24hPct)}
+                      {move === null ? "—" : fmtPctSigned(move)}
                     </span>
                   </div>
-                  <p className="num mt-1 text-[20px] font-bold leading-tight text-bright">
-                    {fmtGusdPrecise(m.marketPrice)}
-                    <span className="ml-1.5 align-baseline text-[11px] font-normal text-dim">gUSD</span>
-                  </p>
+                  {/* One canonical price per card: the venue price when a
+                      market layer exists, otherwise the benchmark itself. */}
+                  {hasVenue ? (
+                    <p className="num mt-1 text-[20px] font-bold leading-tight text-bright">
+                      {fmtGusdPrecise(m.marketPrice!)}
+                      <span className="ml-1.5 align-baseline text-[11px] font-normal text-dim">gUSD</span>
+                    </p>
+                  ) : m.indexPrice !== null ? (
+                    <p className="num mt-1 text-[20px] font-bold leading-tight text-wire">
+                      {fmtUsdPrecise(m.indexPrice)}
+                      <span className="ml-1.5 align-baseline text-[11px] font-normal text-dim">/ GPU-hour</span>
+                    </p>
+                  ) : (
+                    <p className="num mt-1 text-[20px] font-bold leading-tight text-dim">—</p>
+                  )}
                   <Sparkline values={m.sparkline} className="mt-1.5 h-12 w-full" />
                   <p className="num mt-1.5 flex items-baseline justify-between text-[10px]">
-                    <span className="text-dim">
-                      Index <span className="text-wire">{fmtUsdPrecise(m.indexPrice)}</span>
-                      <span className="text-dim"> / GPU-hour</span>
-                    </span>
-                    <span className={m.basisPct >= 0 ? "text-amber" : "text-wire"}>
-                      {fmtPctSigned(m.basisPct)}
-                    </span>
+                    {hasVenue ? (
+                      <>
+                        <span className="text-dim">
+                          Index{" "}
+                          <span className={m.indexPrice === null ? "text-dim" : "text-wire"}>
+                            {m.indexPrice === null ? "—" : fmtUsdPrecise(m.indexPrice)}
+                          </span>
+                          <span className="text-dim"> / GPU-hour</span>
+                        </span>
+                        <span className={m.basisPct === null ? "text-dim" : m.basisPct >= 0 ? "text-amber" : "text-wire"}>
+                          {m.basisPct === null ? "—" : fmtPctSigned(m.basisPct)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <IndexStatusChip status={m.indexStatus} />
+                        <span className="text-dim">benchmark series · 48h</span>
+                      </>
+                    )}
                   </p>
                 </Link>
               );
@@ -134,9 +174,10 @@ export function MarketsDiscovery() {
       </div>
 
       <p className="mt-3 max-w-prose text-[11.5px] leading-relaxed text-dim">
-        Index Price is the weighted reference for each GPU-hour, built from provider
-        observations — it is never the market price. The gap between the two prints as a
-        premium or a discount.
+        Price is the weighted benchmark for each GPU-hour, built from provider observations and
+        bucketed by the oracle into the candles above. Before a venue goes live it is the one price
+        a market has — where a market layer prices the asset separately, the gap prints as a
+        premium or a discount; volume and liquidity wait for that layer.
       </p>
     </div>
   );

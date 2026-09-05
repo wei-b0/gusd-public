@@ -60,9 +60,13 @@ export function AllTape() {
   return (
     <div>
       <div className="border-t border-rule">
-        {trades.map((trade) => (
-          <TapeRow key={trade.id} trade={trade} />
-        ))}
+        {trades.length === 0 ? (
+          <p className="px-3 py-6 text-center text-[11.5px] text-dim">
+            No trades yet — the tape prints when the venues go live.
+          </p>
+        ) : (
+          trades.map((trade) => <TapeRow key={trade.id} trade={trade} />)
+        )}
       </div>
       <p className="num px-3 py-2.5 text-[10px] text-dim">
         {ASSET_IDS.length} GPU markets · priced in gUSD

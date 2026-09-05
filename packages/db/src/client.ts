@@ -31,16 +31,3 @@ export function createDb(databaseUrl: string = process.env.DATABASE_URL ?? DEFAU
 }
 
 export { schema };
-
-/**
- * Apply the package's migrations. Exposed so dependents (oracle e2e, tests)
- * share the same migration path as the CLI instead of importing drizzle
- * themselves.
- */
-export async function migrateDb(handle: DbHandle): Promise<void> {
-  const { migrate } = await import("drizzle-orm/node-postgres/migrator");
-  const { fileURLToPath } = await import("node:url");
-  await migrate(handle.db, {
-    migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
-  });
-}

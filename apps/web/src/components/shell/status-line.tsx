@@ -4,53 +4,97 @@
  * StatusLine — the terminal's permanent foot: the wire's health, the
  * standing cautions. Fixed to the viewport on every route; the machine is
  * never naked.
+ *
+ * The lamp tells the truth about the source: in mock mode it reads the
+ * simulated panel; in oracle mode it reads the feed connection and the
+ * H100 candidate's publication state — green only when the stream is live
+ * AND the Index is fresh AND every observed source is contributing.
  */
 
-import { useMemo, useRef, useSyncExternalStore } from "react";
-import type { IndexQuality } from "@/domain/types";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { IndexQuality, IndexStatus } from "@/domain/types";
+import { fmtAge, fmtStamp } from "@/domain/format";
 import { useServices } from "@/data/services";
+import { DATA_SOURCE } from "@/data/oracle/config";
+import { getOracleFeed } from "@/data/oracle/feed";
+
+interface WireInfo {
+  quality: IndexQuality | null;
+  indexStatus?: IndexStatus;
+}
 
 /** Wire health from one market's snapshot — the panel is shared per epoch. */
-function useWireQuality(): IndexQuality | null {
+function useWireQuality(): WireInfo | null {
   const { marketData } = useServices();
-  const cache = useRef<{ live: IndexQuality | null; server: IndexQuality | null }>({
+  const cache = useRef<{ live: WireInfo | null; server: WireInfo | null }>({
     live: null,
     server: null,
   });
+  const read = (): WireInfo | null => {
+    const snapshot = marketData.getSnapshot("H100");
+    return snapshot ? { quality: snapshot.quality, indexStatus: snapshot.market.indexStatus } : null;
+  };
   const subscribe = useMemo(
     () => (listener: () => void) =>
       marketData.subscribe(() => {
-        cache.current.live = marketData.getSnapshot("H100")?.quality ?? null;
+        cache.current.live = read();
         listener();
       }),
     [marketData],
   );
   const getSnapshot = () => {
-    if (!cache.current.live) {
-      cache.current.live = marketData.getSnapshot("H100")?.quality ?? null;
-    }
+    if (!cache.current.live) cache.current.live = read();
     return cache.current.live;
   };
   const getServerSnapshot = () => {
-    if (!cache.current.server) {
-      cache.current.server = marketData.getSnapshot("H100")?.quality ?? null;
-    }
+    if (!cache.current.server) cache.current.server = read();
     return cache.current.server;
   };
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
+/** The feed's connection state, oracle mode only — the mock data source
+ *  never touches the feed (and never opens a connection). */
+function useConnection() {
+  const feed = getOracleFeed();
+  return useSyncExternalStore(
+    (cb) => (DATA_SOURCE === "oracle" ? feed.subscribe(cb) : () => {}),
+    () => (DATA_SOURCE === "oracle" ? feed.getState().connection : "idle"),
+    () => "idle",
+  );
+}
+
 export function StatusLine() {
-  const q = useWireQuality();
-  const allLive = q != null && q.sourcesLive === q.sourcesTotal;
+  const wire = useWireQuality();
+  const connection = useConnection();
+  const q = wire?.quality ?? null;
+  const indexStatus = wire?.indexStatus;
+
+  // Updated-age needs a clock, and a clock breaks hydration if it reads
+  // Date.now() during render — so it starts null (absolute stamp matches the
+  // server) and starts ticking after mount.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const oracle = DATA_SOURCE === "oracle";
+  const lampDown = oracle && (connection === "down" || indexStatus === "withheld" || indexStatus === "frozen");
+  const lampUp = lampDown
+    ? false
+    : oracle
+      ? connection === "live" && indexStatus === "live" && q != null && q.sourcesLive === q.sourcesTotal
+      : q != null && q.sourcesLive === q.sourcesTotal;
+  const lampTone = lampDown ? "text-down" : lampUp ? "text-up" : "text-amber";
+  const lampLabel = lampDown ? "feed down" : lampUp ? "feed healthy" : "feed degraded";
+
   return (
     <footer className="fixed inset-x-0 bottom-0 z-40 border-t border-rule-strong bg-panel">
       <div className="mx-auto flex h-8 w-full max-w-360 items-center gap-x-4 overflow-x-auto px-3 md:px-5">
         <span className="flex shrink-0 items-baseline gap-1.5">
-          <span
-            aria-hidden
-            className={`num text-[9px] leading-none ${allLive ? "text-up" : "text-amber"}`}
-          >
+          <span role="img" aria-label={lampLabel} className={`num text-[9px] leading-none ${lampTone}`}>
             ●
           </span>
           <span className="slug text-data">Index feed</span>
@@ -60,15 +104,21 @@ export function StatusLine() {
             {q.sourcesLive}/{q.sourcesTotal} sources
           </span>
         )}
-        {q && <span className="num shrink-0 text-[10.5px] text-dim">{q.latencyMs} ms</span>}
+        {q && (
+          <span className="num shrink-0 text-[10.5px] text-dim">
+            {now === null ? `updated ${fmtStamp(q.updatedAt)}` : `updated ${fmtAge(q.updatedAt, now)}`}
+          </span>
+        )}
         {q && (
           <span className="num hidden shrink-0 text-[10.5px] text-dim md:inline">
-            epoch {q.epoch}
+            {q.publication ? `#${q.publication}` : "—"}
           </span>
         )}
         <span aria-hidden className="h-px min-w-4 flex-1 bg-rule" />
         <span className="slug shrink-0 text-amber">Index ≠ market</span>
-        <span className="slug hidden shrink-0 text-amber sm:inline">Demo · all data simulated</span>
+        <span className="slug hidden shrink-0 text-amber sm:inline">
+          {oracle ? "Oracle index · trading simulated" : "Demo · all data simulated"}
+        </span>
       </div>
     </footer>
   );

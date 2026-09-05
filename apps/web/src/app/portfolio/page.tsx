@@ -65,14 +65,20 @@ function PortfolioBook() {
   const earn = useEarn();
   const activity = useActivity();
 
-  const priceOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice]));
+  // Mark to the displayed price: the venue price when a market layer exists,
+  // otherwise the API's Index — never a simulated stand-in for either. The
+  // unit follows the leg: gUSD per asset unit, or $ per GPU-hour while the
+  // benchmark is the market's price.
+  const priceOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice ?? m.indexPrice]));
+  const unitOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice !== null ? "gUSD" : "/ GPU-hour"]));
   const rows = account.positions.map((p) => {
     const last = priceOf.get(p.asset) ?? p.avgEntry;
+    const unit = unitOf.get(p.asset) ?? "gUSD";
     const value = p.size * last;
     const cost = p.size * p.avgEntry;
     const pnl = value - cost;
     const pnlPct = (last / p.avgEntry - 1) * 100;
-    return { p, last, value, pnl, pnlPct };
+    return { p, last, unit, value, pnl, pnlPct };
   });
   const positionsValue = rows.reduce((sum, r) => sum + r.value, 0);
   const sGUsdValue = account.sGUsdBalance * earn.rate;
@@ -118,12 +124,8 @@ function PortfolioBook() {
                   <tr className="border-b border-rule text-left">
                     <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Market</th>
                     <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Size</th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
-                      Avg entry <span className="tracking-normal normal-case">/ gUSD</span>
-                    </th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
-                      Market Price <span className="tracking-normal normal-case">/ gUSD</span>
-                    </th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Avg entry</th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Last price</th>
                     <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Value</th>
                     <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">
                       P&amp;L <span className="tracking-normal normal-case">/ gUSD</span>
@@ -131,21 +133,27 @@ function PortfolioBook() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(({ p, last, value, pnl, pnlPct }) => {
+                  {rows.map(({ p, last, unit, value, pnl, pnlPct }) => {
                     const flat = isFlatPct(pnlPct);
                     return (
                       <tr key={p.asset} className="border-b border-rule last:border-b-0">
                         <td className="py-2.5 pl-3.5 pr-4">
                           <Link
-                            href={`/markets/${p.asset}`}
+                            href={`/terminal/${p.asset}`}
                             className="num text-[13px] font-bold text-data transition-colors hover:text-bright"
                           >
                             {pairName(p.asset)}
                           </Link>
                         </td>
                         <td className="num px-2.5 py-2.5 text-right text-data">{fmtUnits(p.size)}</td>
-                        <td className="num px-2.5 py-2.5 text-right text-data">{fmtGusdPrecise(p.avgEntry)}</td>
-                        <td className="num px-2.5 py-2.5 text-right text-data">{fmtGusdPrecise(last)}</td>
+                        <td className="num px-2.5 py-2.5 text-right text-data">
+                          {fmtGusdPrecise(p.avgEntry)}
+                          <span className="ml-1 text-[10px] text-dim">{unit}</span>
+                        </td>
+                        <td className="num px-2.5 py-2.5 text-right text-data">
+                          {fmtGusdPrecise(last)}
+                          <span className="ml-1 text-[10px] text-dim">{unit}</span>
+                        </td>
                         <td className="num px-2.5 py-2.5 text-right text-bright">{fmtGusd(value)}</td>
                         <td
                           className={`num py-2.5 pr-3.5 text-right whitespace-nowrap ${
@@ -175,7 +183,7 @@ function PortfolioBook() {
           <TuiPanel no="02" title="Liquid capital · gUSD" meta="settlement unit">
             <dl className="border-t border-rule">
               <Line label="gUSD balance" value={fmtFull(account.gUsdBalance)} />
-              <Line label="Trade with gUSD" value="Markets ▸" href="/markets" />
+              <Line label="Trade with gUSD" value="Terminal ▸" href="/terminal" />
               <Line label="Mint gUSD" value="gUSD section ▸" href="/gusd" />
             </dl>
           </TuiPanel>

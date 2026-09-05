@@ -17,7 +17,7 @@ export default function NotFound() {
           </p>
           <p className="num mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] font-bold">
             {(["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const).map((id) => (
-              <Link key={id} href={`/markets/${id}`} className="whitespace-nowrap text-data underline decoration-rule-strong underline-offset-4 transition-colors hover:text-bright">
+              <Link key={id} href={`/terminal/${id}`} className="whitespace-nowrap text-data underline decoration-rule-strong underline-offset-4 transition-colors hover:text-bright">
                 {pairName(id)}
               </Link>
             ))}

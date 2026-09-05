@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 import {GPUToken} from "./GPUToken.sol";
 import {GpuId} from "./libraries/GpuId.sol";
 import {IGPUPriceOracle} from "./oracle/IGPUPriceOracle.sol";
@@ -21,13 +22,20 @@ import {IGPUIssuance} from "./interfaces/IGPUIssuance.sol";
 ///         base(6dec gUSD) = amount(18dec) * price(4dec) / 10^16, Ceil.
 ///         Worked example: 100 H100 @ 2.5000 -> 100e18 * 25_000 / 1e16
 ///         = 250_000_000 = 250.000000 gUSD.
+///         The 4-decimal price convention is ENFORCED at construction: the
+///         wired oracle must report `PRICE_SCALE() == PRICE_SCALE`, or
+///         deployment reverts — a scale mismatch would otherwise misprice
+///         every issuance silently. The composition divisor is derived from
+///         the oracle's own scale, never re-declared as a literal.
 contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint16 public constant MAX_ISSUANCE_FEE_BPS = 1_000; // 10%
-    uint256 public constant PRICE_SCALE = 10_000;
-    // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6)
-    uint256 internal constant COMPOSITION_DIVISOR = 1e16;
+    uint256 public constant PRICE_SCALE = 10_000; // 4-decimal fixed point (coordination-fixed)
+
+    // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6), derived from
+    // the oracle's PRICE_SCALE in the constructor (== 1e16 for 4 decimals)
+    uint256 public immutable compositionDivisor;
 
     struct GpuConfig {
         address token;
@@ -57,6 +65,7 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     error OracleFutureTimestamp();
     error ZeroAmount();
     error FeeTooLarge();
+    error PriceScaleMismatch();
 
     event GpuCreated(bytes32 indexed gpuId, address token, uint16 feeBps, uint24 poolFee, int24 tickSpacing);
     event Issued(
@@ -69,9 +78,17 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     constructor(IERC20 gUSD_, IGPUPriceOracle oracle_, address revenueLedger_, address initialOwner)
         Ownable(initialOwner)
     {
+        // The 4-decimal price convention is a coordination-fixed encoding
+        // contract (IGPUPriceOracle). Enforce it here: a wired oracle built on
+        // any other scale would misprice every issuance silently.
+        uint256 oracleScale = oracle_.PRICE_SCALE();
+        if (oracleScale != PRICE_SCALE) revert PriceScaleMismatch();
         gUSD = gUSD_;
         oracle = oracle_;
         revenueLedger = revenueLedger_;
+        // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6), derived from
+        // the oracle's own scale — never re-declared as a literal.
+        compositionDivisor = Math.mulDiv(10 ** 18, oracleScale, 10 ** 6);
     }
 
     // ---------------------------------------------------------------- owner
@@ -144,12 +161,9 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         if (cfg.token == address(0)) revert UnknownGpuId();
         if (!cfg.enabled) revert IssuanceDisabled();
 
-        (uint256 price, uint256 updatedAt) = oracle.getPrice(gpuId);
-        if (price == 0) revert OraclePriceZero();
-        if (updatedAt > block.timestamp) revert OracleFutureTimestamp();
-        if (block.timestamp - updatedAt > maxOracleStaleness) revert OracleStale();
+        uint256 price = _oraclePrice(gpuId);
 
-        base = Math.mulDiv(amount, price, COMPOSITION_DIVISOR, Math.Rounding.Ceil);
+        base = Math.mulDiv(amount, price, compositionDivisor, Math.Rounding.Ceil);
         fee = Math.mulDiv(base, cfg.feeBps, 10_000, Math.Rounding.Ceil);
 
         // CEI: pull base + fee from the user, forward fee, mint last.
@@ -164,17 +178,36 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
 
     // --------------------------------------------------------------- views
 
+    /// @notice Execution-identical quote: applies every guard `issue()` applies
+    ///         (amount, known + enabled GPU, oracle price/freshness) so a quote
+    ///         can never display a price that execution would reject.
     function quoteIssue(bytes32 gpuId, uint256 amount)
         external
         view
         returns (uint256 base, uint256 fee, uint256 totalPaid)
     {
+        if (amount == 0) revert ZeroAmount();
         GpuConfig storage cfg = _gpus[gpuId];
         if (cfg.token == address(0)) revert UnknownGpuId();
-        (uint256 price,) = oracle.getPrice(gpuId);
-        base = Math.mulDiv(amount, price, COMPOSITION_DIVISOR, Math.Rounding.Ceil);
+        if (!cfg.enabled) revert IssuanceDisabled();
+        uint256 price = _oraclePrice(gpuId);
+        base = Math.mulDiv(amount, price, compositionDivisor, Math.Rounding.Ceil);
         fee = Math.mulDiv(base, cfg.feeBps, 10_000, Math.Rounding.Ceil);
         totalPaid = base + fee;
+    }
+
+    /// @notice sqrt of the current oracle price as a gUSD-wei-per-GPU-wei
+    ///         ratio, scaled by 2^96 — the canonical pool's starting
+    ///         sqrtPriceX96 up to currency ordering (Deploy inverts it when
+    ///         gUSD is currency0). Reverts on an unpublished GPU; staleness is
+    ///         deliberately NOT checked — a deploy-time starting point, not a
+    ///         consumable quote.
+    function oracleSqrtPriceX96(bytes32 gpuId) external view returns (uint256) {
+        (uint256 price,) = oracle.getPrice(gpuId);
+        if (price == 0) revert OraclePriceZero();
+        // radicand = (price / compositionDivisor) * 2^192; its sqrt is
+        // sqrt(ratio) * 2^96 — exactly v4's sqrtPriceX96 convention
+        return FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));
     }
 
     function gpuReserve(bytes32 gpuId) external view returns (uint256) {
@@ -211,6 +244,16 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
 
     function isIssuanceEnabled(bytes32 gpuId) external view returns (bool) {
         return _gpus[gpuId].enabled;
+    }
+
+    /// @dev The oracle read + guards shared by `issue()` and `quoteIssue()`:
+    ///      a quote must never show a price that execution would reject.
+    function _oraclePrice(bytes32 gpuId) internal view returns (uint256 price) {
+        uint256 updatedAt;
+        (price, updatedAt) = oracle.getPrice(gpuId);
+        if (price == 0) revert OraclePriceZero();
+        if (updatedAt > block.timestamp) revert OracleFutureTimestamp();
+        if (block.timestamp - updatedAt > maxOracleStaleness) revert OracleStale();
     }
 
     function _requireKnown(bytes32 gpuId) internal view {

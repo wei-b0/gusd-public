@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { validateCandidate } from "../src/validate.js";
-import { VIOLATION, type CandidateLike, type PublisherConfig } from "../src/types.js";
+import { VIOLATION, type CandidateLike, type ResolvedPublisherConfig } from "../src/types.js";
 
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 
-const CONFIG: PublisherConfig = {
+const CONFIG: ResolvedPublisherConfig = {
   pinnedMethodologyVersion: "0.1.0",
   minContributors: 3,
   maxDispersion: 0.45,

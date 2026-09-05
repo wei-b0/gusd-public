@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Logger } from "@gusd/types";
+import { DEFAULT_METHODOLOGY_CONFIG, type MethodologyConfig } from "@gusd/pricing-engine";
 import { ChainPublisherTarget, type ChainClient } from "../src/chain-target.js";
 import { encodeGpuId, PRICE_SCALE } from "../src/encoding.js";
 import { PublisherPoller } from "../src/poller.js";
@@ -214,6 +215,10 @@ class FakeStore implements PublisherStore {
 
   async latestCandidates(): Promise<CandidateLike[]> {
     return this.candidates;
+  }
+
+  async methodologyConfig(): Promise<MethodologyConfig | null> {
+    return DEFAULT_METHODOLOGY_CONFIG;
   }
 
   async latestPublishedPrice(): Promise<number | null> {

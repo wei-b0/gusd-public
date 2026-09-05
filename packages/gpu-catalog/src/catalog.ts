@@ -321,9 +321,18 @@ export interface SettlementPanel {
   gpuId: GpuId;
 }
 
-/** v1 settlement panels — deliberately narrow and conservative. */
+/**
+ * The full tokenized universe from apps/contracts/PROTOCOL.md §3. Every SKU
+ * here is settled each cycle, but panels whose contributor set is thin run on
+ * per-panel methodology overrides (reduced quorum, rate-card eligibility —
+ * see MethodologyConfig.panelOverrides) and can at best publish `degraded`.
+ */
 export const SETTLEMENT_PANELS: readonly SettlementPanel[] = [
+  { id: "A100_PANEL_V1", gpuId: "A100_SXM_80GB" },
   { id: "H100_PANEL_V1", gpuId: "H100_SXM_80GB" },
   { id: "H200_PANEL_V1", gpuId: "H200_141GB" },
   { id: "B200_PANEL_V1", gpuId: "B200_192GB" },
+  { id: "B300_PANEL_V1", gpuId: "B300_288GB" },
+  { id: "GB200_PANEL_V1", gpuId: "GB200_192GB" },
+  { id: "GB300_PANEL_V1", gpuId: "GB300_288GB" },
 ];

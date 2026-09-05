@@ -223,6 +223,21 @@ are now fixed in code on both sides:
   and submits `publish()`. Its encoder mirrors `src/libraries/GpuId.sol` and
   the scaling below in `apps/publisher/src/encoding.ts`.
 
+Consumer-side enforcement (all verified in tests; changes here also require
+cross-stack coordination):
+
+- `GPUIssuance`'s constructor reverts (`PriceScaleMismatch`) unless the wired
+  oracle reports `PRICE_SCALE() == 10_000`; the composition divisor
+  (10^(18+4−6) = 1e16) is derived from the oracle's own scale, never
+  re-declared as a literal.
+- `quoteIssue()` applies the same guards as `issue()` (known + enabled GPU,
+  amount, oracle price/freshness via the shared `_oraclePrice()`), so a quote
+  can never display a price execution would reject.
+- The canonical pool's deploy-time starting price comes from the LIVE oracle
+  (`GPUIssuance.oracleSqrtPriceX96(gpuId)`, inverted at the radicand level
+  when gUSD sorts as currency0); an external oracle that has never published
+  fails the deploy (`OraclePriceZero`).
+
 Encoding contract (changing any of it requires cross-stack coordination):
 
 - `gpuId` — bytes32 left-aligned printable-ASCII SKU (0x21..0x7E, 1–32 bytes),

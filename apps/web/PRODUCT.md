@@ -297,7 +297,7 @@ GPU providers / pricing sources
 
 The exact provider list, weighting, filtering, normalization methodology, and oracle implementation are separate engineering decisions.
 
-The web application should consume these through stable data interfaces rather than implementing the logic itself.
+The web application should consume these through stable data interfaces rather than implementing the logic itself — and does: the oracle's published candidates (REST + SSE) are the web app's default Index source as of 2026-09-05 (see the Data section).
 
 ---
 
@@ -336,6 +336,8 @@ Possible interfaces may eventually include:
 - downloadable datasets
 - historical-data products
 
+**Shipped (2026-09-05):** the oracle's real interfaces exist and the web app consumes them directly — `GET /v1/prices`, `/v1/prices/:gpu`, `/v1/prices/:gpu/history`, `GET /v1/prices/:gpu/candles` (server-bucketed OHLC over the canonical benchmark time series stored in `index_candidates` — open/high/low/close derived from the benchmark observations within each interval, 1m/5m/15m/30m/1h/6h/12h/1d/1w grains, bucket-capped), `/v1/prices/:gpu/providers`, `/v1/providers`, `/v1/health` (all read-only REST, CORS open), and an SSE stream at `/v1/stream/sse` carrying each published candidate. Every settlement panel in the catalog (A100/H100/H200/B200/B300/GB200/GB300) is oracle-backed, and the API/data layer is the **single source of truth** for every displayed price: the benchmark it publishes is the one price the market and trading surfaces show — where no venue prices the asset separately the second-price slots do not exist on the surface. Market-layer facts the API does not publish (venue price, trades, volume, liquidity) render as honest empties (`—`, an empty tape) rather than simulated figures. Candles for every chart range, sparklines (the series' last 48 hourly closes), and window statistics derive from the server-bucketed benchmark series; live candidates merge into the trailing bucket as they arrive. Before real swaps exist, candles come from the benchmark series — not fake trades and not oracle publications; once Uniswap v4 pools have indexed swaps, an actual trade-OHLCV market series can be added alongside. On-chain reads stay out of display paths — the chain is touched only where execution, balances, and allowances require it; the onchain `GPUPriceOracle` is a protocol execution primitive (hooks, swaps, issuance, redemption), never the frontend's displayed price. `NEXT_PUBLIC_DATA_SOURCE=mock` restores the fully simulated layer (its one admission lives on the status line).
+
 The exact API design is not yet finalized.
 
 The web product should provide a designed Data surface without inventing production endpoints.
@@ -364,15 +366,18 @@ The Markets experience should make the GPU asset class understandable as a whole
 
 # GPU Asset Detail
 
-Every GPU asset should eventually have its own detailed market page.
+Every GPU asset has one detailed surface: its desk on the Terminal. There is no
+separate market detail page — Markets is the discovery board, and clicking an
+asset anywhere in the product opens `/terminal/[asset]`, where analysis and
+execution live under one roof.
 
-For example, H100 may expose:
+For example, the H100 desk exposes:
 
 - current H100 market price
 - price change
 - historical market chart
 - gUSD H100 Index
-- current basis
+- current basis and premium/discount history
 - volume
 - liquidity
 - market statistics
@@ -399,11 +404,11 @@ The GPU asset itself trades on gUSD.
 
 # Terminal
 
-Terminal is the professional trading interface.
+Terminal is the professional trading interface — and the one place users trade.
+Every asset's depth (chart, statistics, Index sources, premium history,
+activity) and its order entry live here together; Markets is discovery only.
 
-It should be designed for users who want greater information density and faster interaction than the standard market pages.
-
-The Terminal may eventually include:
+The Terminal ships the full interaction model today:
 
 - GPU asset selector
 - price chart
@@ -419,7 +424,7 @@ The Terminal may eventually include:
 - activity
 - positions
 
-The shell implementation should prototype the complete interaction model without pretending that mock trades are real onchain transactions.
+The shell implementation prototypes the complete interaction model without pretending that mock trades are real onchain transactions.
 
 The Terminal may be deliberately more information-dense on desktop than the rest of the application.
 
@@ -753,8 +758,6 @@ The intended application currently includes:
 ```text
 /
  /markets
- /markets/[asset]
- /terminal
  /terminal/[asset]
  /earn
  /vaults
@@ -764,6 +767,12 @@ The intended application currently includes:
  /data
  /protocol
 ```
+
+Retired routes redirect permanently: `/earn` and `/vaults` to `/gusd`,
+`/index`, `/index/[asset]`, and `/data` to the Oracle section,
+`/markets/[asset]` to `/terminal/[asset]` — asset detail and trading share
+one roof — and `/terminal` to the default desk, `/terminal/H100`: the
+Terminal has no unbound form, it always shows one market's desk.
 
 The exact routing may evolve as the product develops.
 

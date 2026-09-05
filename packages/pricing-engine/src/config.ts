@@ -1,9 +1,13 @@
 import type { PricingTier } from "@gusd/types";
+import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
 
 /**
- * Methodology v0.1.0 configuration. Thresholds live in config, never in
+ * Methodology v0.2.0 configuration. Thresholds live in config, never in
  * code: a methodology change is a new config + new version, validated by the
- * exhaustive allowlist below before it can drive a computation.
+ * exhaustive allowlist below before it can drive a computation. v0.2.0 adds
+ * per-panel overrides so the full PROTOCOL.md §3 SKU universe can settle —
+ * thin SKUs run on a reduced quorum over named rate-card principals and the
+ * engine caps them at `degraded`.
  */
 
 export interface ScreeningConfig {
@@ -83,10 +87,31 @@ export interface MethodologyConfig {
   gates: GatesConfig;
   stale: StaleConfig;
   jump: JumpConfig;
+  /**
+   * Per-panel relaxations for SKUs whose settlement-eligible set cannot reach
+   * the global quorum. An override may only ever *relax* the gates — the
+   * engine enforces that a panel computing below the global min_providers
+   * publishes `degraded` at best, never `healthy`.
+   */
+  panelOverrides: Record<string, PanelOverride>;
+}
+
+export interface PanelOverride {
+  /**
+   * Providers promoted to settlement-eligible for this panel only — rate-card
+   * principals backing SKUs the executable order books do not carry. The
+   * global registry role is unchanged; the promotion lives in the versioned
+   * methodology so every receipt records exactly who was allowed to vote.
+   */
+  additionalProviders?: readonly string[];
+  /** Sparse patch over the global gates for this panel. */
+  gates?: Partial<GatesConfig>;
+  /** Sparse patch over the global dispersion thresholds for this panel. */
+  dispersion?: Partial<DispersionConfig>;
 }
 
 export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
-  version: "0.1.0",
+  version: "0.2.0",
   screening: {
     minProvidersForScreen: 4,
     madScale: 1.4826,
@@ -113,6 +138,35 @@ export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
   },
   stale: { carryForwardWindowMs: 86_400_000 }, // 24 hours
   jump: { maxProviderJumpPct: 0.25, minCorroborators: 2, minCorroboratorMovePct: 0.10 },
+  // The full PROTOCOL.md §3 universe. The flagship SXM panels keep the full
+  // executable quorum; the thin SKUs run on reduced quorums over named
+  // rate-card principals and are capped at `degraded` by the engine.
+  panelOverrides: {
+    A100_PANEL_V1: {
+      additionalProviders: ["datacrunch", "lambda", "coreweave", "crusoe"],
+      // No order-book maker quotes A100 anymore — the executable floor would
+      // make this override unreachable, so it settles on rate cards alone.
+      gates: { minProviders: 3, requireExecutable: false },
+    },
+    B300_PANEL_V1: {
+      additionalProviders: ["datacrunch", "nebius", "scaleway"],
+      // Same situation as A100: the only executable B300 source (Lium) runs a
+      // thin book, so the panel would be permanently withheld otherwise.
+      gates: { minProviders: 2, requireExecutable: false },
+    },
+    GB200_PANEL_V1: {
+      additionalProviders: ["oracle-oci"],
+      gates: { minProviders: 1, minObservations: 1, requireExecutable: false },
+    },
+    GB300_PANEL_V1: {
+      additionalProviders: ["datacrunch", "oracle-oci"],
+      gates: { minProviders: 2, requireExecutable: false },
+      // Two list prices 2× apart — the wide cap keeps the panel publishable
+      // (at best degraded) instead of permanently withheld while the market
+      // is one principal plus one list price.
+      dispersion: { max: 0.9 },
+    },
+  },
 };
 
 const PRICING_TIERS: readonly PricingTier[] = [
@@ -181,6 +235,7 @@ export function validateMethodologyConfig(input: unknown): MethodologyConfig {
       "gates",
       "stale",
       "jump",
+      "panelOverrides",
     ],
     "",
   );
@@ -304,5 +359,106 @@ export function validateMethodologyConfig(input: unknown): MethodologyConfig {
     fail("jump.minCorroboratorMovePct", "must be in (0, maxProviderJumpPct]");
   }
 
+  const overrides = input.panelOverrides;
+  if (!isPlainObject(overrides)) fail("panelOverrides", "must be an object");
+  const panelIds = new Set(SETTLEMENT_PANELS.map((p) => p.id));
+  for (const [panelId, raw] of Object.entries(overrides)) {
+    if (!panelIds.has(panelId)) {
+      fail(`panelOverrides.${panelId}`, "not a known settlement panel id");
+    }
+    if (!isPlainObject(raw)) fail(`panelOverrides.${panelId}`, "must be an object");
+    const keys = Object.keys(raw);
+    if (keys.length === 0) {
+      fail(`panelOverrides.${panelId}`, "empty override — drop it or name a relaxation");
+    }
+    for (const k of keys) {
+      if (!["additionalProviders", "gates", "dispersion"].includes(k)) {
+        fail(`panelOverrides.${panelId}.${k}`, "unknown key");
+      }
+    }
+    const override = raw as PanelOverride;
+    if (override.additionalProviders !== undefined) {
+      const slugs = override.additionalProviders;
+      if (!Array.isArray(slugs) || slugs.length === 0) {
+        fail(`panelOverrides.${panelId}.additionalProviders`, "must be a non-empty array");
+      }
+      for (const slug of slugs) {
+        if (typeof slug !== "string" || slug.length === 0 || slug.length > 64) {
+          fail(`panelOverrides.${panelId}.additionalProviders`, "slugs must be 1-64 char strings");
+        }
+      }
+      if (new Set(slugs).size !== slugs.length) {
+        fail(`panelOverrides.${panelId}.additionalProviders`, "duplicate provider slug");
+      }
+    }
+    if (override.gates !== undefined) {
+      if (!isPlainObject(override.gates) || Object.keys(override.gates).length === 0) {
+        fail(`panelOverrides.${panelId}.gates`, "must be a non-empty partial gates object");
+      }
+      for (const k of Object.keys(override.gates)) {
+        if (!["minProviders", "minObservations", "maxObservationAgeMs", "requireExecutable"].includes(k)) {
+          fail(`panelOverrides.${panelId}.gates.${k}`, "unknown gate");
+        }
+      }
+      if (override.gates.minProviders !== undefined) {
+        if (!Number.isInteger(override.gates.minProviders) || override.gates.minProviders < 1) {
+          fail(`panelOverrides.${panelId}.gates.minProviders`, "must be an integer ≥ 1");
+        }
+      }
+      if (override.gates.minObservations !== undefined) {
+        if (!Number.isInteger(override.gates.minObservations) || override.gates.minObservations < 1) {
+          fail(`panelOverrides.${panelId}.gates.minObservations`, "must be an integer ≥ 1");
+        }
+      }
+      if (override.gates.maxObservationAgeMs !== undefined) {
+        if (typeof override.gates.maxObservationAgeMs !== "number" || override.gates.maxObservationAgeMs <= 0) {
+          fail(`panelOverrides.${panelId}.gates.maxObservationAgeMs`, "must be > 0");
+        }
+      }
+      if (override.gates.requireExecutable !== undefined && typeof override.gates.requireExecutable !== "boolean") {
+        fail(`panelOverrides.${panelId}.gates.requireExecutable`, "must be a boolean");
+      }
+    }
+    if (override.dispersion !== undefined) {
+      if (!isPlainObject(override.dispersion) || Object.keys(override.dispersion).length === 0) {
+        fail(`panelOverrides.${panelId}.dispersion`, "must be a non-empty partial dispersion object");
+      }
+      for (const k of Object.keys(override.dispersion)) {
+        if (!["max", "warn"].includes(k)) fail(`panelOverrides.${panelId}.dispersion.${k}`, "unknown key");
+      }
+      const oMax = override.dispersion.max ?? dMax;
+      const oWarn = override.dispersion.warn ?? dWarn;
+      if (typeof oMax !== "number" || oMax <= 0) {
+        fail(`panelOverrides.${panelId}.dispersion.max`, "must be > 0");
+      }
+      if (typeof oWarn !== "number" || oWarn <= 0 || oWarn >= oMax) {
+        fail(`panelOverrides.${panelId}.dispersion`, "warn must remain in (0, max) after the patch");
+      }
+    }
+  }
+
   return input as unknown as MethodologyConfig;
+}
+
+/**
+ * The config a given panel actually computes under: the global methodology
+ * with its override patch applied. Deriving this deterministically (rather
+ * than mutating the stored config) keeps receipts replayable — the same
+ * stored row always yields the same effective config for a panel.
+ */
+export function effectiveConfigFor(
+  config: MethodologyConfig,
+  panelId: string,
+): MethodologyConfig {
+  const override = config.panelOverrides[panelId];
+  if (!override || (override.gates === undefined && override.dispersion === undefined)) {
+    return config;
+  }
+  return {
+    ...config,
+    gates: override.gates ? { ...config.gates, ...override.gates } : config.gates,
+    dispersion: override.dispersion
+      ? { ...config.dispersion, ...override.dispersion }
+      : config.dispersion,
+  };
 }

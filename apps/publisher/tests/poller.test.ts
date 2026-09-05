@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Logger } from "@gusd/types";
+import { DEFAULT_METHODOLOGY_CONFIG, type MethodologyConfig } from "@gusd/pricing-engine";
 import { PublisherPoller } from "../src/poller.js";
 import type {
   CandidateLike,
@@ -12,12 +13,12 @@ import type { PublisherStore } from "../src/store.js";
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 
 const CONFIG = {
-  pinnedMethodologyVersion: "0.1.0",
-  minContributors: 3,
-  maxDispersion: 0.45,
+  pinnedMethodologyVersion: "0.2.0",
+  minContributors: null,
+  maxDispersion: null,
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
-  maxBandWidthPct: 0.1,
+  maxBandWidthPct: null,
 };
 
 function silence(): Logger {
@@ -35,7 +36,7 @@ function healthyCandidate(overrides: Partial<CandidateLike> = {}): CandidateLike
     status: "healthy",
     providersContributing: 4,
     dispersion: 0.02,
-    methodologyVersion: "0.1.0",
+    methodologyVersion: "0.2.0",
     calcHash: "abc",
     computedAt: new Date(NOW.getTime() - 10_000),
     contributors: [{ providerId: "vast" }, { providerId: "lium" }],
@@ -47,6 +48,7 @@ function healthyCandidate(overrides: Partial<CandidateLike> = {}): CandidateLike
 class FakeStore implements PublisherStore {
   published: { value: PublishableIndexValue; txRef: string }[] = [];
   violations: { candidateId: string; violations: PublishViolation[] }[] = [];
+  methodology: MethodologyConfig | null = DEFAULT_METHODOLOGY_CONFIG;
   private publicationKeys = new Set<string>();
   private violationKeys = new Set<string>();
 
@@ -54,6 +56,10 @@ class FakeStore implements PublisherStore {
 
   async latestCandidates(): Promise<CandidateLike[]> {
     return this.candidates;
+  }
+
+  async methodologyConfig(): Promise<MethodologyConfig | null> {
+    return this.methodology;
   }
 
   async latestPublishedPrice(): Promise<number | null> {
@@ -163,6 +169,63 @@ describe("PublisherPoller", () => {
     expect(target.calls).toHaveLength(0);
     expect(store.violations).toHaveLength(0);
     expect(store.published).toHaveLength(0);
+  });
+
+  it("refuses the whole cycle when the pinned methodology row is missing", async () => {
+    const { target, store, poller } = makePoller([healthyCandidate()]);
+    store.methodology = null;
+    const result = await poller.tick();
+    expect(result).toEqual({ published: 0, rejected: 0, skipped: 0 });
+    expect(target.calls).toHaveLength(0);
+    expect(store.violations).toHaveLength(0);
+  });
+
+  it("publishes a thin panel on its per-panel quorum from the methodology", async () => {
+    // GB200's override settles on a single rate-card source; the publisher
+    // must accept 1 contributor because the methodology row says quorum 1.
+    const { target, poller } = makePoller([
+      healthyCandidate({
+        gpuId: "GB200_192GB",
+        panelId: "GB200_PANEL_V1",
+        price: 16,
+        confidenceLow: 15.52,
+        confidenceHigh: 16.48,
+        status: "degraded",
+        providersContributing: 1,
+        contributors: [{ providerId: "oracle-oci" }],
+      }),
+    ]);
+    const result = await poller.tick();
+    expect(result.published).toBe(1);
+    expect(target.calls[0]?.price).toBe(16);
+  });
+
+  it("an explicit env contributor floor still tightens the per-panel quorum", async () => {
+    const store = new FakeStore([
+      healthyCandidate({
+        gpuId: "GB200_192GB",
+        panelId: "GB200_PANEL_V1",
+        price: 16,
+        confidenceLow: 15.52,
+        confidenceHigh: 16.48,
+        status: "degraded",
+        providersContributing: 1,
+        contributors: [{ providerId: "oracle-oci" }],
+      }),
+    ]);
+    const target = new FakeTarget();
+    const poller = new PublisherPoller({
+      store,
+      target,
+      config: { ...CONFIG, minContributors: 3 },
+      logger: silence(),
+      now: () => NOW,
+    });
+    const result = await poller.tick();
+    expect(result.published).toBe(0);
+    expect(result.rejected).toBe(1);
+    const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
+    expect(codes).toContain("insufficient_contributors");
   });
 
   it("passes the breaker map through to validation", async () => {

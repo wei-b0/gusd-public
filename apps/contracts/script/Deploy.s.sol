@@ -10,7 +10,6 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
@@ -162,7 +161,9 @@ contract Deploy is Script {
             // including a publisher key the deployer does not control
             GPUPriceOracle(d.oracle).setPriceOverride(h100Id, 25_000, block.timestamp); // $2.50/GPU-hour
         } else {
-            console2.log("oracle external; publish prices via the publisher");
+            // _initializeCanonicalPool below derives the pool's starting price
+            // from the live oracle: an external oracle must have published.
+            console2.log("oracle external; pool initializes at the oracle's live price");
         }
         _initializeCanonicalPool(d, h100Id);
 
@@ -183,8 +184,12 @@ contract Deploy is Script {
         return new Permit2RuntimeDeployer().deploy();
     }
 
-    /// @dev Initialize the canonical pool at the oracle-implied price
-    ///      (2.5000 gUSD per GPU, i.e. 2.5e-12 gUSD-wei per GPU-wei).
+    /// @dev Initialize the canonical pool at the LIVE oracle price. The pool's
+    ///      sqrtPriceX96 is sqrt(c1/c0) * 2^96; the oracle reports a gUSD-wei
+    ///      per GPU-wei ratio, so use it directly when GPU is currency1 and
+    ///      invert it at the radicand level when the ordering flips. An
+    ///      external oracle that has never published fails the deploy — the
+    ///      canonical pool refuses to start at a fabricated price (fail closed).
     function _initializeCanonicalPool(Deployment memory d, bytes32 gpuId) internal {
         address gpuToken = GPUIssuance(d.issuance).tokenOf(gpuId);
         IGPUIssuance.PoolParams memory pp = GPUIssuance(d.issuance).poolParamsOf(gpuId);
@@ -194,11 +199,12 @@ contract Deploy is Script {
         PoolKey memory key =
             PoolKey({currency0: c0, currency1: c1, fee: pp.fee, tickSpacing: pp.tickSpacing, hooks: GPUHook(d.hook)});
         bool gIsC0 = Currency.unwrap(c0) == d.gusd;
-        // price 2.5e-12 (gUSD-wei/GPU-wei) => tick ~ -267_160 in GPU-per-gUSD
-        // terms; +267_160 when the currency ordering flips the ratio
-        int24 initTick = gIsC0 ? int24(267_160) : int24(-267_160);
+        // sqrtRatio = sqrt(gUSD-wei per GPU-wei) * 2^96 from the live oracle;
+        // when the ordering flips, invert: 2^192 / sqrtRatio == sqrt(1/ratio) * 2^96
+        uint256 sqrtRatio = GPUIssuance(d.issuance).oracleSqrtPriceX96(gpuId);
+        uint160 initSqrt = gIsC0 ? uint160((uint256(1) << 192) / sqrtRatio) : uint160(sqrtRatio);
         PoolId poolId = key.toId();
-        PoolManager(d.poolManager).initialize(key, TickMath.getSqrtPriceAtTick(initTick));
+        PoolManager(d.poolManager).initialize(key, initSqrt);
         require(GPUHook(d.hook).poolGpuId(poolId) == gpuId, "pool not registered");
     }
 

@@ -11,6 +11,7 @@ import type {
   AssetId,
   AssetSpec,
   Candle,
+  ChartRange,
   IndexPoint,
   Market,
   MarketStats,
@@ -225,13 +226,28 @@ export function buildMarket(id: AssetId): Market {
   };
 }
 
-/** Hourly candles for a range ending at the session anchor. */
-export function buildCandles(id: AssetId, range: "1D" | "1W" | "1M" | "3M"): Candle[] {
+/**
+ * Hourly candles for a range ending at the session anchor. The demo universe
+ * synthesizes one hourly series, so every grain's window is expressed in
+ * hours — the label stays the selector the real data layer serves.
+ */
+const RANGE_HOURS: Record<ChartRange, number> = {
+  "1m": 48,
+  "5m": 72,
+  "15m": 96,
+  "30m": 120,
+  "6h": 168,
+  "12h": 240,
+  "1d": 336,
+  "1w": 480,
+};
+
+export function buildCandles(id: AssetId, range: ChartRange): Candle[] {
   const { market } = marketSeries(id);
-  const points = { "1D": 24, "1W": 24 * 7, "1M": 24 * 30, "3M": HOUR_POINTS + 1 }[range];
+  const points = RANGE_HOURS[range];
   const slice = market.slice(-points);
   return slice.map((p, i) => {
-    const prev = i === 0 ? p.close : slice[slice.indexOf(p) - 1]?.close ?? p.close;
+    const prev = i === 0 ? p.close : slice[i - 1]!.close;
     const spread = p.close * 0.0012;
     return {
       t: p.t,
@@ -244,10 +260,9 @@ export function buildCandles(id: AssetId, range: "1D" | "1W" | "1M" | "3M"): Can
 }
 
 /** Index reference series aligned to the same window. */
-export function buildIndex(id: AssetId, range: "1D" | "1W" | "1M" | "3M"): IndexPoint[] {
+export function buildIndex(id: AssetId, range: ChartRange): IndexPoint[] {
   const { index } = marketSeries(id);
-  const points = { "1D": 24, "1W": 24 * 7, "1M": 24 * 30, "3M": HOUR_POINTS + 1 }[range];
-  return index.slice(-points);
+  return index.slice(-RANGE_HOURS[range]);
 }
 
 /** Prototype provider observations for one GPU class. */

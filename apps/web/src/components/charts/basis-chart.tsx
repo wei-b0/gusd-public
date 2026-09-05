@@ -61,14 +61,28 @@ export interface BasisPoint {
   pct: number;
 }
 
-/** Zips the market's closes against the Index into a premium/discount series. */
+/** Join tolerance: an Index publication is paired with the market close
+ *  within an hour of it; beyond that the pair is meaningless. */
+const BASIS_JOIN_TOLERANCE_MS = 3_600_000;
+
+/** Zips the market's closes against the Index into a premium/discount series.
+ *  Joins by nearest timestamp, not array position — the Index series carries
+ *  real publication timestamps and may be sparse or short next to the market
+ *  candles. Both series are time-ascending, so one forward walk pairs each
+ *  candle with its closest Index point. */
 export function buildBasisPoints(candles: Candle[], index: IndexPoint[]): BasisPoint[] {
-  const n = Math.min(candles.length, index.length);
   const pts: BasisPoint[] = [];
-  for (let i = 0; i < n; i++) {
-    const wire = index[i]?.value;
-    if (!wire) continue;
-    pts.push({ t: candles[i]!.t, pct: (candles[i]!.close / wire - 1) * 100 });
+  let j = 0;
+  for (const candle of candles) {
+    while (
+      j < index.length - 1 &&
+      Math.abs(index[j]!.t - candle.t) > Math.abs(index[j + 1]!.t - candle.t)
+    ) {
+      j++;
+    }
+    const wire = index[j];
+    if (!wire || Math.abs(wire.t - candle.t) > BASIS_JOIN_TOLERANCE_MS) continue;
+    pts.push({ t: candle.t, pct: (candle.close / wire.value - 1) * 100 });
   }
   return pts;
 }

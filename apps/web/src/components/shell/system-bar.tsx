@@ -4,16 +4,22 @@
  * SystemBar — the machine's top rule: wordmark, command line, connection
  * control, live UTC clock. Present on every route. The command line speaks
  * the product's own names — markets, terminal B200, oracle, gusd — and a
- * bare GPU asset routes to that market's page.
+ * bare GPU asset routes to that market's desk on the Terminal.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { parseAssetId } from "@/domain/types";
-import { fmtClock, fmtFull } from "@/domain/format";
+import { parseAssetId, type WalletSession } from "@/domain/types";
+import { fmtAddress, fmtClock, fmtFull } from "@/domain/format";
 import { Gusd, SGusd } from "@/components/ui/pair";
-import { useAccount, useServices } from "@/data/services";
+import { useAccount, useServices, useWalletSession } from "@/data/services";
+import {
+  chainIdFromCaip2,
+  chainLabel,
+  getActiveChain,
+  isKnownChain,
+} from "@/data/web3/chains";
 
 /** Command word → route; null when the word is unknown. */
 function resolveCommand(raw: string): string | null {
@@ -26,7 +32,8 @@ function resolveCommand(raw: string): string | null {
   switch (head) {
     case "markets":
     case "board":
-      return target ? `/markets/${target}` : "/markets";
+      // An asset argument names a market — and a market lives on the desk.
+      return target ? `/terminal/${target}` : "/markets";
     case "terminal":
       return target ? `/terminal/${target}` : "/terminal";
     case "oracle":
@@ -44,7 +51,7 @@ function resolveCommand(raw: string): string | null {
     case "protocol":
       return "/protocol";
     default:
-      return parseAssetId(head) ? `/markets/${parseAssetId(head)}` : null;
+      return parseAssetId(head) ? `/terminal/${parseAssetId(head)}` : null;
   }
 }
 
@@ -114,7 +121,7 @@ export function SystemBar() {
         </form>
 
         <div className="ml-auto flex shrink-0 items-center gap-3">
-          <SessionControl />
+          <ConnectControl />
           <Clock />
         </div>
       </div>
@@ -145,17 +152,26 @@ function Clock() {
   );
 }
 
-function SessionControl() {
+/**
+ * ConnectControl — the one connection surface in the shell. Disconnected it
+ * is a dim bordered CONNECT; connected it wears the wallet's address in
+ * reverse video and opens the popover: wallet, network, balances, and the
+ * disconnect action.
+ */
+function ConnectControl() {
   const { auth } = useServices();
   const account = useAccount();
+  const session = useWalletSession();
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
 
-  if (!account.connected) {
+  const connecting = busy || session.status === "connecting";
+
+  if (session.status !== "connected") {
     return (
       <button
         type="button"
-        disabled={busy}
+        disabled={connecting}
         onClick={async () => {
           setBusy(true);
           try {
@@ -166,10 +182,12 @@ function SessionControl() {
         }}
         className="slug border border-rule-strong px-2 py-1 text-dim transition-colors hover:border-amber hover:text-amber"
       >
-        {busy ? "CONNECTING…" : "CONNECT"}
+        {connecting ? "CONNECTING…" : "CONNECT"}
       </button>
     );
   }
+
+  const label = session.address ? fmtAddress(session.address) : (account.label ?? "connected");
 
   return (
     <div className="relative">
@@ -180,7 +198,7 @@ function SessionControl() {
         onClick={() => setOpen((o) => !o)}
         className="rev slug px-2 py-1"
       >
-        {account.label}
+        {label}
       </button>
       {open && (
         <>
@@ -190,8 +208,15 @@ function SessionControl() {
             aria-label="Account"
             className="absolute right-0 top-full z-50 mt-1.5 w-60 border border-rule-strong bg-panel p-3.5"
           >
-            <p className="slug mb-2.5 text-dim">Connected · {account.label}</p>
+            <p className="slug mb-2.5 text-dim">Connected · {label}</p>
+            {session.syncState === "expired" && (
+              <p className="mb-2.5 border border-amber/40 bg-amber/10 px-2 py-1.5 text-[11.5px] leading-relaxed text-amber">
+                Connection expired — reconnect.
+              </p>
+            )}
             <dl className="space-y-1.5">
+              {session.address && <WalletRow address={session.address} />}
+              {(session.address || session.chainId) && <NetworkRow session={session} />}
               <Row label={<Gusd />} value={fmtFull(account.gUsdBalance)} />
               <Row label={<SGusd />} value={fmtFull(account.sGUsdBalance)} />
               <Row label="Positions" value={String(account.positions.length)} />
@@ -209,6 +234,80 @@ function SessionControl() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** The wallet identity row: display address plus a copy-to-clipboard flash. */
+function WalletRow({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  function copy() {
+    try {
+      void navigator.clipboard.writeText(address).then(
+        () => {
+          if (timer.current) clearTimeout(timer.current);
+          setCopied(true);
+          timer.current = setTimeout(() => setCopied(false), 1_600);
+        },
+        () => {},
+      );
+    } catch {
+      // Clipboard unavailable (insecure context) — the address stays readable.
+    }
+  }
+
+  return (
+    <div className="flex items-baseline justify-between border-b border-rule pb-1.5">
+      <dt className="slug text-dim">Wallet</dt>
+      <dd className="flex items-baseline gap-2">
+        <span className="num text-[12.5px] text-data" title={address}>
+          {fmtAddress(address)}
+        </span>
+        <button
+          type="button"
+          onClick={copy}
+          className="slug text-dim transition-colors hover:text-amber"
+        >
+          {copied ? "COPIED" : "COPY"}
+        </button>
+      </dd>
+    </div>
+  );
+}
+
+/** The network row: the wallet's chain against the desk's one chain. */
+function NetworkRow({ session }: { session: WalletSession }) {
+  const active = getActiveChain();
+  const walletChain = chainIdFromCaip2(session.chainId);
+
+  let value: string;
+  let lamp: "ok" | "wrong" | null = null;
+  if (session.networkOk === true) {
+    value = chainLabel(active.id) ?? active.name;
+    lamp = "ok";
+  } else if (session.networkOk === false) {
+    value =
+      walletChain != null ? (chainLabel(walletChain) ?? "unknown network") : "unknown network";
+    lamp = "wrong";
+  } else {
+    value = "—";
+  }
+
+  return (
+    <div className="flex items-baseline justify-between border-b border-rule pb-1.5">
+      <dt className="slug text-dim">Network</dt>
+      <dd className="num flex items-baseline gap-1.5 text-[12.5px] text-data">
+        {lamp === "ok" && <span aria-label="on the active network" className="text-data">●</span>}
+        {lamp === "wrong" && <span aria-label="on another network" className="text-amber">●</span>}
+        <span>{value}</span>
+      </dd>
     </div>
   );
 }

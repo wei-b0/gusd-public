@@ -6,6 +6,7 @@
     "dev": "turbo run dev",
     "dev:oracle": "turbo run dev --filter=@gusd/oracle",
     "dev:publisher": "turbo run dev --filter=@gusd/publisher",
+    "web:fixture": "node apps/web/scripts/mock-oracle.mjs",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",

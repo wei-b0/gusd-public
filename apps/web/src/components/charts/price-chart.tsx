@@ -3,10 +3,13 @@
 /**
  * PriceChart — the dominant plate.
  *
- * TradingView Lightweight Charts renders the market as candles; the Index
- * runs as the wire line; the basis band between market close and Index is
- * drawn by a series primitive as a flat translucent tint — amber for
- * premium, cyan for discount. Terminal dark theme throughout.
+ * TradingView Lightweight Charts renders the market as borderless candles at
+ * the selected interval, with a dotted last-price line tagged on the axis.
+ * When a venue leg exists (the candles trade against the Index) the Index
+ * runs as the wire line and the basis band between the two is drawn by a
+ * series primitive as a flat translucent tint — amber for premium, cyan for
+ * discount. When the candles ARE the Index (no venue leg), the wire is
+ * absent: one series, one price. Terminal dark theme throughout.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -38,10 +41,17 @@ import { fmtAxisTime, fmtGusdLegend, fmtPctSigned, fmtUsdLegend } from "@/domain
 
 export interface PriceChartProps {
   candles: Candle[];
+  /** Venue-leg Index overlay; empty when the candles are the Index. */
   index: IndexPoint[];
   range: ChartRange;
   /** Live market price; when it moves, the last candle's close re-engraves. */
   livePrice?: number;
+  /**
+   * Draw the basis band and the market-vs-Index legend cells. False when the
+   * candles ARE the Index (no venue leg) — there is no gap to tint, and a
+   * zero-flat band would imply a basis that doesn't exist.
+   */
+  band?: boolean;
   className?: string;
 }
 
@@ -61,8 +71,10 @@ interface LegendState {
   h: number;
   l: number;
   c: number;
-  idx: number;
-  basisPct: number;
+  /** Wire value at the hovered point; null when the candles are the Index. */
+  idx: number | null;
+  /** Market vs Index gap; null when there is no venue leg to measure. */
+  basisPct: number | null;
 }
 
 const CHART_BASE: DeepPartial<ChartOptions> = {
@@ -78,7 +90,13 @@ const CHART_BASE: DeepPartial<ChartOptions> = {
     vertLines: { color: GRID },
     horzLines: { color: GRID },
   },
-  rightPriceScale: { borderColor: RULE },
+  rightPriceScale: {
+    borderColor: RULE,
+    // Reference-terminal fit: the series fills the pane. The library's
+    // default margins (0.2 top / 0.1 bottom) bench the data in the middle
+    // 70%, which reads as a chart too small for its own axis.
+    scaleMargins: { top: 0.05, bottom: 0.05 },
+  },
   timeScale: { borderColor: RULE, timeVisible: true, secondsVisible: false },
   crosshair: {
     mode: CrosshairMode.Normal,
@@ -251,15 +269,22 @@ function strokeMarketBoundary(
   ctx.stroke();
 }
 
-export function PriceChart({ candles, index, range, livePrice, className }: PriceChartProps) {
+export function PriceChart({ candles, index, range, livePrice, band = true, className }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const wireRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const dataRef = useRef({ candles, index });
-  dataRef.current = { candles, index };
+  const dataRef = useRef({ candles, index, band });
+  dataRef.current = { candles, index, band };
   const rangeRef = useRef(range);
   rangeRef.current = range;
+  /** The visible range is chart state the user owns. It is framed once per
+   *  change of its inputs — range switch, series replacement, resize — and
+   *  never on routine live updates: reframing on every snapshot would snap
+   *  the user's pan/zoom back each time the feed notifies. */
+  const viewportRef = useRef<{ range: ChartRange; firstT: number; width: number } | null>(
+    null,
+  );
   const [legend, setLegend] = useState<LegendState | null>(null);
 
   // The chart is created once per mount; paper theme, series, primitive.
@@ -281,12 +306,18 @@ export function PriceChart({ candles, index, range, livePrice, className }: Pric
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: UP,
       downColor: DOWN,
-      borderUpColor: UP,
-      borderDownColor: DOWN,
       wickUpColor: UP,
       wickDownColor: DOWN,
-      priceLineVisible: false,
-      lastValueVisible: false,
+      // Borderless bodies: at dense intervals a 1px border turns a candle
+      // into a filled block and eats the open/close gap.
+      borderVisible: false,
+      // Dotted last-price line tagged on the axis; color follows direction
+      // (engraved with the data).
+      priceLineVisible: true,
+      priceLineStyle: LineStyle.Dotted,
+      priceLineWidth: 1,
+      lastValueVisible: true,
+      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
     });
 
     const wireSeries = chart.addSeries(LineSeries, {
@@ -295,24 +326,29 @@ export function PriceChart({ candles, index, range, livePrice, className }: Pric
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
     });
 
-    const band = new BasisBand(() => dataRef.current);
-    wireSeries.attachPrimitive(band);
+    const bandPrimitive = new BasisBand(() =>
+      dataRef.current.band
+        ? { candles: dataRef.current.candles, index: dataRef.current.index }
+        : { candles: [], index: [] },
+    );
+    wireSeries.attachPrimitive(bandPrimitive);
 
     chartRef.current = chart;
     candleRef.current = candleSeries;
     wireRef.current = wireSeries;
 
     chart.subscribeCrosshairMove((param) => {
-      const { candles, index } = dataRef.current;
+      const { candles, index, band } = dataRef.current;
       if (!param.time) {
-        setLegend(legendFor(candles, index, candles.length - 1));
+        setLegend(legendFor(candles, index, candles.length - 1, band));
         return;
       }
       const i = candles.findIndex((c) => Math.floor(c.t / 1000) === Number(param.time));
-      if (i >= 0 && index[i]) setLegend(legendFor(candles, index, i));
-      else setLegend(legendFor(candles, index, candles.length - 1));
+      if (i >= 0) setLegend(legendFor(candles, index, i, band));
+      else setLegend(legendFor(candles, index, candles.length - 1, band));
     });
 
     return () => {
@@ -342,11 +378,40 @@ export function PriceChart({ candles, index, range, livePrice, className }: Pric
     );
     wireSeries.setData(index.map((p) => ({ time: toChartTime(p.t), value: p.value })));
 
-    // Full range with breathing room: the live candle must never clip the seam.
-    const pad = Math.max(0.6, candles.length * 0.03);
-    chart.timeScale().setVisibleLogicalRange({ from: -0.6, to: candles.length - 1 + pad });
-    setLegend(legendFor(candles, index, candles.length - 1));
-  }, [candles, index, range]);
+    // The last-price tag follows the last bar's direction.
+    const last = candles[candles.length - 1];
+    if (last) {
+      candleSeries.applyOptions({
+        priceLineColor: last.close >= last.open ? UP : DOWN,
+      });
+    }
+
+    // Frame the viewport only when its inputs changed: a range switch, a
+    // replaced series (first bar moved — fetch/resync), or a resize. Live
+    // appends just extend the right edge (the library shifts to keep it).
+    const n = Math.max(candles.length, index.length);
+    const firstT =
+      candles.length > 0 ? candles[0]!.t : index.length > 0 ? index[0]!.t : -1;
+    const width = containerRef.current?.clientWidth ?? 0;
+    const vp = viewportRef.current;
+    if (!vp || vp.range !== range || vp.firstT !== firstT || Math.abs(vp.width - width) > 0.5) {
+      viewportRef.current = { range, firstT, width };
+      // Full window with breathing room, but the pitch is bounded: a short
+      // series (a fresh benchmark, a wide interval) must not stretch a
+      // handful of bars into pane-wide slabs. Past the cap the range widens
+      // only as far as the cap requires — modest margin, never a pane of
+      // emptiness.
+      const pad = Math.max(0.6, n * 0.03);
+      const pitchMaxPx = 32;
+      const minVisible = width > 0 ? Math.ceil(width / pitchMaxPx) : 0;
+      const slack = Math.max(0, minVisible - n - pad);
+      chart.timeScale().setVisibleLogicalRange({
+        from: -0.6,
+        to: n - 1 + pad + slack,
+      });
+    }
+    setLegend(legendFor(candles, index, candles.length - 1, band));
+  }, [candles, index, range, band]);
 
   // Live price: the last candle's close re-engraves as the tape prints.
   useEffect(() => {
@@ -360,6 +425,9 @@ export function PriceChart({ candles, index, range, livePrice, className }: Pric
       low: Math.min(last.low, livePrice),
       close: livePrice,
     });
+    candleSeries.applyOptions({
+      priceLineColor: livePrice >= last.open ? UP : DOWN,
+    });
   }, [livePrice, candles]);
 
   return (
@@ -369,22 +437,47 @@ export function PriceChart({ candles, index, range, livePrice, className }: Pric
           <LegendCell label="O" value={fmtGusdLegend(legend.o)} />
           <LegendCell label="H" value={fmtGusdLegend(legend.h)} />
           <LegendCell label="L" value={fmtGusdLegend(legend.l)} />
-          <LegendCell label="C" value={fmtGusdLegend(legend.c)} />
-          <span aria-hidden className="h-3.5 w-px bg-rule-strong" />
-          <LegendCell label="Index" value={fmtUsdLegend(legend.idx)} tone="wire" />
           <LegendCell
-            label="Premium / Discount"
-            value={fmtPctSigned(legend.basisPct)}
-            tone={legend.basisPct >= 0 ? "amber" : "wire"}
+            label="C"
+            value={fmtGusdLegend(legend.c)}
+            tone={legend.c >= legend.o ? undefined : "down"}
           />
+          {legend.idx !== null && (
+            <>
+              <span aria-hidden className="h-3.5 w-px bg-rule-strong" />
+              <LegendCell label="Index" value={fmtUsdLegend(legend.idx)} tone="wire" />
+            </>
+          )}
+          {legend.basisPct !== null && (
+            <LegendCell
+              label="Premium / Discount"
+              value={fmtPctSigned(legend.basisPct)}
+              tone={legend.basisPct >= 0 ? "amber" : "wire"}
+            />
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function LegendCell({ label, value, tone }: { label: string; value: string; tone?: "wire" | "amber" }) {
-  const color = tone === "wire" ? "text-wire" : tone === "amber" ? "text-amber" : "text-data";
+function LegendCell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "wire" | "amber" | "down";
+}) {
+  const color =
+    tone === "wire"
+      ? "text-wire"
+      : tone === "amber"
+        ? "text-amber"
+        : tone === "down"
+          ? "text-down"
+          : "text-data";
   return (
     <span className="flex items-baseline gap-1">
       <span className="slug text-[9px] text-dim">{label}</span>
@@ -393,10 +486,20 @@ function LegendCell({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function legendFor(candles: Candle[], index: IndexPoint[], i: number): LegendState | null {
+function legendFor(
+  candles: Candle[],
+  index: IndexPoint[],
+  i: number,
+  band: boolean,
+): LegendState | null {
   const candle = candles[i];
+  if (!candle) return null;
+  if (!band) {
+    // The candles are the Index — OHLC alone, no gap to quote.
+    return { o: candle.open, h: candle.high, l: candle.low, c: candle.close, idx: null, basisPct: null };
+  }
   const wire = index[i];
-  if (!candle || !wire) return null;
+  if (!wire) return null;
   return {
     o: candle.open,
     h: candle.high,

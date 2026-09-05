@@ -7,6 +7,7 @@ import type {
 } from "@gusd/types";
 import { canonicalJson, round4 } from "@gusd/types";
 import type { GpuSku } from "@gusd/gpu-catalog";
+import { effectiveConfigFor } from "./config.js";
 import type { MethodologyConfig } from "./config.js";
 import { confidenceBand, type ConfidenceBand } from "./band.js";
 import { evaluateGates } from "./gates.js";
@@ -49,7 +50,11 @@ export interface IndexInput {
 }
 
 export function computeIndex(input: IndexInput): import("@gusd/types").IndexResult {
-  const { config } = input;
+  // Panels may run on a relaxed gate/dispersion patch (thin SKUs priced by
+  // fewer sources). Everything downstream — screens, weights, band, gates —
+  // sees the effective config, and the receipt records it, so a replay from
+  // the stored methodology row derives the identical computation.
+  const config = effectiveConfigFor(input.config, input.panelId);
   const exclusions: ExclusionReceipt[] = [];
 
   // 1. Settlement eligibility: collection breadth ≠ settlement membership.
@@ -177,11 +182,19 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
     }
   } else {
     finalPrice = price;
-    status = gates.every((g) => g.passed)
-      ? dispersion > config.dispersion.warn
-        ? "degraded"
-        : "healthy"
-      : "withheld";
+    const gatesPassed = gates.every((g) => g.passed);
+    if (!gatesPassed) {
+      status = "withheld";
+    } else if (dispersion > config.dispersion.warn) {
+      status = "degraded";
+    } else if (contributors.length < input.config.gates.minProviders) {
+      // A panel computing on a relaxed quorum (panelOverrides) may pass its
+      // own gates, but it has not met the full settlement quorum — it can
+      // never claim `healthy`. This is the honesty ceiling for thin SKUs.
+      status = "degraded";
+    } else {
+      status = "healthy";
+    }
   }
 
   const calcParams: Record<string, unknown> = {

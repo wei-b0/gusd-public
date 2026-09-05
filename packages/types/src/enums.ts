@@ -75,3 +75,11 @@ export type UnmappedReason =
   | "fx_missing"
   | "insufficient_data"
   | "invalid_price";
+
+/**
+ * Where a gUSD user's one wallet came from: Web2 logins get a provider-
+ * provisioned embedded wallet; Web3 logins keep the external wallet they
+ * authenticated with. Display metadata only — signing paths never branch
+ * on it (one user = one wallet = one signer).
+ */
+export type WalletKind = "embedded" | "external";

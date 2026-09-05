@@ -118,10 +118,17 @@ Key integrity devices:
 
 ## Index engine
 
-`computeIndex` (pure; clock and config injected) per settlement panel
-(H100_PANEL_V1, H200_PANEL_V1, B200_PANEL_V1):
+`computeIndex` (pure; clock and config injected) per settlement panel — the
+full PROTOCOL.md §3 universe since v0.2.0: A100_PANEL_V1, H100_PANEL_V1,
+H200_PANEL_V1, B200_PANEL_V1, B300_PANEL_V1, GB200_PANEL_V1, GB300_PANEL_V1:
 
-1. Filter provider prices to `SETTLEMENT_ELIGIBLE` with non-null price.
+0. **Per-panel overrides** (v0.2.0): the runner merges the panel's
+   `panelOverrides` patch over the global methodology (`effectiveConfigFor`)
+   — `additionalProviders` promote named `COLLECTED` rate-card principals to
+   settlement-eligible for that panel only, and sparse gates/dispersion
+   patches relax (never tighten) the quorum for thin SKUs.
+1. Filter provider prices to `SETTLEMENT_ELIGIBLE` (global role or panel-only
+   promotion) with non-null price.
 2. **Jump screen** vs the provider's own trailing median: ≥25% with <2
    corroborators moving ≥10% → excluded this computation.
 3. **MAD screen** (≥4 providers): |v − median| > 3·1.4826·MAD → excluded;
@@ -135,6 +142,10 @@ Key integrity devices:
    stored for audit, gated from publication). dispersion > 0.25 ⇒ `degraded`.
    No kept providers + fresh prior (≤24h) ⇒ `stale` (carry-forward, flagged,
    linked via prior_candidate_id); else `withheld`.
+8. **Sub-quorum honesty ceiling** (v0.2.0): a panel that passes its relaxed
+   per-panel gates but contributes fewer than the *global* quorum of 4 is
+   capped at `degraded` — thin SKUs publish, but never look as confident as
+   the flagship order-book panels.
 
 The receipt is canonical JSON over everything that determined the output —
 config, gates, per-provider contributions with σ, exclusions, window. The
@@ -162,13 +173,22 @@ converge to a stable candidate. The constant-history guard is load-bearing.
 ## Publisher (separate process)
 
 Polls (5s) the latest candidate per panel, re-derives its own verdict —
-status ∈ {healthy, degraded}, freshness ≤5min, methodology pinned, ≥3
-contributors, dispersion cap, band-width cap, jump ≤25% vs last published
-(`jump_requires_manual`), and contributor source health from the oracle's
-`/v1/health` (majority breaker-open ⇒ reject; oracle unreachable ⇒ refuse the
-cycle). Publishes through a `PublisherTarget`; the (candidateId, target)
-unique key makes publication idempotent. Rejections are recorded in
-`publish_violations`. No key material outside this process.
+status ∈ {healthy, degraded}, freshness ≤5min, methodology pinned, quorum,
+dispersion and band caps, jump ≤25% vs last published (`jump_requires_manual`),
+and contributor source health from the oracle's `/v1/health` (majority
+breaker-open ⇒ reject; oracle unreachable ⇒ refuse the cycle). Publishes
+through a `PublisherTarget`; the (candidateId, target) unique key makes
+publication idempotent. Rejections are recorded in `publish_violations`. No
+key material outside this process.
+
+Since methodology v0.2.0 the quorum and spread caps are **per-panel**: the
+publisher loads the stored methodology row for its pinned version and merges
+the panel's `panelOverrides` with the same pure function the oracle runs
+(`effectiveConfigFor`) — never the candidate's self-reported receipt, so a
+compromised oracle cannot relax its own publication gate. `PUBLISHER_MIN_
+CONTRIBUTORS`, `PUBLISHER_MAX_DISPERSION` and `PUBLISHER_MAX_BAND_WIDTH_PCT`
+are tighten-only overrides of the methodology's numbers; a missing methodology
+row refuses the whole cycle (fail-closed).
 
 Two targets, selected fail-closed by `PUBLISHER_TARGET`:
 

@@ -10,6 +10,8 @@ import { use, useState } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  CHART_RANGES,
+  RANGE_WINDOW_MS,
   indexName,
   pairName,
   parseAssetId,
@@ -28,10 +30,11 @@ import {
 } from "@/domain/format";
 import { useMarketSnapshot } from "@/data/services";
 import { IndexChart } from "@/components/charts/index-chart";
+import { IndexStatusChip } from "@/components/ui/index-status-chip";
 import { TuiPanel } from "@/components/ui/panel";
 
-const RANGES = ["1D", "1W", "1M", "3M"] as const;
-type Range = (typeof RANGES)[number];
+const RANGES = CHART_RANGES;
+type Range = ChartRange;
 
 export default function IndexAssetPage({ params }: { params: Promise<{ asset: string }> }) {
   const { asset: raw } = use(params);
@@ -41,13 +44,21 @@ export default function IndexAssetPage({ params }: { params: Promise<{ asset: st
 }
 
 function IndexSheet({ assetId }: { assetId: AssetId }) {
-  const [range, setRange] = useState<Range>("1D");
+  const [range, setRange] = useState<Range>("15m");
   const snapshot = useMarketSnapshot(assetId, range);
   if (!snapshot) notFound();
 
   const m = snapshot.market;
-  const premium = m.basisPct >= 0;
-  const flat24 = isFlatPct(m.indexChange24hPct);
+  const basis = m.basisPct;
+  const premium = basis !== null && basis >= 0;
+  const flat24 = m.indexChange24hPct === null ? true : isFlatPct(m.indexChange24hPct);
+  // Real publication history can be much shallower than the selected range
+  // (500 candidates is only hours of depth) — say so rather than let a short
+  // line imply a quiet market. The mock series spans its whole range, so it
+  // never trips this.
+  const points = snapshot.index;
+  const span = points.length >= 2 ? points[points.length - 1]!.t - points[0]!.t : 0;
+  const shallow = span < RANGE_WINDOW_MS[range] - 3_600_000;
 
   return (
     <div>
@@ -61,7 +72,9 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
           Benchmark
         </span>
         <span className="num ml-auto hidden text-[10.5px] text-dim md:inline">
-          {fmtGusdCompact(m.volume24hUsd)} gUSD traded on the market · 24h
+          {m.volume24hUsd === null
+            ? "no market tape yet · venue volume pending"
+            : `${fmtGusdCompact(m.volume24hUsd)} gUSD traded on the market · 24h`}
         </span>
       </nav>
 
@@ -76,28 +89,43 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
         </div>
         <div className="flex shrink-0 items-baseline gap-7 md:text-right">
           <div>
-            <p className="slug text-dim">Index Price</p>
-            <p className="num mt-1 text-[30px] font-bold leading-none text-wire">
-              {fmtUsdPrecise(m.indexPrice)}
+            <p className="slug flex items-baseline gap-1.5 text-dim">
+              Index Price <IndexStatusChip status={m.indexStatus} />
             </p>
+            {m.indexPrice === null ? (
+              <p className="num mt-1 text-[30px] font-bold leading-none text-dim">—</p>
+            ) : (
+              <p className="num mt-1 text-[30px] font-bold leading-none text-wire">
+                {fmtUsdPrecise(m.indexPrice)}
+              </p>
+            )}
             <p className="num mt-1 text-[10px] text-dim">$ / GPU-hour</p>
             <p
               className={`num mt-1 text-[12px] ${
-                flat24 ? "text-dim" : m.indexChange24hPct >= 0 ? "text-up" : "text-down"
+                m.indexChange24hPct === null || flat24
+                  ? "text-dim"
+                  : m.indexChange24hPct >= 0
+                    ? "text-up"
+                    : "text-down"
               }`}
             >
-              {fmtPctSigned(m.indexChange24hPct)} · 24h
+              {m.indexChange24hPct === null ? "—" : fmtPctSigned(m.indexChange24hPct)} · 24h
             </p>
           </div>
-          <div>
-            <p className="slug text-dim">
-              Market Price <span className="tracking-normal normal-case">/ gUSD</span>
-            </p>
-            <p className="num mt-1 text-[17px] leading-none text-data">{fmtGusdPrecise(m.marketPrice)}</p>
-            <p className={`num mt-1 text-[10.5px] font-bold ${premium ? "text-amber" : "text-wire"}`}>
-              {premium ? "Premium" : "Discount"} {fmtPctSigned(m.basisPct)}
-            </p>
-          </div>
+          {/* A venue price is a market-layer fact: shown where a market data
+              source fills it, absent — not "—" — where the benchmark is the
+              market's only price. */}
+          {m.marketPrice !== null && (
+            <div>
+              <p className="slug text-dim">
+                Market Price <span className="tracking-normal normal-case">/ gUSD</span>
+              </p>
+              <p className="num mt-1 text-[17px] leading-none text-data">{fmtGusdPrecise(m.marketPrice)}</p>
+              <p className={`num mt-1 text-[10.5px] font-bold ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
+                {basis === null ? "Basis —" : `${premium ? "Premium" : "Discount"} ${fmtPctSigned(basis)}`}
+              </p>
+            </div>
+          )}
         </div>
       </header>
 
@@ -109,7 +137,7 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
             title="Index history"
             meta="weighted reference"
             right={
-              <div role="group" aria-label="Chart range" className="flex items-center">
+              <div role="group" aria-label="Chart interval" className="flex items-center">
                 {RANGES.map((r) => (
                   <button
                     key={r}
@@ -134,13 +162,20 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
               />
             </div>
             <div className="border-t border-rule px-3.5 py-2">
+              {shallow && (
+                <p className="slug text-amber">
+                  Oracle history spans{" "}
+                  {span < 3_600_000 ? "<1h" : `~${Math.round(span / 3_600_000)}h`} — shallower
+                  than the selected range; the series fills as candidates accrue.
+                </p>
+              )}
               <p className="slug text-dim">
-                The Index alone — market overview on{" "}
+                The Index alone — the market's desk on{" "}
                 <Link
-                  href={`/markets/${m.asset.id}`}
+                  href={`/terminal/${m.asset.id}`}
                   className="text-data underline decoration-rule-strong underline-offset-2 hover:text-amber"
                 >
-                  [Markets] {pairName(m.asset.id)}
+                  [Terminal] {pairName(m.asset.id)}
                 </Link>
               </p>
             </div>
@@ -150,7 +185,11 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
           <TuiPanel
             no="02"
             title="Index sources"
-            meta={`${snapshot.quality.sourcesLive}/${snapshot.quality.sourcesTotal} live · epoch ${snapshot.quality.epoch}`}
+            meta={
+              snapshot.quality
+                ? `${snapshot.quality.sourcesLive}/${snapshot.quality.sourcesTotal} live${snapshot.quality.publication ? ` · #${snapshot.quality.publication}` : ""}`
+                : "—"
+            }
           >
             <div className="mt-2">
               <ProviderTable snapshot={snapshot} />
@@ -170,13 +209,19 @@ function IndexSheet({ assetId }: { assetId: AssetId }) {
                 <div key={p.id}>
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="truncate text-[12px] text-data">{p.provider}</span>
-                    <span className="num shrink-0 text-[12px] font-bold text-wire">
-                      {p.weightPct.toFixed(1)}%
+                    <span className={`num shrink-0 text-[12px] font-bold ${p.weightPct === null ? "text-dim" : "text-wire"}`}>
+                      {p.weightPct === null ? "—" : `${p.weightPct.toFixed(1)}%`}
                     </span>
                   </div>
-                  <p aria-hidden className="num mt-1 text-[10px] leading-none text-dim" title={`${p.weightPct.toFixed(1)}% of the Index`}>
-                    {weightBar(p.weightPct)}
-                  </p>
+                  {p.weightPct !== null && (
+                    <p
+                      aria-hidden
+                      className="num mt-1 text-[10px] leading-none text-dim"
+                      title={`${p.weightPct.toFixed(1)}% of the Index`}
+                    >
+                      {weightBar(p.weightPct)}
+                    </p>
+                  )}
                 </div>
               ))}
               <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
@@ -224,7 +269,7 @@ function ProviderTable({ snapshot }: { snapshot: MarketSnapshot }) {
         </thead>
         <tbody>
           {snapshot.providers.map((p) => (
-            <ProviderRow key={p.id} p={p} now={snapshot.quality.updatedAt} />
+            <ProviderRow key={p.id} p={p} now={snapshot.quality?.updatedAt ?? null} />
           ))}
         </tbody>
       </table>
@@ -232,7 +277,7 @@ function ProviderTable({ snapshot }: { snapshot: MarketSnapshot }) {
   );
 }
 
-function ProviderRow({ p, now }: { p: ProviderObservation; now: number }) {
+function ProviderRow({ p, now }: { p: ProviderObservation; now: number | null }) {
   return (
     <tr className={p.status !== "live" ? "hatch" : undefined}>
       <td className="py-2 pl-3.5 pr-4">
@@ -254,10 +299,18 @@ function ProviderRow({ p, now }: { p: ProviderObservation; now: number }) {
           )}
         </span>
       </td>
-      <td className="num px-2.5 py-2 text-right text-data">{p.weightPct.toFixed(1)}%</td>
-      <td className="num px-2.5 py-2 text-right text-wire">{fmtUsdPrecise(p.priceUsdPerGpuHour)}</td>
-      <td className="num px-2.5 py-2 text-right text-data">{p.coveragePct.toFixed(0)}%</td>
-      <td className="num py-2 pr-3.5 text-right text-dim">{fmtAge(p.lastObservedAt, now)}</td>
+      <td className="num px-2.5 py-2 text-right text-data">
+        {p.weightPct === null ? "—" : `${p.weightPct.toFixed(1)}%`}
+      </td>
+      <td className="num px-2.5 py-2 text-right text-wire">
+        {p.priceUsdPerGpuHour === null ? "—" : fmtUsdPrecise(p.priceUsdPerGpuHour)}
+      </td>
+      <td className="num px-2.5 py-2 text-right text-data">
+        {p.coveragePct === null ? "—" : `${p.coveragePct.toFixed(0)}%`}
+      </td>
+      <td className="num py-2 pr-3.5 text-right text-dim">
+        {p.lastObservedAt === null || now === null ? "—" : fmtAge(p.lastObservedAt, now)}
+      </td>
     </tr>
   );
 }

@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, getCandidateHistory, migrateDb, insertIndexCandidate, type Db } from "@gusd/db";
-import type { Logger } from "@gusd/types";
+import { createHash } from "node:crypto";
+import {
+  createDb,
+  ensureMethodologyVersion,
+  getCandidateHistory,
+  insertIndexCandidate,
+  type Db,
+} from "@gusd/db";
+import { migrateDb } from "@gusd/db/migrate";
+import { DEFAULT_METHODOLOGY_CONFIG } from "@gusd/pricing-engine";
+import { canonicalJson, type Logger } from "@gusd/types";
 import { DrizzlePublisherStore } from "../src/store.js";
 import { MockPublisherTarget } from "../src/target.js";
 import { PublisherPoller } from "../src/poller.js";
@@ -20,12 +29,12 @@ const TEST_URL = new URL(`${BASE}/postgres`);
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 
 const CONFIG: PublisherConfig = {
-  pinnedMethodologyVersion: "0.1.0",
-  minContributors: 3,
-  maxDispersion: 0.45,
+  pinnedMethodologyVersion: "0.2.0",
+  minContributors: null,
+  maxDispersion: null,
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
-  maxBandWidthPct: 0.1,
+  maxBandWidthPct: null,
 };
 
 function silence(): Logger {
@@ -40,10 +49,12 @@ async function seedCandidate(
     gpuId: string;
     panelId: string;
     price: number | null;
-    status: "healthy" | "withheld";
+    status: "healthy" | "degraded" | "withheld";
     calcHash: string;
+    contributors?: string[];
   },
 ): Promise<string> {
+  const contributorSlugs = candidate.contributors ?? CONTRIBUTOR_SLUGS;
   const inserted = await insertIndexCandidate(db, {
     gpuId: candidate.gpuId,
     panelId: candidate.panelId,
@@ -52,15 +63,15 @@ async function seedCandidate(
     confidenceHigh: candidate.price === null ? null : candidate.price * 1.03,
     dispersion: 0.02,
     status: candidate.status,
-    providersObserved: 4,
-    providersContributing: 4,
-    methodologyVersion: "0.1.0",
+    providersObserved: contributorSlugs.length,
+    providersContributing: contributorSlugs.length,
+    methodologyVersion: "0.2.0",
     gates: [],
-    contributors: CONTRIBUTOR_SLUGS.map((providerId) => ({
+    contributors: contributorSlugs.map((providerId) => ({
       providerId,
       price: candidate.price ?? 0,
       weightBeforeCap: 1,
-      weightAfterCap: 0.25,
+      weightAfterCap: 1 / contributorSlugs.length,
       executable: true,
       sampleSize: 8,
       method: "volume_weighted_median",
@@ -96,6 +107,13 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
     await adminHandle.close();
 
     handle = createDb(TEST_URL.toString());
+    await ensureMethodologyVersion(handle.db, {
+      version: "0.2.0",
+      config: DEFAULT_METHODOLOGY_CONFIG as unknown as Record<string, unknown>,
+      configHash: createHash("sha256")
+        .update(canonicalJson(DEFAULT_METHODOLOGY_CONFIG))
+        .digest("hex"),
+    });
     await seedCandidate(handle.db, {
       gpuId: "H100_SXM_80GB",
       panelId: "H100_PANEL_V1",
@@ -109,6 +127,14 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
       price: 3.4,
       status: "withheld",
       calcHash: "hash-withheld",
+    });
+    await seedCandidate(handle.db, {
+      gpuId: "GB200_192GB",
+      panelId: "GB200_PANEL_V1",
+      price: 16,
+      status: "degraded",
+      calcHash: "hash-gb200",
+      contributors: ["oracle-oci"],
     });
   });
 
@@ -145,6 +171,28 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
 
     const rows = await handle.db.execute<{ c: string }>(
       `select count(*) c from published_index_values where target = 'mock'`,
+    );
+    expect(Number(rows.rows[0]?.c)).toBe(1);
+  });
+
+  it("publishes a thin-panel candidate on its per-panel quorum", async () => {
+    // GB200's methodology override settles on one rate-card source; the
+    // publisher resolves that quorum from the methodology row and publishes.
+    const store = new DrizzlePublisherStore(handle.db, ["GB200_192GB"]);
+    const target = new MockPublisherTarget();
+    const poller = new PublisherPoller({
+      store,
+      target,
+      config: CONFIG,
+      logger: silence(),
+      now: () => NOW,
+    });
+
+    const result = await poller.tick();
+    expect(result.published).toBe(1);
+    expect(target.published[0]?.price).toBe(16);
+    const rows = await handle.db.execute<{ c: string }>(
+      `select count(*) c from published_index_values where gpu_id = 'GB200_192GB'`,
     );
     expect(Number(rows.rows[0]?.c)).toBe(1);
   });

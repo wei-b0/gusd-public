@@ -65,7 +65,13 @@ Deploy variables (env; see `script/Deploy.s.sol`):
 The deployed oracle is genesis-seeded at \$2.50/GPU-hour for `H100_SXM_80GB`
 via the owner hatch; `deployments/<chainId>.json` records `oraclePublisher`
 when we deployed the oracle (an external `ORACLE` is never seeded and omits
-that key — prices arrive through its own publication path).
+that key — prices arrive through its own publication path). The canonical
+GPU/gUSD pool initializes at the oracle's LIVE price for the registered GPU
+(derived via `GPUIssuance.oracleSqrtPriceX96`, not a hardcoded tick), so an
+external `ORACLE` that has never published fails the deploy with
+`OraclePriceZero` — publish a price first (dev utility:
+`forge script script/DeployMockOracle.s.sol`, then `cast send` `setPrice`
+before running `Deploy`).
 
 ### Cast
 

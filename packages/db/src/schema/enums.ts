@@ -8,6 +8,7 @@ import type {
   ProviderRole,
   RunStatus,
   SourceType,
+  WalletKind,
 } from "@gusd/types";
 
 /**
@@ -76,6 +77,8 @@ export const providerPriceMethodEnum = pgEnum("provider_price_method", [
 
 export const unmappedStatusEnum = pgEnum("unmapped_status", ["open", "mapped", "ignored"]);
 
+export const walletKindEnum = pgEnum("wallet_kind", ["embedded", "external"]);
+
 // Compile-time guarantee that DB enums and the shared type unions stay in
 // lockstep — a drift here fails the build, not production.
 type Assert<T extends true> = T;
@@ -96,4 +99,7 @@ type _Status = Assert<
 >;
 type _Method = Assert<
   ProviderPriceMethod extends (typeof providerPriceMethodEnum.enumValues)[number] ? true : false
+>;
+type _WalletKind = Assert<
+  WalletKind extends (typeof walletKindEnum.enumValues)[number] ? true : false
 >;

@@ -6,6 +6,7 @@ import type {
   RunStatus,
   SourceType,
   UnmappedRecord,
+  WalletKind,
 } from "@gusd/types";
 import { obsFingerprint, rawObservations } from "./schema/observations.js";
 import type { ProviderSeed } from "./schema/providers.js";
@@ -21,6 +22,7 @@ import {
   publishedIndexValues,
 } from "./schema/pricing.js";
 import { normalizedObservations, unmappedLabels } from "./schema/observations.js";
+import { userWallets } from "./schema/identity.js";
 import type { Executor } from "./client.js";
 
 // ---------------------------------------------------------------------------
@@ -80,21 +82,40 @@ export interface MethodologyVersionInput {
   changelog?: string;
 }
 
-/** Insert-once. Concurrent callers converge via the version unique index. */
+/**
+ * Insert-once per version. A version that already exists is a no-op; a new
+ * version supersedes the currently open one — the partial unique index allows
+ * at most one open row, so a new methodology can only land by closing its
+ * predecessor. Bootstrap is single-caller (oracle startup, test setup); two
+ * concurrent bootstraps would close each other's rows and fail loudly at
+ * first computation rather than corrupt anything (append-only rows).
+ */
 export async function ensureMethodologyVersion(
   ex: Executor,
   input: MethodologyVersionInput,
 ): Promise<void> {
-  await ex
-    .insert(methodologyVersions)
-    .values({
-      version: input.version,
-      config: input.config,
-      configHash: input.configHash,
-      changelog: input.changelog ?? null,
-      effectiveFrom: new Date(),
-    })
-    .onConflictDoNothing({ target: methodologyVersions.version });
+  await ex.transaction(async (tx) => {
+    const existing = await tx
+      .select({ id: methodologyVersions.id })
+      .from(methodologyVersions)
+      .where(eq(methodologyVersions.version, input.version))
+      .limit(1);
+    if (existing.length > 0) return;
+    await tx
+      .update(methodologyVersions)
+      .set({ effectiveTo: new Date() })
+      .where(isNull(methodologyVersions.effectiveTo));
+    await tx
+      .insert(methodologyVersions)
+      .values({
+        version: input.version,
+        config: input.config,
+        configHash: input.configHash,
+        changelog: input.changelog ?? null,
+        effectiveFrom: new Date(),
+      })
+      .onConflictDoNothing({ target: methodologyVersions.version });
+  });
 }
 
 export async function getCurrentMethodology(ex: Executor) {
@@ -102,6 +123,18 @@ export async function getCurrentMethodology(ex: Executor) {
     .select()
     .from(methodologyVersions)
     .where(isNull(methodologyVersions.effectiveTo))
+    .orderBy(desc(methodologyVersions.effectiveFrom))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** The stored config for one exact methodology version — the publisher's
+ *  threshold source (it must not trust the candidate's own receipt). */
+export async function getMethodologyVersion(ex: Executor, version: string) {
+  const rows = await ex
+    .select()
+    .from(methodologyVersions)
+    .where(eq(methodologyVersions.version, version))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -606,6 +639,67 @@ export async function getCandidateHistory(ex: Executor, gpuId: string, limit: nu
     .limit(limit);
 }
 
+export interface CandidateCandleRow {
+  bucketStart: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  samples: number;
+}
+
+/**
+ * OHLC over the canonical benchmark series (`index_candidates`) bucketed to
+ * `intervalSec`. Every computed benchmark whose price is non-null enters its
+ * interval: open/close are the first/last computation in the bucket (row id
+ * breaks computed_at ties), high/low the extremes, samples the row count.
+ * Publication gating (withheld/frozen) applies to the chain, not to this
+ * stored series — the row's price is still the engine's benchmark estimate
+ * for its window, which is exactly what a series view of the database shows.
+ * Buckets with no computations do not exist; the series never interpolates
+ * across a gap. Served by GET /v1/prices/:gpu/candles.
+ */
+export async function getCandidateCandles(
+  ex: Executor,
+  gpuId: string,
+  intervalSec: number,
+  from: Date,
+  to: Date,
+): Promise<CandidateCandleRow[]> {
+  const result = await ex.execute<{ bucketStart: Date; open: number; high: number; low: number; close: number; samples: number }>(sql`
+    with windowed as (
+      select
+        price,
+        computed_at,
+        id,
+        to_timestamp(floor(extract(epoch from computed_at) / ${intervalSec}) * ${intervalSec}) as bucket
+      from index_candidates
+      where gpu_id = ${gpuId}
+        and price is not null
+        and computed_at >= ${from}
+        and computed_at < ${to}
+    )
+    select
+      bucket as "bucketStart",
+      (array_agg(price order by computed_at asc, id asc))[1]::float8 as open,
+      max(price)::float8 as high,
+      min(price)::float8 as low,
+      (array_agg(price order by computed_at desc, id asc))[1]::float8 as close,
+      count(*)::int as samples
+    from windowed
+    group by bucket
+    order by bucket asc
+  `);
+  return result.rows.map((r) => ({
+    bucketStart: new Date(r.bucketStart),
+    open: r.open,
+    high: r.high,
+    low: r.low,
+    close: r.close,
+    samples: r.samples,
+  }));
+}
+
 export interface PublicationRowInput {
   candidateId: string;
   gpuId: string;
@@ -773,3 +867,76 @@ export async function insertWatchdogComparisons(
 
 /** Convenience re-export so callers can build UnmappedRecord-driven upserts. */
 export type { UnmappedRecord };
+
+// ---------------------------------------------------------------------------
+// User wallets (identity boundary)
+// ---------------------------------------------------------------------------
+
+export interface UserWalletUpsert {
+  /** Auth-provider user DID (did:privy:…). */
+  privyUserId: string;
+  /** Hex address; normalized to lowercase here so the check constraint and
+   *  the unique index see one canonical case for every wallet. */
+  address: string;
+  walletKind: WalletKind;
+  /** Address-derived display label; never personal data. */
+  label?: string | null;
+}
+
+export type UserWalletRow = typeof userWallets.$inferSelect;
+
+/**
+ * The single statement that makes 1 user = 1 wallet true at rest: a wallet
+ * authenticating again (fresh session, new provider identity, another day)
+ * maps back to its existing row — one row per address, ever. A different
+ * wallet is a different row and therefore a different gUSD account.
+ */
+export async function upsertUserWallet(
+  ex: Executor,
+  input: UserWalletUpsert,
+): Promise<UserWalletRow> {
+  const address = input.address.toLowerCase();
+  const rows = await ex
+    .insert(userWallets)
+    .values({
+      privyUserId: input.privyUserId,
+      address,
+      walletKind: input.walletKind,
+      label: input.label ?? null,
+    })
+    .onConflictDoUpdate({
+      target: userWallets.address,
+      set: {
+        privyUserId: input.privyUserId,
+        walletKind: input.walletKind,
+        label: input.label ?? null,
+        lastSeenAt: new Date(),
+      },
+    })
+    .returning();
+  return rows[0]!;
+}
+
+export async function findUserWalletByAddress(
+  ex: Executor,
+  address: string,
+): Promise<UserWalletRow | null> {
+  const rows = await ex
+    .select()
+    .from(userWallets)
+    .where(eq(userWallets.address, address.toLowerCase()))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function findUserWalletByPrivyUserId(
+  ex: Executor,
+  privyUserId: string,
+): Promise<UserWalletRow | null> {
+  const rows = await ex
+    .select()
+    .from(userWallets)
+    .where(eq(userWallets.privyUserId, privyUserId))
+    .limit(1);
+  return rows[0] ?? null;
+}

@@ -2,10 +2,12 @@ import type { Db } from "@gusd/db";
 import {
   getCandidateHistory,
   getLatestPublication,
+  getMethodologyVersion,
   getPublication,
   recordPublication,
   recordPublishViolations,
 } from "@gusd/db";
+import type { MethodologyConfig } from "@gusd/pricing-engine";
 import type { CandidateLike, PublishableIndexValue, PublishViolation } from "./types.js";
 
 /**
@@ -16,6 +18,8 @@ import type { CandidateLike, PublishableIndexValue, PublishViolation } from "./t
 export interface PublisherStore {
   /** Newest candidate per watched gpu (max computedAt). */
   latestCandidates(): Promise<CandidateLike[]>;
+  /** The stored methodology config for an exact version — null when absent. */
+  methodologyConfig(version: string): Promise<MethodologyConfig | null>;
   latestPublishedPrice(gpuId: string, target: string): Promise<number | null>;
   alreadyPublished(candidateId: string, target: string): Promise<boolean>;
   recordPublication(
@@ -71,6 +75,11 @@ export class DrizzlePublisherStore implements PublisherStore {
       if (rows[0] !== undefined) out.push(candidateFromRow(rows[0]));
     }
     return out;
+  }
+
+  async methodologyConfig(version: string): Promise<MethodologyConfig | null> {
+    const row = await getMethodologyVersion(this.db, version);
+    return (row?.config as MethodologyConfig | undefined) ?? null;
   }
 
   async latestPublishedPrice(gpuId: string, target: string): Promise<number | null> {

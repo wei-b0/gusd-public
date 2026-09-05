@@ -2,5 +2,13 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  # Transitive deps of @privy-io/react-auth's bundled wagmi/connectors stack.
+  # Their native/optional builds are not needed: everything ships to the
+  # browser (keccak's node-gyp build only serves Node-side hashing; ws falls
+  # back without bufferutil/utf-8-validate; appkit is a UI package).
+  '@reown/appkit': false
+  bufferutil: false
   esbuild: true
+  keccak: false
   pg-native: true
+  utf-8-validate: false

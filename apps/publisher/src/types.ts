@@ -49,15 +49,37 @@ export interface PublishViolation {
 export interface PublisherConfig {
   /** Candidates under any other methodology version are refused — no silent drift. */
   readonly pinnedMethodologyVersion: string;
-  readonly minContributors: number;
-  readonly maxDispersion: number;
+  /**
+   * Absolute contributor floor across all panels, or null to use the pinned
+   * methodology's per-panel quorum alone. When set, it can only tighten
+   * (max with the panel quorum) — never relax below the methodology.
+   */
+  readonly minContributors: number | null;
+  /**
+   * Absolute dispersion ceiling, or null to use the methodology's per-panel
+   * cap alone. When set, it can only tighten (min against the panel cap).
+   */
+  readonly maxDispersion: number | null;
   /** Candidate age limit — a stale candidate is re-derivable, never publishable. */
   readonly maxFreshnessMs: number;
   /** |Δ|/previous-published above this needs a human, not an auto-publish. */
   readonly maxJumpPct: number;
-  /** Confidence band width as a fraction of price. */
-  readonly maxBandWidthPct: number;
+  /**
+   * Confidence band width as a fraction of price, or null to use the panel's
+   * dispersion cap. When set, it can only tighten. The band is a second
+   * measure of the same spread the methodology's dispersion gate bounds, so
+   * absent an explicit operator floor the methodology's own tolerance applies.
+   */
+  readonly maxBandWidthPct: number | null;
 }
+
+/** PublisherConfig with the per-panel methodology values merged in — what the
+ *  validator evaluates against (never the raw config, which may carry nulls). */
+export type ResolvedPublisherConfig = PublisherConfig & {
+  minContributors: number;
+  maxDispersion: number;
+  maxBandWidthPct: number;
+};
 
 /** slug → breakerOpen, as reported by the oracle's /v1/health. */
 export type BreakerMap = ReadonlyMap<string, boolean>;

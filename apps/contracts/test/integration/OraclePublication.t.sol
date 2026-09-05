@@ -91,6 +91,15 @@ contract OraclePublicationTest is Test {
         issuance.issue(H100, 1e18, alice);
     }
 
+    function test_quoteIssueIsFreshnessGatedLikeIssue() public {
+        _publish(25_000);
+        vm.warp(block.timestamp + issuance.maxOracleStaleness() + 1);
+        // the quote path enforces the same freshness window as execution —
+        // a UI can never display a price issue() would reject
+        vm.expectRevert(GPUIssuance.OracleStale.selector);
+        issuance.quoteIssue(H100, 1e18);
+    }
+
     function test_futureTimestampCannotBrickIssuance() public {
         // publisher clock ran ahead of the chain clock: the oracle clamps the
         // stored updatedAt to block.timestamp, so the consumer's
@@ -112,9 +121,7 @@ contract OraclePublicationTest is Test {
         // onchain bound caps the compounded series
         for (uint256 i = 0; i < 3; i++) {
             vm.prank(publisher);
-            vm.expectRevert(
-                abi.encodeWithSelector(GPUPriceOracle.DeviationExceeded.selector, 25_000, 31_250, 1000)
-            );
+            vm.expectRevert(abi.encodeWithSelector(GPUPriceOracle.DeviationExceeded.selector, 25_000, 31_250, 1000));
             oracle.publish(H100, 31_250, block.timestamp);
         }
 

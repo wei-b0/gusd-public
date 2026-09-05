@@ -3,13 +3,14 @@ import type {
   CandidateLike,
   PublishableIndexValue,
   PublishViolation,
-  PublisherConfig,
+  ResolvedPublisherConfig,
   ValidationResult,
 } from "./types.js";
 import { VIOLATION } from "./types.js";
 
 export interface ValidateOptions {
-  config: PublisherConfig;
+  /** Per-panel resolved thresholds — see resolvePanelThresholds. */
+  config: ResolvedPublisherConfig;
   now: Date;
   /** Latest value already published for this gpu — null on a first publish. */
   previousPublishedPrice: number | null;
@@ -27,7 +28,7 @@ export interface ValidateOptions {
 export function validateCandidate(
   candidate: CandidateLike,
   opts: {
-    config: PublisherConfig;
+    config: ResolvedPublisherConfig;
     now: Date;
     previousPublishedPrice: number | null;
     breakers?: BreakerMap;

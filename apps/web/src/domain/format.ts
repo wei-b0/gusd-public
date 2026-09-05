@@ -3,6 +3,9 @@
  * through here so precision and units stay consistent product-wide.
  */
 
+import type { ChartRange } from "./types";
+
+
 const usd3 = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -99,9 +102,10 @@ export function fmtPctSigned(value: number): string {
   return `${signed.format(value)}%`;
 }
 
-/** True when a percent rounds to zero — callers give it a neutral tone. */
-export function isFlatPct(value: number): boolean {
-  return Math.abs(value) < 0.005;
+/** True when a percent rounds to zero — callers give it a neutral tone. An
+ *  absent percent (null — the source publishes no figure) is toneless too. */
+export function isFlatPct(value: number | null): boolean {
+  return value === null || Math.abs(value) < 0.005;
 }
 
 /** Unsigned percent: 3.29 */
@@ -168,11 +172,16 @@ export function fmtClock(t: number): string {
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
 }
 
-/** Chart axis stamp, pick by granularity. */
-export function fmtAxisTime(t: number, range: "1D" | "1W" | "1M" | "3M"): string {
+/** Chart axis stamp, picked by candle interval: intraday minutes print
+ *  clock time, 6h/12h print the day and hour, day-plus prints the date. */
+export function fmtAxisTime(t: number, range: ChartRange): string {
   const d = new Date(t);
-  if (range === "1D") return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-  if (range === "1W") return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${pad(d.getUTCHours())}:00`;
+  if (range === "1m" || range === "5m" || range === "15m" || range === "30m") {
+    return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  }
+  if (range === "6h" || range === "12h") {
+    return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${pad(d.getUTCHours())}:00`;
+  }
   return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]}`;
 }
 
@@ -183,4 +192,24 @@ export function fmtAge(from: number, now: number): string {
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.round(m / 60)}h ago`;
+}
+
+/* ---------------------------------------------------------------------------
+ * Chain identifiers — the only place addresses and hashes are shortened, so
+ * the ellipsis grammar stays consistent product-wide. Inputs are full hex;
+ * validation lives at the boundary that produced them.
+ * ------------------------------------------------------------------------- */
+
+/** Wallet address, compact: 0x1234…abcd */
+export function fmtAddress(address: string): string {
+  return address.length >= 12
+    ? `${address.slice(0, 6)}…${address.slice(-4)}`
+    : address;
+}
+
+/** Transaction hash, compact: 0x123456…abcd */
+export function fmtHash(hash: string): string {
+  return hash.length >= 16
+    ? `${hash.slice(0, 8)}…${hash.slice(-4)}`
+    : hash;
 }
