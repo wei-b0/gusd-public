@@ -1,8 +1,13 @@
 /**
- * The API boundary's client half. Every identity-bearing request carries TWO
- * tokens — the access token (Bearer, proves the Privy session) and the
- * identity token (carries the linked accounts the server resolves the wallet
- * from). The body is never an identity source.
+ * The API boundary's client half. Every identity-bearing request carries the
+ * access token (Bearer — proves the Privy session); the identity token rides
+ * along when the SDK has one (it carries the linked accounts the server
+ * prefers to resolve the wallet from). The body is never an identity source.
+ *
+ * The identity token is optional: Privy only issues it when the dashboard
+ * opts in, and its getter can throw (Privy rate-limits the endpoint it
+ * refreshes against). Neither may break the request — the server resolves
+ * the user from the verified Bearer's DID when the token is absent.
  *
  * On a 401 the token pair is fetched once more (Privy refreshes its access
  * token internally) and the request retries once; a second 401 is reported
@@ -21,13 +26,26 @@ export type AuthedFetch = (input: string, init?: RequestInit) => Promise<Respons
 
 export function createAuthedFetch(deps: AuthedFetchDeps): AuthedFetch {
   async function once(): Promise<{ headers: HeadersInit | undefined; ok: boolean }> {
-    const [accessToken, idToken] = await Promise.all([deps.getAccessToken(), deps.getIdentityToken()]);
-    if (!accessToken || !idToken) return { headers: undefined, ok: false };
+    let accessToken: string | null = null;
+    try {
+      accessToken = await deps.getAccessToken();
+    } catch {
+      // A Privy-side failure (e.g. a 429) must degrade to "no tokens",
+      // never escape as an unhandled rejection.
+      return { headers: undefined, ok: false };
+    }
+    if (!accessToken) return { headers: undefined, ok: false };
+    let idToken: string | null = null;
+    try {
+      idToken = await deps.getIdentityToken();
+    } catch {
+      idToken = null;
+    }
     return {
       ok: true,
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "X-Privy-Id-Token": idToken,
+        ...(idToken ? { "X-Privy-Id-Token": idToken } : {}),
       },
     };
   }

@@ -5,7 +5,9 @@
  *     yields `{ userId, sessionId }` — offline when PRIVY_VERIFICATION_KEY
  *     is configured (ES256 SPKI), else via Privy's API;
  *   - the identity token (X-Privy-Id-Token) is what carries the linked
- *     accounts; access-token claims do NOT contain a wallet address.
+ *     accounts; access-token claims do NOT contain a wallet address. It is
+ *     optional app config — when the app doesn't issue identity tokens, the
+ *     user is resolved from the verified access token's DID via Privy's API.
  *
  * The wallet address resolved here is the only identity the routes trust —
  * request bodies are never consulted for who the caller is.
@@ -82,12 +84,25 @@ export async function verifyPrivySession(
     throw new UnauthorizedError("Invalid access token");
   }
 
-  if (!idToken) throw new UnauthorizedError("Missing identity token");
   let user: User;
-  try {
-    user = await privy.getUser({ idToken });
-  } catch {
-    throw new UnauthorizedError("Invalid identity token");
+  if (!idToken) {
+    // Identity tokens are a Privy dashboard opt-in ("Return user data in an
+    // identity token"); until enabled, Privy issues none and every client
+    // request arrives without one — getUserByIdentityToken has nothing to
+    // read. The access token is already verified here, so resolving the user
+    // by its DID is equally trusted, just not offline. Called once per
+    // session sync, well under the API path's rate limits.
+    try {
+      user = await privy.getUser(userId);
+    } catch {
+      throw new UnauthorizedError("Could not resolve user");
+    }
+  } else {
+    try {
+      user = await privy.getUser({ idToken });
+    } catch {
+      throw new UnauthorizedError("Invalid identity token");
+    }
   }
 
   return { userId, sessionId, user };

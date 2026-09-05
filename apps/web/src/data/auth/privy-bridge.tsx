@@ -24,10 +24,10 @@ import {
   type EIP1193Provider,
   type User,
 } from "@privy-io/react-auth";
-import { stringToHex } from "viem";
+import { getAddress, recoverMessageAddress, stringToHex } from "viem";
 import { useServices } from "@/data/services";
 import { getActiveChain } from "@/data/web3/chains";
-import { isUserRejection } from "@/data/web3/wallet-client";
+import { isUserRejection, normalizeSignature } from "@/data/web3/wallet-client";
 import { fmtAddress } from "@/domain/format";
 import type { PrivyAuthPort } from "./privy-auth-port";
 import { PRODUCT_ERRORS } from "./privy-auth-port";
@@ -35,6 +35,17 @@ import { createAuthedFetch } from "./authed-fetch";
 import { CLOSED_FLOW } from "./session-store";
 
 const GENERIC_ERROR = "Connect failed. Try again in a moment.";
+
+/**
+ * ofetch's FetchError carries the parsed response body at `.data`; Privy's
+ * HttpError shape carries it at `.responseData`. Neither shows in the error
+ * message itself — read both so the console line says what the server said.
+ */
+function privyResponseBody(err: unknown): unknown {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as { data?: unknown; responseData?: unknown };
+  return e.data ?? e.responseData ?? null;
+}
 
 /** Wallet-client type recorded on the Privy user for the connected wallet. */
 function walletClientTypeForId(walletId: string): string {
@@ -151,14 +162,53 @@ export function PrivyBridge() {
           case "siwe-sign": {
             try {
               const chain = getActiveChain();
+              // Privy requires the EIP-55 checksummed address in the SIWE
+              // message — a lowercase one (MetaMask's eth_accounts shape)
+              // is rejected server-side with "Invalid SIWE message and/or
+              // signature" before the signature is even checked. Session
+              // state stays lowercase; only this message is checksummed.
+              const checksummed = getAddress(intent.address as `0x${string}`);
               const message = await h.generateSiweMessage({
-                address: intent.address,
+                address: checksummed,
                 chainId: `eip155:${chain.id}`,
               });
-              const signature = (await intent.provider.request({
+              const raw = (await intent.provider.request({
                 method: "personal_sign",
                 params: [stringToHex(message), intent.address],
               })) as string;
+              // Some wallets answer with the EIP-2098 compact form; Privy's
+              // server rejects it. Expand before verifying or submitting.
+              const signature = normalizeSignature(raw);
+              // Privy's server does this exact ecrecover before accepting the
+              // login — run it here first so a wallet signing with its active
+              // account (or returning a nonstandard signature) fails with the
+              // precise reason instead of a generic 422 downstream.
+              let signer: `0x${string}`;
+              try {
+                signer = await recoverMessageAddress({
+                  message,
+                  signature: signature as `0x${string}`,
+                });
+              } catch (recoveryErr) {
+                console.error(`[connect] ${intent.label} returned an unreadable signature:`, recoveryErr);
+                h.auth.store.setFlow({
+                  step: "signature",
+                  walletLabel: intent.label,
+                  error: PRODUCT_ERRORS.signatureFailed,
+                });
+                return;
+              }
+              if (signer.toLowerCase() !== intent.address.toLowerCase()) {
+                console.error(
+                  `[connect] ${intent.label} signed with ${signer}, not the connected account ${intent.address}`,
+                );
+                h.auth.store.setFlow({
+                  step: "signature",
+                  walletLabel: intent.label,
+                  error: PRODUCT_ERRORS.signatureWrongAccount,
+                });
+                return;
+              }
               await h.loginWithSiwe({
                 signature,
                 message,
@@ -168,8 +218,11 @@ export function PrivyBridge() {
               // Session effect attaches the wallet and closes the flow.
             } catch (err) {
               // Same contract as the port's connect failure: raw reason to
-              // the console, product voice to the amber box.
+              // the console, product voice to the amber box. The response
+              // body is Privy's own verdict — print it beside the error.
               console.error(`[connect] SIWE login with ${intent.label} failed:`, err);
+              const body = privyResponseBody(err);
+              if (body) console.error("[connect] Privy response body:", body);
               h.auth.store.setFlow({
                 step: "signature",
                 walletLabel: intent.label,
@@ -276,10 +329,16 @@ export function PrivyBridge() {
 
   useEffect(() => {
     const sync = async () => {
-      const res = await authedFetch("/api/auth/session", { method: "POST" });
-      if (res.ok) auth.markSync("synced");
-      else if (res.status === 401) auth.markSync("expired");
-      else auth.markSync("failed");
+      try {
+        const res = await authedFetch("/api/auth/session", { method: "POST" });
+        if (res.ok) auth.markSync("synced");
+        else if (res.status === 401) auth.markSync("expired");
+        else auth.markSync("failed");
+      } catch {
+        // Transport-level failure (offline, request aborted) — a failed
+        // sync, not a crash. Reconnecting or reloading retries it.
+        auth.markSync("failed");
+      }
     };
 
     return auth.subscribeSession((session) => {

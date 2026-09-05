@@ -5,7 +5,7 @@
  * from. Signing and writes only; reads go through ./public-client.
  */
 
-import { createWalletClient, custom, UserRejectedRequestError, type WalletClient } from "viem";
+import { createWalletClient, custom, UserRejectedRequestError, type Hex, type WalletClient } from "viem";
 import type { EIP1193Provider } from "@privy-io/react-auth";
 import { getActiveChain } from "./chains";
 
@@ -41,4 +41,32 @@ export function isUserRejection(err: unknown): boolean {
   }
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
   return /user rejected|user denied|rejected the request|declined/i.test(message);
+}
+
+/**
+ * Normalize a wallet's message signature to the standard 65-byte form.
+ *
+ * Some wallets answer personal_sign with the EIP-2098 compact form — 64
+ * bytes, `r || vs`, the recovery parity folded into vs's high bit. Recovery
+ * libraries accept it; Privy's server does not ("Invalid SIWE message
+ * and/or signature"). Expand compact back to `r || s || v` and lift a
+ * yParity-style v (0/1) to the conventional 27/28 while here.
+ */
+export function normalizeSignature(signature: string): Hex {
+  if (!/^0x[0-9a-fA-F]+$/.test(signature)) return signature as Hex;
+  // EIP-2098: 64 bytes = 128 hex chars = 130 with the 0x prefix.
+  if (signature.length === 130) {
+    const r = signature.slice(2, 66);
+    const vs = signature.slice(66, 130);
+    const vsFirst = parseInt(vs.slice(0, 2), 16);
+    const yParity = (vsFirst & 0x80) >> 7;
+    const sFirst = vsFirst & 0x7f;
+    return `0x${r}${sFirst.toString(16).padStart(2, "0")}${vs.slice(2)}${(27 + yParity).toString(16)}` as Hex;
+  }
+  // 65 bytes = 130 hex chars = 132 with the 0x prefix; v ∈ {0,1} lifts to 27/28.
+  if (signature.length === 132) {
+    const v = parseInt(signature.slice(130), 16);
+    if (v <= 1) return `0x${signature.slice(2, 130)}${(27 + v).toString(16)}` as Hex;
+  }
+  return signature as Hex;
 }

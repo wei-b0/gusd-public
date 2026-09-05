@@ -30,7 +30,6 @@ import type {
   ISeriesPrimitive,
   IPrimitivePaneRenderer,
   IPrimitivePaneView,
-  Logical,
   PrimitivePaneViewZOrder,
   SeriesAttachedParameter,
   Time,
@@ -66,6 +65,9 @@ const DOWN = "#ff6b63";
 /** Strokes the market-close edge of the basis band. */
 const BOUNDARY = "rgba(102, 247, 154, 0.30)";
 
+/** Shared empty Index map — the band renders nothing without a venue leg. */
+const EMPTY_INDEX: Map<number, number> = new Map();
+
 interface LegendState {
   o: number;
   h: number;
@@ -94,8 +96,9 @@ const CHART_BASE: DeepPartial<ChartOptions> = {
     borderColor: RULE,
     // Reference-terminal fit: the series fills the pane. The library's
     // default margins (0.2 top / 0.1 bottom) bench the data in the middle
-    // 70%, which reads as a chart too small for its own axis.
-    scaleMargins: { top: 0.05, bottom: 0.05 },
+    // 70%, which reads as a chart too small for its own axis; a modest
+    // 10% frame keeps the action full-height without clipping wicks.
+    scaleMargins: { top: 0.1, bottom: 0.1 },
   },
   timeScale: { borderColor: RULE, timeVisible: true, secondsVisible: false },
   crosshair: {
@@ -118,9 +121,12 @@ function toChartTime(t: number): UTCTimestamp {
 class BasisBand implements ISeriesPrimitive<Time> {
   private series: ISeriesApi<"Line"> | null = null;
   private chart: IChartApi | null = null;
-  private source: () => { candles: Candle[]; index: IndexPoint[] } = () => ({ candles: [], index: [] });
+  private source: () => { candles: Candle[]; indexByTime: Map<number, number> } = () => ({
+    candles: [],
+    indexByTime: EMPTY_INDEX,
+  });
 
-  constructor(source: () => { candles: Candle[]; index: IndexPoint[] }) {
+  constructor(source: () => { candles: Candle[]; indexByTime: Map<number, number> }) {
     this.source = source;
   }
 
@@ -134,7 +140,7 @@ class BasisBand implements ISeriesPrimitive<Time> {
     this.chart = null;
   }
 
-  setSource(source: () => { candles: Candle[]; index: IndexPoint[] }): void {
+  setSource(source: () => { candles: Candle[]; indexByTime: Map<number, number> }): void {
     this.source = source;
   }
 
@@ -146,19 +152,20 @@ class BasisBand implements ISeriesPrimitive<Time> {
     // Views read live state at draw time; nothing to precompute.
   }
 
-  /** Fills the premium/discount band between market close and Index. */
+  /** Fills the premium/discount band between market close and Index. Each
+   *  candle pairs with the Index print at its own timestamp — never by
+   *  array position — and resolves its x from the real time coordinate. */
   draw(target: CanvasRenderingTarget2D): void {
     const chart = this.chart;
     const series = this.series;
     if (!chart || !series) return;
-    const { candles, index } = this.source();
-    const n = Math.min(candles.length, index.length);
-    if (n < 2) return;
+    const { candles, indexByTime } = this.source();
+    if (candles.length < 2) return;
     const ts = chart.timeScale();
     const range = ts.getVisibleLogicalRange();
     if (!range) return;
     const from = Math.max(0, Math.floor(range.from));
-    const to = Math.min(n - 1, Math.ceil(range.to));
+    const to = Math.min(candles.length - 1, Math.ceil(range.to));
     if (to - from < 1) return;
 
     target.useBitmapCoordinateSpace(
@@ -166,11 +173,13 @@ class BasisBand implements ISeriesPrimitive<Time> {
         const pts: BandPt[] = [];
         for (let k = from; k <= to; k++) {
           const candle = candles[k];
-          const wire = index[k];
-          const x = ts.logicalToCoordinate(k as Logical);
-          if (!candle || !wire || x == null) continue;
+          if (!candle) continue;
+          const wire = indexByTime.get(toChartTime(candle.t));
+          if (wire === undefined) continue;
+          const x = ts.timeToCoordinate(toChartTime(candle.t));
+          if (x == null) continue;
           const m = series.priceToCoordinate(candle.close);
-          const i = series.priceToCoordinate(wire.value);
+          const i = series.priceToCoordinate(wire);
           if (m == null || i == null) continue;
           pts.push({
             x: x * horizontalPixelRatio,
@@ -274,8 +283,11 @@ export function PriceChart({ candles, index, range, livePrice, band = true, clas
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const wireRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const dataRef = useRef({ candles, index, band });
-  dataRef.current = { candles, index, band };
+  /** Index values keyed by chart time — pairing is always by timestamp,
+   *  never by array position (the two series need not share a grid). */
+  const indexByTime = new Map(index.map((p) => [toChartTime(p.t), p.value] as const));
+  const dataRef = useRef({ candles, indexByTime, band });
+  dataRef.current = { candles, indexByTime, band };
   const rangeRef = useRef(range);
   rangeRef.current = range;
   /** The visible range is chart state the user owns. It is framed once per
@@ -331,8 +343,8 @@ export function PriceChart({ candles, index, range, livePrice, band = true, clas
 
     const bandPrimitive = new BasisBand(() =>
       dataRef.current.band
-        ? { candles: dataRef.current.candles, index: dataRef.current.index }
-        : { candles: [], index: [] },
+        ? { candles: dataRef.current.candles, indexByTime: dataRef.current.indexByTime }
+        : { candles: [], indexByTime: EMPTY_INDEX },
     );
     wireSeries.attachPrimitive(bandPrimitive);
 
@@ -341,14 +353,14 @@ export function PriceChart({ candles, index, range, livePrice, band = true, clas
     wireRef.current = wireSeries;
 
     chart.subscribeCrosshairMove((param) => {
-      const { candles, index, band } = dataRef.current;
+      const { candles, indexByTime, band } = dataRef.current;
       if (!param.time) {
-        setLegend(legendFor(candles, index, candles.length - 1, band));
+        setLegend(legendFor(candles, indexByTime, candles.length - 1, band));
         return;
       }
       const i = candles.findIndex((c) => Math.floor(c.t / 1000) === Number(param.time));
-      if (i >= 0) setLegend(legendFor(candles, index, i, band));
-      else setLegend(legendFor(candles, index, candles.length - 1, band));
+      if (i >= 0) setLegend(legendFor(candles, indexByTime, i, band));
+      else setLegend(legendFor(candles, indexByTime, candles.length - 1, band));
     });
 
     return () => {
@@ -376,7 +388,13 @@ export function PriceChart({ candles, index, range, livePrice, band = true, clas
         close: c.close,
       })),
     );
-    wireSeries.setData(index.map((p) => ({ time: toChartTime(p.t), value: p.value })));
+    // The wire exists only when a venue leg does. When the candles ARE the
+    // Index, the same canonical series must never render twice.
+    wireSeries.setData(
+      band
+        ? index.map((p) => ({ time: toChartTime(p.t), value: p.value }))
+        : [],
+    );
 
     // The last-price tag follows the last bar's direction.
     const last = candles[candles.length - 1];
@@ -389,28 +407,24 @@ export function PriceChart({ candles, index, range, livePrice, band = true, clas
     // Frame the viewport only when its inputs changed: a range switch, a
     // replaced series (first bar moved — fetch/resync), or a resize. Live
     // appends just extend the right edge (the library shifts to keep it).
-    const n = Math.max(candles.length, index.length);
-    const firstT =
-      candles.length > 0 ? candles[0]!.t : index.length > 0 ? index[0]!.t : -1;
+    // Framing itself is the library's: fitContent over the real timeline —
+    // array lengths are never a proxy for it — with one deliberate trim: a
+    // young series must not stretch a handful of bars into pane-wide slabs,
+    // so the pitch is capped and the surplus falls away to the left of the
+    // right-anchored content.
+    const firstT = candles.length > 0 ? candles[0]!.t : -1;
     const width = containerRef.current?.clientWidth ?? 0;
     const vp = viewportRef.current;
     if (!vp || vp.range !== range || vp.firstT !== firstT || Math.abs(vp.width - width) > 0.5) {
       viewportRef.current = { range, firstT, width };
-      // Full window with breathing room, but the pitch is bounded: a short
-      // series (a fresh benchmark, a wide interval) must not stretch a
-      // handful of bars into pane-wide slabs. Past the cap the range widens
-      // only as far as the cap requires — modest margin, never a pane of
-      // emptiness.
-      const pad = Math.max(0.6, n * 0.03);
-      const pitchMaxPx = 32;
-      const minVisible = width > 0 ? Math.ceil(width / pitchMaxPx) : 0;
-      const slack = Math.max(0, minVisible - n - pad);
-      chart.timeScale().setVisibleLogicalRange({
-        from: -0.6,
-        to: n - 1 + pad + slack,
-      });
+      const ts = chart.timeScale();
+      ts.fitContent();
+      const logical = ts.getVisibleLogicalRange();
+      const span = logical ? logical.to - logical.from : 0;
+      if (span > 0 && width / span > 32) ts.applyOptions({ barSpacing: 32 });
+      ts.applyOptions({ rightOffset: 2 });
     }
-    setLegend(legendFor(candles, index, candles.length - 1, band));
+    setLegend(legendFor(candles, indexByTime, candles.length - 1, band));
   }, [candles, index, range, band]);
 
   // Live price: the last candle's close re-engraves as the tape prints.
@@ -488,25 +502,26 @@ function LegendCell({
 
 function legendFor(
   candles: Candle[],
-  index: IndexPoint[],
+  indexByTime: Map<number, number>,
   i: number,
   band: boolean,
 ): LegendState | null {
   const candle = candles[i];
   if (!candle) return null;
-  if (!band) {
-    // The candles are the Index — OHLC alone, no gap to quote.
+  // The Index cell quotes the print at this candle's own timestamp — a
+  // positional neighbor is never a substitute.
+  const wire = band ? indexByTime.get(toChartTime(candle.t)) : undefined;
+  if (wire === undefined) {
+    // No venue leg (or no Index print at this instant) — OHLC alone.
     return { o: candle.open, h: candle.high, l: candle.low, c: candle.close, idx: null, basisPct: null };
   }
-  const wire = index[i];
-  if (!wire) return null;
   return {
     o: candle.open,
     h: candle.high,
     l: candle.low,
     c: candle.close,
-    idx: wire.value,
-    basisPct: (candle.close / wire.value - 1) * 100,
+    idx: wire,
+    basisPct: (candle.close / wire - 1) * 100,
   };
 }
 

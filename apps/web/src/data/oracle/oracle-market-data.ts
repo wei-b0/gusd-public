@@ -315,15 +315,11 @@ export class OracleMarketData implements MarketDataPort {
             // server's one-minute series is in flight.
             indexPointsToCandles(windowedPoints, CANDLE_BUCKET_MS)
           : rangeCandles,
-      index:
-        series.intervalSec === 60
-          ? windowedPoints
-          : (() => {
-              const set = seriesOf(series.intervalSec);
-              return set
-                ? bucketsToPoints(set.buckets).filter((p) => p.t >= windowStart)
-                : [];
-            })(),
+      // The candles ARE the canonical Index on this surface: the snapshot
+      // ships no second rendering of the same series — no wire, no band,
+      // no basis. (A real venue leg, and with it a true Index overlay,
+      // arrives with the market layer.)
+      index: [],
       providers,
       recentTrades: NO_TRADES,
       stats: {

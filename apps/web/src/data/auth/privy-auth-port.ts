@@ -62,6 +62,7 @@ const PRODUCT_ERRORS = {
   connectFailed: "The wallet didn't connect. Try again in a moment.",
   signatureDeclined: "Signature declined. Connect again to continue.",
   signatureFailed: "The signature didn't go through. Try again in a moment.",
+  signatureWrongAccount: "The wallet signed with a different account. Connect again and confirm the request.",
   noAnswer: "No wallet answered the connect request.",
   noAccount: "The wallet returned no account. Unlock it and try again.",
 } as const;
