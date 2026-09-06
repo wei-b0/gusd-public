@@ -38,7 +38,7 @@ const CHART_BASE: DeepPartial<ChartOptions> = {
     background: { type: ColorType.Solid, color: "transparent" },
     textColor: TEXT_MUTE,
     fontSize: 10,
-    fontFamily: "var(--font-jb), ui-monospace, 'SF Mono', monospace",
+    fontFamily: "'JetBrains Mono Local', ui-monospace, 'SF Mono', monospace",
     attributionLogo: false,
   },
   grid: {

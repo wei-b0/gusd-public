@@ -22,11 +22,6 @@ export const GPU_ROUTER_ABI = [
         "name": "hook_",
         "type": "address",
         "internalType": "contract GPUHook"
-      },
-      {
-        "name": "usdc_",
-        "type": "address",
-        "internalType": "contract IERC20"
       }
     ],
     "stateMutability": "nonpayable"
@@ -405,6 +400,19 @@ export const GPU_ROUTER_ABI = [
   },
   {
     "type": "function",
+    "name": "underlying",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "unlockCallback",
     "inputs": [
       {
@@ -421,18 +429,5 @@ export const GPU_ROUTER_ABI = [
       }
     ],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "usdc",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IERC20"
-      }
-    ],
-    "stateMutability": "view"
   }
 ] as const;

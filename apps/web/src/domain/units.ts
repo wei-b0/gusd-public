@@ -2,13 +2,14 @@
  * Onchain unit conversion — parse/format at the seam where product numbers
  * (JS floats the UI trades in) meet wei-scale integers the contracts want.
  * Display goes through ./format.ts; this module owns only the decimal
- * vocabulary: gUSD/USDC/sgUSD are 6-decimal, GPU positions are 18-decimal.
+ * vocabulary: gUSD/sgUSD and every whitelisted funding stable (the chain's
+ * reserve asset included) are 6-decimal, GPU positions are 18-decimal.
  */
 
 import { formatUnits, parseUnits } from "viem";
 
 export const GUSD_DECIMALS = 6;
-export const USDC_DECIMALS = 6;
+export const STABLE_DECIMALS = 6;
 export const SGUSD_DECIMALS = 6;
 /** GPU positions are 18-decimal ERC-20 units (one unit = one GPU-hour). */
 export const GPU_TOKEN_DECIMALS = 18;
@@ -23,14 +24,14 @@ export function formatGusdRaw(raw: bigint): number {
   return Number(formatUnits(raw, GUSD_DECIMALS));
 }
 
-/** Product USDC number → 6-decimal raw. */
-export function parseUsdc(amount: number): bigint {
-  return parseScaled(amount, USDC_DECIMALS);
+/** Product stable number (the reserve asset or any whitelisted stable) → 6-decimal raw. */
+export function parseStable(amount: number): bigint {
+  return parseScaled(amount, STABLE_DECIMALS);
 }
 
-/** 6-decimal USDC raw → product number. */
-export function formatUsdcRaw(raw: bigint): number {
-  return Number(formatUnits(raw, USDC_DECIMALS));
+/** 6-decimal stable raw → product number. */
+export function formatStableRaw(raw: bigint): number {
+  return Number(formatUnits(raw, STABLE_DECIMALS));
 }
 
 /** Product GPU size → 18-decimal raw. */

@@ -7,27 +7,27 @@ import {GUSD} from "../../src/GUSD.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract GUSDTest is Test {
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     address internal sink = makeAddr("sink");
     address internal alice = makeAddr("alice");
 
     function setUp() public {
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
-        usdc.mint(alice, 1_000_000e6);
-        usdc.mint(address(this), 1_000_000e6);
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
+        underlying.mint(alice, 1_000_000e6);
+        underlying.mint(address(this), 1_000_000e6);
     }
 
     function _approve(address who, uint256 amt) internal {
         vm.prank(who);
-        usdc.approve(address(gusd), type(uint256).max);
+        underlying.approve(address(gusd), type(uint256).max);
     }
 
     function _mintThrough(address who, uint256 amt) internal returns (uint256) {
         _approve(who, amt);
         vm.prank(who);
-        return gusd.mintUSDC(amt, who);
+        return gusd.mint(amt, who);
     }
 
     function test_feelessMintIsOneToOne() public {
@@ -41,9 +41,9 @@ contract GUSDTest is Test {
     function test_feelessRedeemIsOneToOne() public {
         uint256 out = _mintThrough(alice, 10_000e6);
         vm.prank(alice);
-        uint256 got = gusd.redeemUSDC(out, alice);
+        uint256 got = gusd.redeem(out, alice);
         assertEq(got, 10_000e6);
-        assertEq(usdc.balanceOf(alice), 1_000_000e6);
+        assertEq(underlying.balanceOf(alice), 1_000_000e6);
         assertEq(gusd.totalSupply(), 0);
         assertEq(gusd.reserveBalance(), 0);
     }
@@ -63,7 +63,7 @@ contract GUSDTest is Test {
         _approve(alice, 10);
         vm.prank(alice);
         vm.expectRevert(GUSD.ZeroNetAmount.selector);
-        gusd.mintUSDC(1, alice); // fee = ceil(1*500/1e4) = 1 -> out 0
+        gusd.mint(1, alice); // fee = ceil(1*500/1e4) = 1 -> out 0
     }
 
     function test_feeAboveCapReverts() public {
@@ -77,13 +77,13 @@ contract GUSDTest is Test {
         gusd.pause();
         vm.prank(alice);
         vm.expectRevert();
-        gusd.mintUSDC(1, alice);
+        gusd.mint(1, alice);
         vm.prank(alice);
         gusd.transfer(address(this), 1e6); // transfers stay live
         gusd.unpause();
         vm.prank(alice);
-        gusd.redeemUSDC(1e6, alice);
-        assertEq(usdc.balanceOf(alice), 1_000_000e6 - 5_000e6 + 1e6);
+        gusd.redeem(1e6, alice);
+        assertEq(underlying.balanceOf(alice), 1_000_000e6 - 5_000e6 + 1e6);
     }
 
     function test_reserveEqualsSupplyAfterOps() public {
@@ -96,9 +96,9 @@ contract GUSDTest is Test {
             assertGe(gusd.balanceOf(alice) + gusd.balanceOf(sink), m);
         }
         vm.startPrank(alice);
-        gusd.redeemUSDC(gusd.balanceOf(alice) / 2, alice);
+        gusd.redeem(gusd.balanceOf(alice) / 2, alice);
         assertEq(gusd.reserveBalance(), gusd.totalSupply());
-        gusd.redeemUSDC(gusd.balanceOf(alice), alice);
+        gusd.redeem(gusd.balanceOf(alice), alice);
         vm.stopPrank();
         assertEq(gusd.reserveBalance(), gusd.totalSupply());
     }

@@ -42,7 +42,7 @@ import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 contract E2ETest is Test, DeployPermit2 {
     using PoolIdLibrary for PoolKey;
 
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
@@ -74,7 +74,7 @@ contract E2ETest is Test, DeployPermit2 {
 
     function setUp() public {
         vm.warp(1_000_000);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
+        underlying = new MockERC20("USD Coin", "USDC", 6);
         oracle = new MockGPUPriceOracle(address(this));
         manager = IPoolManager(address(new PoolManager(address(this))));
         stateView = new StateView(manager);
@@ -86,7 +86,7 @@ contract E2ETest is Test, DeployPermit2 {
         );
         quoter = new V4Quoter(manager);
 
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         sg = new sgUSD(IERC20(address(gusd)), address(this));
         ledger = new RevenueLedger(IERC20(address(gusd)), address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), oracle, address(ledger), address(this));
@@ -97,7 +97,7 @@ contract E2ETest is Test, DeployPermit2 {
         new GPUHook{salt: salt}(manager, address(gusd), issuance, address(ledger), address(this));
         hook = GPUHook(hookAddr);
 
-        router = new GpuRouter(manager, gusd, issuance, hook, IERC20(address(usdc)));
+        router = new GpuRouter(manager, gusd, issuance, hook);
 
         gusd.setRevenueSink(address(ledger));
         gusd.setFees(0, 0);
@@ -106,9 +106,9 @@ contract E2ETest is Test, DeployPermit2 {
         ledger.setSplit(5_000);
         hook.setHookFeeBps(50);
         // seed the sgUSD vault: 1 gUSD in, 1 share out (one-way gate)
-        usdc.mint(address(this), 1e6);
-        usdc.approve(address(gusd), 1e6);
-        gusd.mintUSDC(1e6, address(this));
+        underlying.mint(address(this), 1e6);
+        underlying.approve(address(gusd), 1e6);
+        gusd.mint(1e6, address(this));
         gusd.approve(address(sg), 1e6);
         sg.seed(1e6);
 
@@ -130,16 +130,16 @@ contract E2ETest is Test, DeployPermit2 {
         require(hook.poolGpuId(poolId) == H100, "pool not registered");
 
         // fund + approvals
-        usdc.mint(alice, 1_000_000e6);
-        usdc.mint(bob, 1_000_000e6);
+        underlying.mint(alice, 1_000_000e6);
+        underlying.mint(bob, 1_000_000e6);
         vm.startPrank(alice);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(10_000e6, alice);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(10_000e6, alice);
         gusd.approve(address(router), type(uint256).max);
-        usdc.approve(address(router), type(uint256).max);
+        underlying.approve(address(router), type(uint256).max);
         vm.stopPrank();
         vm.startPrank(bob);
-        usdc.approve(address(router), type(uint256).max);
+        underlying.approve(address(router), type(uint256).max);
         vm.stopPrank();
     }
 
@@ -181,8 +181,8 @@ contract E2ETest is Test, DeployPermit2 {
 
     function _buyGusd(address who, uint256 usdcAmount) internal {
         vm.startPrank(who);
-        IERC20(address(usdc)).approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(usdcAmount, who);
+        IERC20(address(underlying)).approve(address(gusd), type(uint256).max);
+        gusd.mint(usdcAmount, who);
         vm.stopPrank();
     }
 
@@ -247,7 +247,7 @@ contract E2ETest is Test, DeployPermit2 {
         );
         uint256 hookFees = hook.totalTradingFeesAccrued();
         vm.prank(bob);
-        uint256 paid3 = _buyGpu(2e18, 2e18, 0, address(usdc), quotedIn, bob);
+        uint256 paid3 = _buyGpu(2e18, 2e18, 0, address(underlying), quotedIn, bob);
         assertEq(paid3, quotedIn, "quote == execution");
         assertEq(gpu.balanceOf(bob), 2e18);
         uint256 hookFeeBuy = hook.totalTradingFeesAccrued() - hookFees;
@@ -261,16 +261,16 @@ contract E2ETest is Test, DeployPermit2 {
         uint256 reserve4 = issuance.gpuReserve(H100);
         uint256 ledger4 = gusd.balanceOf(address(ledger));
         vm.prank(bob);
-        _buyGpu(5e18, 3e18, 2e18, address(usdc), 20e6, bob);
+        _buyGpu(5e18, 3e18, 2e18, address(underlying), 20e6, bob);
         assertEq(gpu.balanceOf(bob), 7e18);
         assertEq(issuance.gpuReserve(H100) - reserve4, 5_000_000, "issuance reserve 2x2.5");
         assertEq(gusd.balanceOf(address(ledger)) - ledger4, 25_000, "issuance fee 0.5% of 5");
 
         // 5) SELL 1 H100 -> USDC: pure secondary, oracle untouched
-        uint256 bobUsdc = usdc.balanceOf(bob);
-        uint256 out5 = _sellGpu(bob, 1e18, address(usdc), 2e6, bob);
+        uint256 bobUsdc = underlying.balanceOf(bob);
+        uint256 out5 = _sellGpu(bob, 1e18, address(underlying), 2e6, bob);
         assertGe(out5, 2e6, "sell payout");
-        assertEq(usdc.balanceOf(bob) - bobUsdc, out5, "sell payout delivered");
+        assertEq(underlying.balanceOf(bob) - bobUsdc, out5, "sell payout delivered");
         assertEq(gpu.balanceOf(bob), 6e18);
         assertGt(hook.totalTradingFeesAccrued(), hookFees + hookFeeBuy, "hook fee on sell");
         assertEq(issuance.gpuReserve(H100), 255_000_000, "reserves untouched by trades");
@@ -288,7 +288,7 @@ contract E2ETest is Test, DeployPermit2 {
         assertGt(gusd.balanceOf(treasury), treasuryBefore, "treasury funded");
 
         // Definition-of-Success
-        assertEq(usdc.balanceOf(address(gusd)), gusd.totalSupply(), "reserve == supply");
+        assertEq(underlying.balanceOf(address(gusd)), gusd.totalSupply(), "reserve == supply");
         assertEq(gusd.balanceOf(address(router)), 0, "router holds no gUSD");
         assertEq(gpu.balanceOf(address(router)), 0, "router holds no GPU");
         assertEq(gusd.balanceOf(address(hook)), 0, "hook drained");

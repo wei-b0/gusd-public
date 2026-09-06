@@ -336,7 +336,7 @@ Possible interfaces may eventually include:
 - downloadable datasets
 - historical-data products
 
-**Shipped (2026-09-05):** the oracle's real interfaces exist and the web app consumes them directly — `GET /v1/prices`, `/v1/prices/:gpu`, `/v1/prices/:gpu/history`, `GET /v1/prices/:gpu/candles` (server-bucketed OHLC over the canonical benchmark time series stored in `index_candidates` — open/high/low/close derived from the benchmark observations within each interval, 1m/5m/15m/30m/1h/6h/12h/1d/1w grains, bucket-capped), `/v1/prices/:gpu/providers`, `/v1/providers`, `/v1/health` (all read-only REST, CORS open), and an SSE stream at `/v1/stream/sse` carrying each published candidate. Every settlement panel in the catalog (A100/H100/H200/B200/B300/GB200/GB300) is oracle-backed, and the API/data layer is the **single source of truth** for every displayed price: the benchmark it publishes is the one price the market and trading surfaces show — where no venue prices the asset separately the second-price slots do not exist on the surface. Market-layer facts the API does not publish (venue price, trades, volume, liquidity) render as honest empties (`—`, an empty tape) rather than simulated figures. Candles for every chart range, sparklines (the series' last 48 hourly closes), and window statistics derive from the server-bucketed benchmark series; live candidates merge into the trailing bucket as they arrive. Before real swaps exist, candles come from the benchmark series — not fake trades and not oracle publications; once Uniswap v4 pools have indexed swaps, an actual trade-OHLCV market series can be added alongside. On-chain reads stay out of display paths — the chain is touched only where execution, balances, and allowances require it; the onchain `GPUPriceOracle` is a protocol execution primitive (hooks, swaps, issuance, redemption), never the frontend's displayed price. `NEXT_PUBLIC_DATA_SOURCE=mock` restores the fully simulated layer (its one admission lives on the status line).
+**Shipped (2026-09-05):** the oracle's real interfaces exist and the web app consumes them directly — `GET /v1/prices`, `/v1/prices/:gpu`, `/v1/prices/:gpu/history`, `GET /v1/prices/:gpu/candles` (server-bucketed OHLC over the canonical benchmark time series stored in `index_candidates` — open/high/low/close derived from the benchmark observations within each interval, 1m/5m/15m/30m/1h/6h/12h/1d/1w grains, bucket-capped), `/v1/prices/:gpu/providers`, `/v1/providers`, `/v1/health` (all read-only REST, CORS open), an SSE stream at `/v1/stream/sse` carrying each published candidate (WebSocket variant at `/v1/stream`), and the web app's Oracle **Developers tab documents this surface in-app** — the interface catalog, endpoint reference, and code samples are product surfaces, not external docs. Every settlement panel in the catalog (A100/H100/H200/B200/B300/GB200/GB300) is oracle-backed, and the API/data layer is the **single source of truth** for every displayed price: the benchmark it publishes is the one price the market and trading surfaces show — where no venue prices the asset separately the second-price slots do not exist on the surface. Market-layer facts the API does not publish (venue price, trades, volume, liquidity) render as honest empties (`—`, an empty tape) rather than simulated figures. Candles for every chart range, sparklines (the series' last 48 hourly closes), and window statistics derive from the server-bucketed benchmark series; live candidates merge into the trailing bucket as they arrive. Before real swaps exist, candles come from the benchmark series — not fake trades and not oracle publications; once Uniswap v4 pools have indexed swaps, an actual trade-OHLCV market series can be added alongside. On-chain reads stay out of display paths — the chain is touched only where execution, balances, and allowances require it; the onchain `GPUPriceOracle` is a protocol execution primitive (hooks, swaps, issuance, redemption), never the frontend's displayed price. `NEXT_PUBLIC_DATA_SOURCE=mock` restores the fully simulated layer (its one admission lives on the status line).
 
 The exact API design is not yet finalized.
 
@@ -377,11 +377,10 @@ For example, the H100 desk exposes:
 - price change
 - historical market chart
 - gUSD H100 Index
-- current basis and premium/discount history
+- current basis
 - volume
 - liquidity
 - market statistics
-- provider/reference observations
 - recent market activity
 - Buy
 - Sell
@@ -405,8 +404,10 @@ The GPU asset itself trades on gUSD.
 # Terminal
 
 Terminal is the professional trading interface — and the one place users trade.
-Every asset's depth (chart, statistics, Index sources, premium history,
-activity) and its order entry live here together; Markets is discovery only.
+Every asset's depth (chart, statistics, the Index feed, activity) and its
+order entry live here together; Markets is discovery only. Provider/reference
+observations live on the Oracle's Benchmarks tab, which the desk's Index feed
+links to.
 
 The Terminal ships the full interaction model today:
 
@@ -415,7 +416,6 @@ The Terminal ships the full interaction model today:
 - market statistics
 - Index
 - basis
-- provider/reference data
 - liquidity information
 - order entry
 - Buy/Sell
@@ -759,17 +759,17 @@ The intended application currently includes:
 /
  /markets
  /terminal/[asset]
- /earn
- /vaults
+ /oracle
  /portfolio
- /index
- /index/[asset]
- /data
  /protocol
 ```
 
-Retired routes redirect permanently: `/earn` and `/vaults` to `/gusd`,
-`/index`, `/index/[asset]`, and `/data` to the Oracle section,
+The Oracle is one tabbed surface (`/oracle` — Overview, Benchmarks,
+Methodology, Health, Developers) with query deep links (`?tab=`,
+`&bench=`). Retired routes redirect permanently: `/earn` and `/vaults` to
+`/gusd`, the per-GPU oracle sheet `/oracle/[asset]` and `/index`,
+`/index/[asset]` into the Oracle's Benchmarks tab (`/oracle?tab=benchmarks`
+with the benchmark selected), `/data` into its Developers tab,
 `/markets/[asset]` to `/terminal/[asset]` — asset detail and trading share
 one roof — and `/terminal` to the default desk, `/terminal/H100`: the
 Terminal has no unbound form, it always shows one market's desk.

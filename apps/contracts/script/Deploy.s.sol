@@ -24,6 +24,7 @@ import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
+import {StableRouter} from "../src/StableRouter.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../src/oracle/IGPUPriceOracle.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
@@ -50,7 +51,7 @@ contract Deploy is Script {
     );
 
     struct Deployment {
-        address usdc;
+        address underlying;
         address poolManager;
         address stateView;
         address gusd;
@@ -60,6 +61,8 @@ contract Deploy is Script {
         address oracle;
         address hook;
         address router;
+        address stableRouter;
+        address[] stables;
         address permit2;
         address positionManager;
         address quoter;
@@ -72,15 +75,24 @@ contract Deploy is Script {
         address deployer = vm.addr(pk);
         vm.startBroadcast(pk);
 
-        // 1) underlying + oracle (env overrides for real assets)
+        // 1) underlying + oracle (env overrides for real assets). The reserve
+        //    asset is per-chain: USDG on Robinhood Chain, USDC where USDC is
+        //    canonical. A mock fallback keeps dev/test deploys hermetic; its
+        //    name/symbol are env-driven and default to USDG's identity so the
+        //    dev preview shows the Robinhood Chain posture without pretending
+        //    to be the real asset.
         address underlyingEnv = vm.envOr("UNDERLYING", address(0));
         address oracleEnv = vm.envOr("ORACLE", address(0));
+        bool underlyingIsMock;
         bool oracleDeployed;
         if (underlyingEnv != address(0)) {
-            d.usdc = underlyingEnv;
+            d.underlying = underlyingEnv;
         } else {
-            MockERC20 u = new MockERC20("USD Coin", "USDC", 6);
-            d.usdc = address(u);
+            string memory name = vm.envOr("UNDERLYING_NAME", string("Global Dollar"));
+            string memory symbol = vm.envOr("UNDERLYING_SYMBOL", string("USDG"));
+            MockERC20 u = new MockERC20(name, symbol, 6);
+            d.underlying = address(u);
+            underlyingIsMock = true;
         }
         if (oracleEnv != address(0)) {
             // external oracle: wired verbatim and never seeded here — prices
@@ -95,24 +107,43 @@ contract Deploy is Script {
             oracleDeployed = true;
         }
 
-        // 2) v4 core + production periphery (LP surface + offchain quoting)
-        d.poolManager = address(new PoolManager(deployer));
-        d.stateView = address(new StateView(IPoolManager(d.poolManager)));
+        // 2) v4 core + production periphery (LP surface + offchain quoting).
+        //    On chains with a canonical v4 stack (e.g. Robinhood mainnet),
+        //    POOL_MANAGER + STATE_VIEW + QUOTER reuse it verbatim so liquidity
+        //    is not fragmented across a second manager; POSITION_MANAGER and
+        //    WETH stay optional overrides. Unset (default) deploys everything
+        //    fresh — Anvil and empty testnets.
+        address pmEnv = vm.envOr("POOL_MANAGER", address(0));
+        address svEnv = vm.envOr("STATE_VIEW", address(0));
+        address quoterEnv = vm.envOr("QUOTER", address(0));
+        address pmgrEnv = vm.envOr("POSITION_MANAGER", address(0));
+        address wethEnv = vm.envOr("WETH", address(0));
+        if (pmEnv != address(0)) {
+            require(svEnv != address(0) && quoterEnv != address(0), "external POOL_MANAGER requires STATE_VIEW + QUOTER");
+            d.poolManager = pmEnv;
+            d.stateView = svEnv;
+            d.quoter = quoterEnv;
+        } else {
+            d.poolManager = address(new PoolManager(deployer));
+            d.stateView = address(new StateView(IPoolManager(d.poolManager)));
+            d.quoter = address(new V4Quoter(IPoolManager(d.poolManager)));
+        }
         d.permit2 = _ensurePermit2();
-        d.weth = address(new WETH());
-        d.positionManager = address(
-            new PositionManager(
-                IPoolManager(d.poolManager),
-                IAllowanceTransfer(d.permit2),
-                100_000, // unsubscribeGasLimit
-                new PositionDescriptor(IPoolManager(d.poolManager), d.weth, "ETH"),
-                IWETH9(d.weth)
-            )
-        );
-        d.quoter = address(new V4Quoter(IPoolManager(d.poolManager)));
+        d.weth = wethEnv != address(0) ? wethEnv : address(new WETH());
+        d.positionManager = pmgrEnv != address(0)
+            ? pmgrEnv
+            : address(
+                new PositionManager(
+                    IPoolManager(d.poolManager),
+                    IAllowanceTransfer(d.permit2),
+                    100_000, // unsubscribeGasLimit
+                    new PositionDescriptor(IPoolManager(d.poolManager), d.weth, "ETH"),
+                    IWETH9(d.weth)
+                )
+            );
 
         // 3) protocol primitives
-        d.gusd = address(new GUSD(IERC20(d.usdc), deployer));
+        d.gusd = address(new GUSD(IERC20(d.underlying), deployer));
         d.sgusd = address(new sgUSD(IERC20(d.gusd), deployer));
         d.ledger = address(new RevenueLedger(IERC20(d.gusd), deployer));
         d.issuance = address(new GPUIssuance(IERC20(d.gusd), IGPUPriceOracle(d.oracle), d.ledger, deployer));
@@ -128,10 +159,24 @@ contract Deploy is Script {
 
         // 5) product router
         d.router = address(
-            new GpuRouter(
-                IPoolManager(d.poolManager), GUSD(d.gusd), GPUIssuance(d.issuance), GPUHook(d.hook), IERC20(d.usdc)
-            )
+            new GpuRouter(IPoolManager(d.poolManager), GUSD(d.gusd), GPUIssuance(d.issuance), GPUHook(d.hook))
         );
+
+        // 5.5) stable funding router: whitelisted stables -> underlying ->
+        //      gUSD. The underlying is whitelisted at construction; STABLES
+        //      adds extra funding assets (comma-separated, config-trust only —
+        //      never derived from token symbols). Pools are caller-supplied
+        //      per flow; LPs provision them through the PositionManager.
+        d.stableRouter = address(new StableRouter(IPoolManager(d.poolManager), GUSD(d.gusd), deployer));
+        string memory stablesCsv = vm.envOr("STABLES", string(""));
+        if (bytes(stablesCsv).length > 0) {
+            string[] memory parts = vm.split(stablesCsv, ",");
+            for (uint256 i; i < parts.length; ++i) {
+                address s = vm.parseAddress(parts[i]);
+                StableRouter(d.stableRouter).setStable(s, true);
+            }
+        }
+        d.stables = StableRouter(d.stableRouter).allStables();
 
         // 6) wiring — no protocolFeeController: the hook captures the protocol
         //    trading share itself (gUSD-denominated in both directions)
@@ -141,10 +186,13 @@ contract Deploy is Script {
         RevenueLedger(d.ledger).setTreasury(vm.envOr("TREASURY", deployer));
         RevenueLedger(d.ledger).setSplit(5_000);
         GPUHook(d.hook).setHookFeeBps(50);
-        // seed the sgUSD vault: 1 gUSD in, 1 share out (one-way gate)
-        MockERC20(d.usdc).mint(deployer, 1e6);
-        IERC20(d.usdc).approve(d.gusd, 1e6);
-        GUSD(d.gusd).mintUSDC(1e6, deployer);
+        // seed the sgUSD vault: 1 gUSD in, 1 share out (one-way gate). A mock
+        // reserve funds itself; a real external asset must already sit on the
+        // deployer (≥ 1 unit) — there is no mint to call on it.
+        if (underlyingIsMock) MockERC20(d.underlying).mint(deployer, 1e6);
+        else require(IERC20(d.underlying).balanceOf(deployer) >= 1e6, "deployer must hold >= 1 unit of UNDERLYING to seed sgUSD");
+        IERC20(d.underlying).approve(d.gusd, 1e6);
+        GUSD(d.gusd).mint(1e6, deployer);
         GUSD(d.gusd).approve(d.sgusd, 1e6);
         sgUSD(d.sgusd).seed(1e6);
         require(uint160(d.hook) & Hooks.ALL_HOOK_MASK == HOOK_FLAGS, "hook flags mismatch");
@@ -172,6 +220,7 @@ contract Deploy is Script {
         console2.log("gusd", d.gusd);
         console2.log("hook", d.hook);
         console2.log("router", d.router);
+        console2.log("stableRouter", d.stableRouter);
         console2.log("positionManager", d.positionManager);
     }
 
@@ -210,7 +259,9 @@ contract Deploy is Script {
 
     function _persist(Deployment memory d, bool oracleDeployed) internal {
         string memory json = "deployment";
-        vm.serializeAddress(json, "usdc", d.usdc);
+        vm.serializeAddress(json, "underlying", d.underlying);
+        vm.serializeAddress(json, "stableRouter", d.stableRouter);
+        vm.serializeAddress(json, "stables", d.stables);
         vm.serializeAddress(json, "poolManager", d.poolManager);
         vm.serializeAddress(json, "stateView", d.stateView);
         vm.serializeAddress(json, "gusd", d.gusd);

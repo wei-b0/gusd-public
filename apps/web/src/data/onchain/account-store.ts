@@ -35,7 +35,7 @@ export interface OnchainAccountSnapshot {
   loadedAt: number | null;
   chainId: number;
   gUsd: number;
-  usdc: number;
+  stable: number;
   sGusd: number;
   positions: readonly OnchainPosition[];
 }
@@ -45,7 +45,7 @@ const EMPTY: OnchainAccountSnapshot = {
   loadedAt: null,
   chainId: 0,
   gUsd: 0,
-  usdc: 0,
+  stable: 0,
   sGusd: 0,
   positions: [],
 };
@@ -107,7 +107,7 @@ export class OnChainAccountStore {
           chainId,
           loadedAt: this.now(),
           gUsd: balances.gUsd,
-          usdc: balances.usdc,
+          stable: balances.stable,
           sGusd: balances.sGusd,
           positions: positions.map((p) => ({
             gpuId: p.gpuId,

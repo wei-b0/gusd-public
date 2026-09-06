@@ -14,6 +14,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@across-protocol/app-sdk": "^0.6.1",
     "@gusd/db": "workspace:*",
     "@gusd/gpu-catalog": "workspace:*",
     "@gusd/types": "workspace:*",

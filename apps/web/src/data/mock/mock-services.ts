@@ -9,6 +9,7 @@
  * configures the build. The seams live in src/domain/ports.
  */
 
+import type { Address } from "viem";
 import type {
   ActionPort,
   AuthPort,
@@ -18,6 +19,7 @@ import type {
   TradingPort,
   TxPort,
 } from "@/domain/ports";
+import { InertBridgePort } from "@/data/web3/bridge/inert";
 import type { ActionRecord } from "@/domain/actions";
 import type {
   Account,
@@ -131,6 +133,7 @@ export class MockServices {
   auth: AuthPortImpl;
   earn: EarnPortImpl;
   mint: MintPortImpl;
+  bridge: InertBridgePort;
   tx: MockTxPort;
   actions: MockActionPort;
 
@@ -141,6 +144,7 @@ export class MockServices {
     this.auth = new AuthPortImpl(this.trading);
     this.earn = new EarnPortImpl();
     this.mint = new MintPortImpl();
+    this.bridge = new InertBridgePort();
     this.tx = new MockTxPort();
     this.actions = new MockActionPort();
   }
@@ -270,7 +274,7 @@ class TradingPortImpl {
     address: null,
     gUsdBalance: 0,
     sGUsdBalance: 0,
-    usdcBalance: 0,
+    stableBalance: 0,
     positions: [],
   };
 
@@ -311,7 +315,7 @@ class TradingPortImpl {
       address: null,
       gUsdBalance: 0,
       sGUsdBalance: 0,
-      usdcBalance: 0,
+      stableBalance: 0,
       positions: [],
     });
   }
@@ -468,7 +472,11 @@ class EarnPortImpl {
  * refuses.
  */
 class MintPortImpl {
-  async quote(_direction: MintDirection, _amount: number): Promise<MintQuote | null> {
+  async quote(
+    _direction: MintDirection,
+    _asset: Address,
+    _amount: number,
+  ): Promise<MintQuote | null> {
     return null;
   }
 

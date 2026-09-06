@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
         issuanceEnabled: boolean;
         poolRegistered: boolean;
         poolParams: { fee: number; tickSpacing: number };
+        issuanceFeeBps: number;
       },
   /** Issuance quote for the last issueRaw, raw bigint [base, fee, total]. */
   issue: [0n, 0n, 0n] as [bigint, bigint, bigint],
@@ -121,6 +122,7 @@ beforeEach(() => {
     issuanceEnabled: true,
     poolRegistered: true,
     poolParams: POOL_PARAMS,
+    issuanceFeeBps: 50,
   };
   h.issue = [0n, 0n, 0n];
   h.issueCalls = 0;
@@ -141,13 +143,18 @@ describe("quoteBuy", () => {
     const quote = await quoteBuy("H100", 2, 50, makeDeps());
     expect(quote).not.toBeNull();
     const q = quote as TradeQuote;
-    expect(q.legs).toEqual({ pool: 0, issuance: 2 });
+    expect(q.legs.map((l) => [l.kind, l.gpuUnits])).toEqual([[
+      "issuance",
+      2,
+    ]]);
     // 2.5 gUSD base + 50bps fee = 2.5125 total for the two units.
     expect(q.price).toBeCloseTo(1.25625, 12);
     expect(q.notional).toBeCloseTo(2.5125, 12);
     // No pool leg → no protocol fee to split out; the issuance fee stands
-    // alone.
-    expect(q.fees).toEqual({ pool: 0, protocol: 0, issuance: 0.0125 });
+    // alone, carried by its own leg.
+    expect(q.legs).toEqual([
+      { kind: "issuance", gpuUnits: 2, gUsd: 2.5125, fees: { issuance: 0.0125 } },
+    ]);
     // The signed cap is the notional plus tolerance, rounded up.
     expect(q.maxPaid).toBeCloseTo(Number(applyBps(2_512_500n, 50, "up")) / 1e6, 12);
     expect(q.minOut).toBe(0);
@@ -161,12 +168,21 @@ describe("quoteBuy", () => {
     const quote = await quoteBuy("H100", 2, 50, makeDeps());
     expect(quote).not.toBeNull();
     const q = quote as TradeQuote;
-    expect(q.legs).toEqual({ pool: 2, issuance: 0 });
+    expect(q.legs.map((l) => [l.kind, l.gpuUnits])).toEqual([[
+      "pool",
+      2,
+    ]]);
     expect(q.notional).toBeCloseTo(4, 12);
     // The quoter's amountIn is all-in: the hook's take is split out for
     // display, floor(4,000,000 × 10,000 / 10,050) = 3,980,099 net.
-    expect(q.fees.protocol).toBeCloseTo(Number(4_000_000n - 3_980_099n) / 1e6, 12);
-    expect(q.fees.issuance).toBe(0);
+    expect(q.legs).toEqual([
+      {
+        kind: "pool",
+        gpuUnits: 2,
+        gUsd: 4,
+        fees: { protocol: Number(4_000_000n - 3_980_099n) / 1e6 },
+      },
+    ]);
     expect(h.issueCalls).toBe(0);
   });
 
@@ -176,7 +192,10 @@ describe("quoteBuy", () => {
     const quote = await quoteBuy("H100", 2, 50, makeDeps());
     expect(quote).not.toBeNull();
     const q = quote as TradeQuote;
-    expect(q.legs).toEqual({ pool: 1.5, issuance: 0.5 });
+    expect(q.legs.map((l) => [l.kind, l.gpuUnits])).toEqual([
+      ["pool", 1.5],
+      ["issuance", 0.5],
+    ]);
     // 3 gUSD pool leg + 0.628125 issuance leg.
     expect(q.notional).toBeCloseTo(3.628125, 12);
     const expectedMax = Number(applyBps(3_000_000n + 628_125n, 50, "up")) / 1e6;
@@ -194,7 +213,7 @@ describe("quoteBuy", () => {
     h.reg = { ...h.reg!, issuanceEnabled: false };
     const quote = await quoteBuy("H100", 2, 50, makeDeps());
     expect(quote).not.toBeNull();
-    expect(quote?.legs).toEqual({ pool: 2, issuance: 0 });
+    expect(quote?.legs.map((l) => [l.kind, l.gpuUnits])).toEqual([["pool", 2]]);
   });
 
   it("returns null for an unregistered asset and invalid sizes", async () => {
@@ -206,6 +225,7 @@ describe("quoteBuy", () => {
       issuanceEnabled: true,
       poolRegistered: true,
       poolParams: POOL_PARAMS,
+      issuanceFeeBps: 50,
     };
     expect(await quoteBuy("H100", 0, 50, makeDeps())).toBeNull();
     expect(await quoteBuy("H100", -3, 50, makeDeps())).toBeNull();
@@ -227,13 +247,18 @@ describe("quoteSell", () => {
     const quote = await quoteSell("H100", 2, 50, makeDeps());
     expect(quote).not.toBeNull();
     const q = quote as TradeQuote;
-    expect(q.legs).toEqual({ pool: 2, issuance: 0 });
+    expect(q.legs.map((l) => [l.kind, l.gpuUnits])).toEqual([[
+      "pool",
+      2,
+    ]]);
     expect(q.notional).toBeCloseTo(3.8, 12);
     expect(q.price).toBeCloseTo(1.9, 12);
     // gross = floor(3,800,000 × 10,000 / 9,950) = 3,819,095; the split is
     // display-only — the row that signs is the net.
-    expect(q.fees.protocol).toBeCloseTo(Number(3_819_095n - 3_800_000n) / 1e6, 12);
-    expect(q.fees.issuance).toBe(0);
+    expect(q.legs).toHaveLength(1);
+    expect(q.legs[0]!.kind).toBe("pool");
+    if (q.legs[0]!.kind !== "pool") return;
+    expect(q.legs[0]!.fees.protocol).toBeCloseTo(Number(3_819_095n - 3_800_000n) / 1e6, 12);
     // minOut = floor(3,800,000 × 9,950 / 10,000).
     expect(q.minOut).toBeCloseTo(Number(applyBps(3_800_000n, 50, "down")) / 1e6, 12);
     expect(q.maxPaid).toBe(0);
@@ -278,6 +303,7 @@ describe("describeAsset", () => {
       // the fake's raw v4 fee (3000 hundredths-of-a-bip) arrives as 30 bps
       poolFeeBps: 30,
       hookFeeBps: 50,
+      issuanceFeeBps: 50,
     });
     expect(h.registrationCalls).toBe(1);
     await describeAsset("H100", deps);

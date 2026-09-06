@@ -220,6 +220,9 @@ export function buildMarket(id: AssetId): Market {
     indexPrice: idxLast,
     indexChange24hPct: (idxLast / index[index.length - 25]!.value - 1) * 100,
     basisPct: (last.close / idxLast - 1) * 100,
+    // The simulated universe confesses via indexStatus's absence; it carries
+    // no publication telemetry — there is no wire behind it.
+    indexTelemetry: null,
     volume24hUsd: turnover,
     liquidityUsd: liquidity,
     sparkline: closes.slice(-48),

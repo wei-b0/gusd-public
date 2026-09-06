@@ -27,7 +27,7 @@ export default function NotFound() {
               BACK TO MARKETS
             </Link>
             <Link
-              href="/oracle"
+              href="/oracle?tab=developers"
               className="slug border border-rule-strong px-4 py-2 text-[12px] text-data transition-colors hover:border-amber hover:text-amber"
             >
               INTERFACE CATALOG

@@ -13,7 +13,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract GPUIssuanceTest is Test {
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     MockGPUPriceOracle internal oracle;
     address internal ledger = makeAddr("ledger");
@@ -25,8 +25,8 @@ contract GPUIssuanceTest is Test {
 
     function setUp() public {
         vm.warp(1_000_000);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new MockGPUPriceOracle(address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
         gusd.setRevenueSink(ledger); // any sink ok for tests
@@ -34,10 +34,10 @@ contract GPUIssuanceTest is Test {
         issuance.setIssuanceEnabled(H100, true);
         oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         // fund alice with gUSD
-        usdc.mint(alice, 1_000_000e6);
+        underlying.mint(alice, 1_000_000e6);
         vm.startPrank(alice);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(10_000e6, alice);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(10_000e6, alice);
         gusd.approve(address(issuance), type(uint256).max);
         vm.stopPrank();
     }
@@ -158,11 +158,11 @@ contract GPUIssuanceTest is Test {
         amount = bound(amount, 1, 1_000_000e18);
         price = bound(price, 1, 100_000); // $0.0001 .. $10.00
         oracle.setPrice(H100, price, block.timestamp);
-        usdc.mint(alice, 100_000_000e6);
+        underlying.mint(alice, 100_000_000e6);
         // fund alice for worst-case cost at max price (base <= 1e13 + fee)
         vm.startPrank(alice);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(20_000_000e6, alice); // covers base<=1e13 + fee
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(20_000_000e6, alice); // covers base<=1e13 + fee
         gusd.approve(address(issuance), type(uint256).max);
         vm.stopPrank();
         uint256 gusdBefore = gusd.balanceOf(address(issuance));

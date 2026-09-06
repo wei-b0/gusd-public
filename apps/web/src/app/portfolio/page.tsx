@@ -171,14 +171,14 @@ function PortfolioBook() {
                             flat || pnl === null ? "text-dim" : pnl >= 0 ? "text-up" : "text-down"
                           }`}
                         >
-                          {!flat && pnl !== null && (
-                            <span aria-hidden className="mr-1 text-[8px]">
-                              {pnl >= 0 ? "▲" : "▼"}
-                            </span>
-                          )}
                           {pnl === null || pnlPct === null
                             ? "—"
                             : `${fmtNotional(Math.abs(pnl))} · ${fmtPctSigned(pnlPct)}`}
+                          {!flat && pnl !== null && (
+                            <span aria-hidden className="ml-1 text-[8px]">
+                              {pnl >= 0 ? "▲" : "▼"}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );

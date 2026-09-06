@@ -3,12 +3,15 @@
 /**
  * OrderSlip — the trade furniture inside the Trade panel. Quotes come from
  * the router stack itself (the contract's own quoteIssue and the
- * hook-aware V4Quoter — quote == execute); execution runs through the
- * action runner, so every submit walks approval → signature → confirmation
- * as one visible action. The reference price stays the one price the desk
- * displays; when the data layer asserts none, the slip goes dormant rather
- * than quoting against nothing. The quote ledger prints at ledger grade
- * (fixed 4 decimals) so its rows visibly close.
+ * hook-aware V4Quoter — the same pricing path execution runs); execution
+ * re-quotes fresh at submit and runs through the action runner, so every
+ * submit walks quote → approval → signature → confirmation as one visible
+ * action, bounded by the signed max/min rather than the displayed numbers.
+ * The reference price stays the one price the desk displays; when the data
+ * layer asserts none, the slip goes dormant rather than quoting against
+ * nothing. The quote ledger prints at ledger grade (fixed 4 decimals) so
+ * its rows visibly close, and it carries only the execution's own
+ * arithmetic — estimate, proceeds, signed bound.
  *
  * Unavailable markets speak in place: an unregistered asset, a closed
  * issuance, or an empty pool each get their own honest voice — never a
@@ -44,7 +47,8 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const [sizeText, setSizeText] = useState("1");
   const [toleranceBps, setToleranceBps] = useState(DEFAULT_TOLERANCE_BPS);
   const [availability, setAvailability] = useState<TradeAvailability | null | undefined>(undefined);
-  const [quote, setQuote] = useState<TradeQuote | null>(null);
+  /** undefined = quoting, null = the chain can't quote this order, else the quote. */
+  const [quote, setQuote] = useState<TradeQuote | null | undefined>(undefined);
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,14 +76,16 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   }, [trading, asset]);
 
   // The execution quote re-prices on every settled input and after an
-  // order lands (the balances behind presets and caps moved).
+  // order lands (the balances behind presets and caps moved). undefined
+  // marks the in-flight window so the "can't quote" voice only speaks
+  // once the chain has actually answered.
   useEffect(() => {
     if (!asset || !validSize || referencePrice === null) {
       setQuote(null);
       return;
     }
     let alive = true;
-    setQuote(null);
+    setQuote(undefined);
     const timer = setTimeout(() => {
       trading
         .quote({ asset, side, size, toleranceBps })
@@ -113,6 +119,10 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       gate = "No secondary depth yet — sells open when the pool holds liquidity.";
     } else if (side === "buy" && !availability.issuanceEnabled && !availability.poolRegistered) {
       gate = "Neither issuance nor a market is open for this asset yet — orders wait for the operator.";
+    } else if (side === "sell" && quote === null && referencePrice !== null && validSize) {
+      // Registered but unquotable — at genesis that's an empty pool. The
+      // dashes say "no numbers"; this says why.
+      gate = "Nothing to quote this sell against yet — the pool holds no depth.";
     }
   }
 
@@ -139,7 +149,11 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   // Ledger terms, each printed at 4 decimals so the rows visibly close.
   // No quote → no ledger rows: sizing an order against nothing would
   // fabricate the one number the ledger exists to show.
-  const feeTotal = quote ? quote.fees.protocol + quote.fees.issuance : null;
+  //
+  // The estimate and the bound are different numbers on purpose: "You
+  // pay ~" is what the quote expects to move; "Max you pay" is the cap
+  // the user signs and the router refunds from. The tolerance control
+  // changes the bound, never the quoted price.
 
   return (
     <div className="space-y-3.5 p-3.5">
@@ -218,32 +232,27 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         </div>
       </div>
 
-      {/* Quote ledger — size × est. price ≈ the cap, with the fee stack called out */}
+      {/* Quote ledger — the execution's own arithmetic: what a fill is
+          expected to move and the bound it actually signs against the
+          contracts. The desk's price line above the panel carries the
+          reference; the ticket doesn't restate it. */}
       <dl className="space-y-1.5 text-[12.5px]">
         <LedgerRow
           label="Est. price"
           value={quote ? fmtGusdLedger(quote.price) : "—"}
         />
-        {quote && side === "buy" && quote.legs.pool > 0 && quote.legs.issuance > 0 && (
-          <LedgerRow
-            label="Fill split"
-            value={`${fmtUnits(quote.legs.pool)} market + ${fmtUnits(quote.legs.issuance)} issuance`}
-          />
-        )}
-        {quote && side === "buy" && quote.legs.pool === 0 && (
-          <LedgerRow label="Source" value="primary issuance" />
-        )}
-        {feeTotal !== null && (
-          <LedgerRow label="Est. fee · incl." value={fmtGusdLedger(feeTotal)} />
-        )}
         <LedgerRow
           label={side === "buy" ? "You pay" : "You receive"}
+          value={quote ? `~${fmtGusdLedger(quote.notional)} gUSD` : "—"}
+          strong
+        />
+        <LedgerRow
+          label={side === "buy" ? "Max you pay" : "Min you receive"}
           value={
             quote
               ? `${fmtGusdLedger(side === "buy" ? quote.maxPaid : quote.minOut)} gUSD`
               : "—"
           }
-          strong
         />
       </dl>
 
@@ -285,7 +294,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         type="button"
         onClick={onSubmit}
         disabled={
-          active !== null || !validSize || quote === null || gate !== null || referencePrice === null
+          active !== null || !validSize || !quote || gate !== null || referencePrice === null
         }
         className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
           side === "buy" ? "rev-g hover:opacity-90" : "rev-d hover:opacity-90"
@@ -299,23 +308,30 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           </>
         )}
       </button>
-
-      <p className="num text-[10px] leading-relaxed text-dim">
-        {availability
-          ? `Fees ${(availability.poolFeeBps / 100).toFixed(2)}% LP · ${(availability.hookFeeBps / 100).toFixed(2)}% protocol · settles in gUSD`
-          : "Settles in gUSD"}
-      </p>
     </div>
   );
 }
 
-function LedgerRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+function LedgerRow({
+  label,
+  value,
+  meta,
+  strong,
+}: {
+  label: string;
+  value: string;
+  meta?: string;
+  strong?: boolean;
+}) {
   return (
-    <div className="flex items-baseline justify-between gap-2">
-      <dt className={`slug ${strong ? "text-bright" : "text-dim"}`}>{label}</dt>
-      <dd className={`num ${strong ? "text-[14px] font-bold text-bright" : "text-[12.5px] text-data"}`}>
-        {value}
-      </dd>
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <dt className={`slug ${strong ? "text-bright" : "text-dim"}`}>{label}</dt>
+        <dd className={`num ${strong ? "text-[14px] font-bold text-bright" : "text-[12.5px] text-data"}`}>
+          {value}
+        </dd>
+      </div>
+      {meta && <div className="num text-right text-[10px] leading-tight text-dim">{meta}</div>}
     </div>
   );
 }

@@ -8,39 +8,39 @@ import {sgUSD} from "../../src/sgUSD.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract SGUSDTest is Test {
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     sgUSD internal sg;
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
 
     function setUp() public {
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         sg = new sgUSD(IERC20(address(gusd)), address(this));
         gusd.setRevenueSink(address(sg)); // sink may be any gUSD holder
-        usdc.mint(alice, 100_000e6);
-        usdc.mint(bob, 100_000e6);
+        underlying.mint(alice, 100_000e6);
+        underlying.mint(bob, 100_000e6);
         _mintGusd(alice, 50_000e6);
         _mintGusd(bob, 20_000e6);
-        usdc.mint(address(this), 10e6);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(1e6, address(this));
+        underlying.mint(address(this), 10e6);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(1e6, address(this));
         gusd.approve(address(sg), type(uint256).max);
         sg.seed(1e6);
     }
 
     function _mintGusd(address to, uint256 amt) internal {
         vm.startPrank(to);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(amt, to);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(amt, to);
         vm.stopPrank();
     }
 
     function test_preSeedDepositReverts() public {
         // fresh, unseeded vault (setUp already seeds the main one)
         sgUSD fresh = new sgUSD(IERC20(address(gusd)), address(this));
-        usdc.mint(bob, 100e6);
+        underlying.mint(bob, 100e6);
         _mintGusd(bob, 100e6);
         vm.startPrank(bob);
         gusd.approve(address(fresh), type(uint256).max);

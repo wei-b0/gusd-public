@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chainAddParams,
   chainCaip2From,
@@ -57,5 +57,56 @@ describe("chains registry", () => {
     expect(chainIdFromCaip2("eip155:31337")).toBe(31_337);
     expect(chainIdFromCaip2(chainCaip2From("0x2105"))).toBe(8453);
     expect(chainIdFromCaip2("0x2105")).toBeNull(); // hex is not CAIP-2
+  });
+});
+
+// The dev override is read from env at module load, so each case re-imports
+// the module against a stubbed env.
+describe("dev funding override", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("forces the live surface onto the configured chain", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_FUNDING_DEV", "live");
+    vi.resetModules();
+    const { chainCapabilities } = await import("./chains");
+    expect(chainCapabilities(31_337)).toEqual({
+      crossChainFunding: true,
+      crossChainGuidance: false,
+    });
+  });
+
+  it("forces the guidance surface onto the configured chain", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_FUNDING_DEV", "guidance");
+    vi.resetModules();
+    const { chainCapabilities } = await import("./chains");
+    expect(chainCapabilities(31_337)).toEqual({
+      crossChainFunding: false,
+      crossChainGuidance: true,
+    });
+  });
+
+  it("never widens a chain the build did not configure", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_FUNDING_DEV", "guidance");
+    vi.resetModules();
+    const { chainCapabilities } = await import("./chains");
+    // Base keeps its real (live) capability; Sepolia keeps none.
+    expect(chainCapabilities(8453)).toEqual({ crossChainFunding: true, crossChainGuidance: false });
+    expect(chainCapabilities(84_532)).toEqual({
+      crossChainFunding: false,
+      crossChainGuidance: false,
+    });
+  });
+
+  it("unrecognized values leave the registry untouched", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_FUNDING_DEV", "yes");
+    vi.resetModules();
+    const { chainCapabilities } = await import("./chains");
+    expect(chainCapabilities(31_337)).toEqual({
+      crossChainFunding: false,
+      crossChainGuidance: false,
+    });
   });
 });

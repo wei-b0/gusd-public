@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { ServicesProvider } from "@/data/services";
 import { PrivyRoot } from "@/data/auth/privy-root";
 import { SystemBar } from "@/components/shell/system-bar";
@@ -10,10 +10,24 @@ import { StatusLine } from "@/components/shell/status-line";
 import { TxDevPanel } from "@/components/ui/tx-receipt";
 import "./globals.css";
 
-const jbMono = JetBrains_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "700", "800"],
+/**
+ * JetBrains Mono, self-hosted and complete. The full files cover the geometric
+ * shapes the terminal grammar draws with (▲ ▼ ▶ ▸ ● ○ ≠ →) that the Google
+ * latin subset's unicode-range excludes — under the subset, those glyphs fell
+ * through to a size-adjusted Arial fallback face and rendered in the wrong
+ * typeface mid-run. `adjustFontFallback: false` so no proportional fallback
+ * face is generated again; anything uncovered degrades to ui-monospace.
+ */
+const jbMono = localFont({
+  src: [
+    { path: "../../public/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2", weight: "400", style: "normal" },
+    { path: "../../public/fonts/jetbrains-mono/JetBrainsMono-Medium.woff2", weight: "500", style: "normal" },
+    { path: "../../public/fonts/jetbrains-mono/JetBrainsMono-Bold.woff2", weight: "700", style: "normal" },
+    { path: "../../public/fonts/jetbrains-mono/JetBrainsMono-ExtraBold.woff2", weight: "800", style: "normal" },
+  ],
+  display: "swap",
   variable: "--font-jb",
+  adjustFontFallback: false,
 });
 
 export const metadata: Metadata = {

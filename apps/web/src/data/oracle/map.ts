@@ -18,12 +18,16 @@ import type {
   IndexPoint,
   IndexQuality,
   IndexStatus,
+  IndexTelemetry,
   ProviderObservation,
 } from "@/domain/types";
 import { LIVE_MAX_AGE_MS, STALE_MAX_AGE_MS } from "./config";
 
 /** Trailing-24h window. */
 const DAY_MS = 86_400_000;
+
+/** Trailing-1h window (publications-per-hour telemetry). */
+const HOUR_MS = 3_600_000;
 
 /**
  * How far from now−24h the anchor candidate may sit and still ground a 24h
@@ -68,6 +72,52 @@ export function mapQuality(candidate: CandidateDto): IndexQuality {
     updatedAt: Date.parse(candidate.computedAt),
   };
 }
+
+/** Candidate series (oldest-first) → the latest panel's wire telemetry, plus
+ *  publications-per-hour counted from the series' own computedAt stamps
+ *  (deduped by calcHash, like the Index points — a re-fetched candidate is
+ *  one landing, not two). Every field is the wire's own; a withheld panel
+ *  still landed, so it still counts. Empty series → null (never zeros posed
+ *  as live telemetry). */
+export function mapIndexTelemetry(
+  candidates: readonly CandidateDto[],
+  now: number,
+): IndexTelemetry {
+  if (candidates.length === 0) return EMPTY_TELEMETRY;
+  const latest = candidates[candidates.length - 1]!;
+  const seen = new Set<string>();
+  let publications1h = 0;
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const c = candidates[i]!;
+    if (seen.has(c.calcHash)) continue;
+    seen.add(c.calcHash);
+    const t = Date.parse(c.computedAt);
+    if (!Number.isFinite(t)) continue;
+    // Walked newest-first: the first duplicate-free stamp older than the
+    // hour window ends the count.
+    if (t < now - HOUR_MS) break;
+    publications1h++;
+  }
+  return {
+    dispersion: latest.dispersion,
+    confidenceLow: latest.confidenceLow,
+    confidenceHigh: latest.confidenceHigh,
+    sourcesObserved: latest.providersObserved,
+    sourcesContributing: latest.providersContributing,
+    publications1h,
+    lastPublishedAt: Date.parse(latest.computedAt) || null,
+  };
+}
+
+const EMPTY_TELEMETRY: IndexTelemetry = {
+  dispersion: null,
+  confidenceLow: null,
+  confidenceHigh: null,
+  sourcesObserved: null,
+  sourcesContributing: null,
+  publications1h: null,
+  lastPublishedAt: null,
+};
 
 /** Candidate series → oldest-first IndexPoints, deduped by publication hash
  *  (a candidate re-fetched over REST and re-received over SSE is one point,

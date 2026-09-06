@@ -9,7 +9,7 @@
 import type { Address } from "viem";
 import { getContracts, gpuTokenClient, erc20Client } from "./contracts";
 import { poolIdOf, canonicalPoolKey } from "./pool";
-import { formatGusdRaw, formatUsdcRaw, formatGpuUnits } from "@/domain/units";
+import { formatGusdRaw, formatStableRaw, formatGpuUnits } from "@/domain/units";
 
 /** Onchain registration state of one market — the single source for
  *  "unavailable" UI states. Null when the GPU isn't registered at all. */
@@ -19,6 +19,8 @@ export interface GpuRegistration {
   issuanceEnabled: boolean;
   poolRegistered: boolean;
   poolParams: { fee: number; tickSpacing: number };
+  /** This market's primary issuance fee, bps. */
+  issuanceFeeBps: number;
 }
 
 export interface GusdState {
@@ -41,15 +43,15 @@ export interface ContractReads {
   balanceOf(token: Address, owner: Address): Promise<bigint>;
   /** ERC-20 allowance, raw bigint. */
   allowance(token: Address, owner: Address, spender: Address): Promise<bigint>;
-  /** gUSD / USDC / sgUSD balances in one batch, product units. */
-  balances(owner: Address): Promise<{ gUsd: number; usdc: number; sGusd: number }>;
+  /** gUSD / reserve-asset / sgUSD balances in one batch, product units. */
+  balances(owner: Address): Promise<{ gUsd: number; stable: number; sGusd: number }>;
   /** GPU positions across every registered gpuId (18-decimal raw + product). */
   positions(owner: Address): Promise<Array<{ gpuId: `0x${string}`; token: Address; raw: bigint; size: number }>>;
   /** Market registration state (token, issuance gate, pool). */
   registration(gpuId: `0x${string}`): Promise<GpuRegistration | null>;
   /** Issuance quote: base, fee, total — gUSD product units. */
   quoteIssue(gpuId: `0x${string}`, amountRaw: bigint): Promise<{ base: number; fee: number; totalPaid: number }>;
-  /** GUSD fee + pause state (pause blocks mint/redeem and USDC-paid legs). */
+  /** GUSD fee + pause state (pause blocks mint/redeem and reserve-paid legs). */
   gusdState(): Promise<GusdState>;
   /** Vault share price + caps for one owner. */
   sgusdState(owner: Address): Promise<SGusdState>;
@@ -66,7 +68,7 @@ export interface ContractReads {
  * round trip on multi-call flows.
  */
 export function contractReads(): ContractReads {
-  const { gusd, usdc, sgusd, issuance, hook, oracle, addresses } = getContracts();
+  const { gusd, stable, sgusd, issuance, hook, oracle, addresses } = getContracts();
   const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
   return {
@@ -77,14 +79,14 @@ export function contractReads(): ContractReads {
       return erc20Client(token).read.allowance([owner, spender]);
     },
     async balances(owner) {
-      const [gUsdRaw, usdcRaw, sGusdRaw] = await Promise.all([
+      const [gUsdRaw, stableRaw, sGusdRaw] = await Promise.all([
         gusd.read.balanceOf([owner]),
-        usdc.read.balanceOf([owner]),
+        stable.read.balanceOf([owner]),
         sgusd.read.balanceOf([owner]),
       ]);
       return {
         gUsd: formatGusdRaw(gUsdRaw),
-        usdc: formatUsdcRaw(usdcRaw),
+        stable: formatStableRaw(stableRaw),
         sGusd: formatGusdRaw(sGusdRaw),
       };
     },
@@ -102,18 +104,12 @@ export function contractReads(): ContractReads {
       return entries.filter((e): e is NonNullable<typeof e> => e !== null);
     },
     async registration(gpuId) {
-      const token = await issuance.read.tokenOf([gpuId]);
+      // One config read carries everything the gate and fee schedule need.
+      const cfg = await issuance.read.gpuConfig([gpuId]);
+      const token = cfg.token;
       if (token === ZERO) return null;
-      const [enabled, params] = await Promise.all([
-        issuance.read.isIssuanceEnabled([gpuId]),
-        issuance.read.poolParamsOf([gpuId]),
-      ]);
-      const key = canonicalPoolKey(
-        addresses.gusd as Address,
-        token,
-        { fee: Number(params.fee), tickSpacing: Number(params.tickSpacing) },
-        addresses.hook as Address,
-      );
+      const params = { fee: Number(cfg.fee), tickSpacing: Number(cfg.tickSpacing) };
+      const key = canonicalPoolKey(addresses.gusd as Address, token, params, addresses.hook as Address);
       let poolRegistered = false;
       try {
         const registered = await hook.read.poolGpuId([poolIdOf(key)]);
@@ -124,9 +120,10 @@ export function contractReads(): ContractReads {
       return {
         gpuId,
         token,
-        issuanceEnabled: enabled,
+        issuanceEnabled: cfg.enabled,
         poolRegistered,
-        poolParams: { fee: Number(params.fee), tickSpacing: Number(params.tickSpacing) },
+        poolParams: params,
+        issuanceFeeBps: Number(cfg.feeBps),
       };
     },
     async quoteIssue(gpuId, amountRaw) {

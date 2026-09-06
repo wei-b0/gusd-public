@@ -14,7 +14,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 ///         GPUPriceOracle and is immediately consumable by GPUIssuance — the
 ///         production oracle is a drop-in replacement for the mock.
 contract OraclePublicationTest is Test {
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     GPUPriceOracle internal oracle;
     address internal ledger = makeAddr("ledger");
@@ -26,18 +26,18 @@ contract OraclePublicationTest is Test {
 
     function setUp() public {
         vm.warp(1_000_000);
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new GPUPriceOracle(address(this), publisher, 0);
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
         gusd.setRevenueSink(ledger);
         issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         issuance.setIssuanceEnabled(H100, true);
         // fund alice with gUSD
-        usdc.mint(alice, 1_000_000e6);
+        underlying.mint(alice, 1_000_000e6);
         vm.startPrank(alice);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(10_000e6, alice);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(10_000e6, alice);
         gusd.approve(address(issuance), type(uint256).max);
         vm.stopPrank();
     }

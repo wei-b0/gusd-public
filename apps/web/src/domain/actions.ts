@@ -51,7 +51,7 @@ export function isActionTerminal(phase: ActionPhase): boolean {
 }
 
 /** Which protocol face an approval grants — display vocabulary only. */
-export type SpenderKind = "router" | "gusd" | "sgusd";
+export type SpenderKind = "router" | "gusd" | "sgusd" | "stableRouter";
 
 /** One spend permission an action needs before it can execute. The runner
  *  turns each need into its own approval transaction (exact amount, never

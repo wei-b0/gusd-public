@@ -12,7 +12,7 @@
  * replace the snapshot only after mount.
  */
 
-import { createContext, useContext, useMemo, useRef, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Services } from "@/domain/ports";
 import { isActionTerminal } from "@/domain/actions";
 import type { ActionOrigin, ActionRecord } from "@/domain/actions";
@@ -27,6 +27,7 @@ import type {
   WalletSession,
 } from "@/domain/types";
 import { MockServices } from "./mock/mock-services";
+import { DEMO_TICKS } from "./demo";
 import { DATA_SOURCE } from "./oracle/config";
 import { OracleServices } from "./oracle/oracle-services";
 import { PRIVY_ENABLED } from "./auth/privy-config";
@@ -58,7 +59,26 @@ export function ServicesProvider({
   /** Injection point for tests or a server-configured implementation. */
   services?: Services;
 }) {
-  const value = useMemo(() => services ?? createServices(), [services]);
+  const [value, setValue] = useState(() => services ?? createServices());
+  useEffect(() => {
+    // Dev-only tick demonstrator (`?demo=ticks`): swap just the market-data
+    // seam to the mock universe's own 1.8 s tick — auth/tx/session keep their
+    // instances, so the session never resets mid-demo. Dead code outside dev
+    // (DEMO_TICKS is a compile-time false in production).
+    if (services || !DEMO_TICKS) return;
+    // Port-by-port composition, not a spread: wrapped services carry
+    // prototype getters (Web3Services.marketData) a spread would drop.
+    setValue((current) => ({
+      marketData: new MockServices().marketData,
+      trading: current.trading,
+      auth: current.auth,
+      earn: current.earn,
+      mint: current.mint,
+      bridge: current.bridge,
+      tx: current.tx,
+      actions: current.actions,
+    }));
+  }, [services]);
   return <ServicesContext.Provider value={value}>{children}</ServicesContext.Provider>;
 }
 

@@ -8,7 +8,7 @@
  */
 
 /** viem is the app's chain vocabulary; its types may cross the domain seam. */
-import type { Hex, WalletClient } from "viem";
+import type { Hex, WalletClient, Address } from "viem";
 
 /** GPU asset classes traded on gUSD. Product language: the bare GPU name. */
 export type AssetId = "H100" | "H200" | "B200" | "B300" | "GB200" | "GB300" | "A100";
@@ -104,6 +104,11 @@ export interface Market {
    * simulated stand-in).
    */
   indexStatus?: IndexStatus;
+  /** Publication telemetry for the row's Index series — the oracle's own
+   *  fast-moving wire facts (dispersion, confidence band, sources, cadence),
+   *  not prices. Null when no oracle series backs the row (mock universe,
+   *  oracle unreachable): telemetry is never simulated, only null. */
+  indexTelemetry: IndexTelemetry | null;
   /** Trailing-24h traded volume, gUSD. Null without a market data source. */
   volume24hUsd: number | null;
   /** Depth available across the market's pools, gUSD. Null without a market
@@ -155,6 +160,27 @@ export interface ProviderObservation {
   /** Unix ms of the provider's latest observation. */
   lastObservedAt: number | null;
   status: "live" | "delayed" | "stale";
+}
+
+/** The oracle's own fast-moving wire facts about one benchmark series —
+ *  telemetry of the publication process, not prices. Every field comes
+ *  straight from the candidate wire; nothing here is derived into a number
+ *  the oracle did not print. Absent ⇒ null on the Market, never simulated. */
+export interface IndexTelemetry {
+  /** Dispersion of the latest panel, USD per GPU-hour (the oracle's own
+   *  spread measure across contributing sources). */
+  dispersion: number | null;
+  /** The panel's confidence band, USD per GPU-hour. Null when withheld. */
+  confidenceLow: number | null;
+  confidenceHigh: number | null;
+  /** Sources observed / actually contributing in the latest panel. */
+  sourcesObserved: number | null;
+  sourcesContributing: number | null;
+  /** Publications that landed in the trailing hour. Counted from the
+   *  candidate history's own computedAt stamps — real landings only. */
+  publications1h: number | null;
+  /** Unix ms of the latest publication (its computedAt, not local receipt). */
+  lastPublishedAt: number | null;
 }
 
 export interface IndexQuality {
@@ -262,8 +288,8 @@ export interface Account {
   address: string | null;
   gUsdBalance: number;
   sGUsdBalance: number;
-  /** The mint desk's funding asset — what gUSD is minted from. */
-  usdcBalance: number;
+  /** The chain's reserve asset — gUSD's underlying, the mint desk's home asset. */
+  stableBalance: number;
   positions: Position[];
 }
 
@@ -415,33 +441,52 @@ export interface TradeRequest {
   toleranceBps?: number;
 }
 
-/** The fee stack of one trade quote, gUSD. LP fees ride inside the pool
- *  swap's own price (never fabricated as a separate row); the hook's
- *  protocol fee and the issuance fee are broken out. */
-export interface TradeFees {
-  /** LP fee inside the pool swap — 0 in the v1 quote (not separately
-   *  observable pre-trade; the pool's feeGrowth owns it). */
-  pool: number;
+/** Fees one leg actually incurs, gUSD. A pool leg's LP fee rides inside the
+ *  swap's own all-in price — observable there, not decomposable pre-trade —
+ *  so only the hook's protocol take is broken out. */
+export interface PoolLegFees {
   /** The hook's protocol trading fee on the gUSD leg. */
   protocol: number;
-  /** Primary issuance fee (buys only). */
-  issuance: number;
 }
 
-/** How a buy splits between secondary depth and primary issuance. */
-export interface TradeLegs {
-  /** GPU units filled from the canonical pool. 0 at genesis. */
-  pool: number;
-  /** GPU units minted via primary issuance. */
+export interface IssuanceLegFees {
+  /** Primary issuance fee on this leg. */
   issuance: number;
 }
 
 /**
- * One trade quote — the execution-identical stack the order signs against:
- * the router's own quoteIssue for the issuance leg, the V4Quoter (hook-aware,
- * quote == execute) for the pool leg. Buys are exact-out: `maxPaid` is the
- * gUSD spend cap the router pulls and refunds from; sells are exact-in:
- * `minOut` is the payout floor. All gUSD figures are product units.
+ * One execution leg. `gUsd` is what the leg moves: cost for a buy leg,
+ * net proceeds for a sell leg. The frontend derives SOURCE and fee copy
+ * from the leg set — never from static market metadata — so the slip can
+ * never display a fee this particular quote does not incur.
+ */
+export type TradeLeg =
+  | { kind: "pool"; gpuUnits: number; gUsd: number; fees: PoolLegFees }
+  | { kind: "issuance"; gpuUnits: number; gUsd: number; fees: IssuanceLegFees };
+
+export type TradeLegKind = TradeLeg["kind"];
+
+/** Units one kind of leg fills across a quote (buys split, sells pool-only). */
+export function legUnits(quote: TradeQuote, kind: TradeLegKind): number {
+  return quote.legs.reduce((sum, leg) => (leg.kind === kind ? sum + leg.gpuUnits : sum), 0);
+}
+
+/** Total fees this quote's legs actually incur, gUSD. */
+export function quoteFees(quote: TradeQuote): number {
+  return quote.legs.reduce(
+    (sum, leg) => sum + ("protocol" in leg.fees ? leg.fees.protocol : leg.fees.issuance),
+    0,
+  );
+}
+
+/**
+ * One trade quote — the execution stack the order signs against: the
+ * router's own quoteIssue for the issuance leg, the hook-aware V4Quoter
+ * for the pool leg. Quote and execution run the same protocol pricing
+ * path and math; the fill is bounded by the user's signed limits — buys
+ * are exact-out (`maxPaid` is the gUSD spend cap the router pulls and
+ * refunds from), sells are exact-in (`minOut` is the payout floor). All
+ * gUSD figures are product units.
  */
 export interface TradeQuote {
   asset: AssetId;
@@ -451,13 +496,12 @@ export interface TradeQuote {
   price: number;
   /** gUSD total pre-tolerance: spend for buys, proceeds for sells. */
   notional: number;
-  fees: TradeFees;
   /** Buys: the signed spend cap — notional × (1 + tolerance). */
   maxPaid: number;
   /** Sells: the signed payout floor — notional × (1 − tolerance). */
   minOut: number;
-  /** Buys: the pool/issuance split this quote priced. */
-  legs: TradeLegs;
+  /** The execution legs this quote priced, in fill order. */
+  legs: readonly TradeLeg[];
   /** Tolerance the cap/floor carry, bps. */
   toleranceBps: number;
   /** Wall-clock the quote was computed at — the stale-quote guard's clock. */
@@ -475,10 +519,12 @@ export interface TradeQuote {
 export interface TradeAvailability {
   issuanceEnabled: boolean;
   poolRegistered: boolean;
-  /** The pool's LP fee, bps (the desk's fee-stack line). */
+  /** The pool's LP fee, bps (part of the desk's fee schedule). */
   poolFeeBps: number;
   /** The hook's protocol trading fee, bps. */
   hookFeeBps: number;
+  /** This market's primary issuance fee, bps. */
+  issuanceFeeBps: number;
 }
 
 export interface TradeReceipt {
@@ -528,30 +574,46 @@ export interface EarnQuote {
 }
 
 /* ---------------------------------------------------------------------------
- * Mint layer — USDC ⇄ gUSD, the real protocol pair.
+ * Mint layer — the chain's reserve asset ⇄ gUSD (plus whitelisted funding
+ * stables routed through the StableRouter).
  *
- * gUSD enters through GUSD.mintUSDC (USDC in, gUSD out net of the mint fee)
- * and leaves through GUSD.redeemUSDC (gUSD burned, USDC out net of the
- * redeem fee). The contract's preview functions are execution-identical, so
- * a preview IS the quote. Session receipts live in the tx store; the chain's
- * events own history.
+ * The reserve asset enters through GUSD.mint (in, gUSD out net of the mint
+ * fee) and leaves through GUSD.redeem (gUSD burned, reserve out net of the
+ * redeem fee). A funding stable that is NOT the reserve asset rides the
+ * StableRouter: v4 swap to the reserve, then the same mint (reverse on
+ * redeem). Previews are execution-identical, so a preview IS the quote.
+ * Session receipts live in the tx store; the chain's events own history.
  * ------------------------------------------------------------------------- */
 
-/** One side of the mint desk: mint (USDC in → gUSD out) or redeem (gUSD in
- *  → USDC out). */
+/** One side of the mint desk: mint (stable in → gUSD out) or redeem (gUSD in
+ *  → stable out). */
 export type MintDirection = "mint" | "redeem";
 
 /** An execution-identical preview from the contract, in product units. */
 export interface MintQuote {
   direction: MintDirection;
-  /** Input amount — USDC for mint, gUSD for redeem. */
+  /** The funding stable this quote is denominated in — the reserve asset
+   *  itself or a StableRouter-whitelisted stable. Identity comes from the
+   *  deployment record, never from token symbols. */
+  asset: Address;
+  /** Input amount — the stable for mint, gUSD for redeem. */
   input: number;
-  /** Output after the fee — gUSD for mint, USDC for redeem. */
+  /** Output after the fee — gUSD for mint, the stable for redeem. */
   output: number;
-  /** Fee taken on the input, same units as the input. */
+  /** The mint/redeem fee, in reserve-asset (gUSD-equivalent) units. The
+   *  reserve-asset path charges exactly this; via a swap path the swap's
+   *  pool fee additionally sits inside the conversion (bounded by the
+   *  caller's slippage clip, reflected in `output`). */
   fee: number;
   /** The contract's current fee rate, bps. */
   feeBps: number;
   /** True when the protocol operator paused this flow. */
   paused: boolean;
+  /** True when `asset` is not the reserve asset — the quote's conversion
+   *  rides a v4 swap leg (and the action rides the StableRouter). */
+  viaSwap: boolean;
+  /** The signed swap floor for `viaSwap` quotes — what execution guarantees
+   *  at minimum (gUSD for mints, the funding stable for redemptions).
+   *  Null on the reserve-asset path, where the preview itself is exact. */
+  minOutput: number | null;
 }

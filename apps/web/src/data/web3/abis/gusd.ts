@@ -317,7 +317,7 @@ export const GUSD_ABI = [
         "internalType": "address"
       },
       {
-        "name": "usdcIn",
+        "name": "underlyingIn",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -405,7 +405,7 @@ export const GUSD_ABI = [
         "internalType": "uint256"
       },
       {
-        "name": "usdcOut",
+        "name": "underlyingOut",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -628,23 +628,10 @@ export const GUSD_ABI = [
   },
   {
     "type": "function",
-    "name": "mintFeeBps",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint16",
-        "internalType": "uint16"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "mintUSDC",
+    "name": "mint",
     "inputs": [
       {
-        "name": "usdcAmount",
+        "name": "underlyingAmount",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -662,6 +649,19 @@ export const GUSD_ABI = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "mintFeeBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -786,10 +786,10 @@ export const GUSD_ABI = [
   },
   {
     "type": "function",
-    "name": "previewMintUSDC",
+    "name": "previewMint",
     "inputs": [
       {
-        "name": "usdcAmount",
+        "name": "underlyingAmount",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -805,7 +805,7 @@ export const GUSD_ABI = [
   },
   {
     "type": "function",
-    "name": "previewRedeemUSDC",
+    "name": "previewRedeem",
     "inputs": [
       {
         "name": "gusdAmount",
@@ -815,7 +815,7 @@ export const GUSD_ABI = [
     ],
     "outputs": [
       {
-        "name": "usdcOut",
+        "name": "underlyingOut",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -824,20 +824,7 @@ export const GUSD_ABI = [
   },
   {
     "type": "function",
-    "name": "redeemFeeBps",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint16",
-        "internalType": "uint16"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "redeemUSDC",
+    "name": "redeem",
     "inputs": [
       {
         "name": "gusdAmount",
@@ -852,12 +839,25 @@ export const GUSD_ABI = [
     ],
     "outputs": [
       {
-        "name": "usdcOut",
+        "name": "underlyingOut",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "redeemFeeBps",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",

@@ -21,7 +21,7 @@ function snap(address: string | null): OnchainAccountSnapshot {
     loadedAt: null,
     chainId: CHAIN,
     gUsd: 0,
-    usdc: 0,
+    stable: 0,
     sGusd: 0,
     positions: [],
   };

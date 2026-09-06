@@ -1,6 +1,6 @@
 # gUSD Index Methodology — v0.2.0 (seven panels, per-panel quorums)
 
-The index is a weighted median-of-medians over per-provider contributions,
+The index is a weighted mean of capped weights over per-provider medians,
 guarded by screens and gates, published only when every gate passes. This
 document specifies v0.2.0 exactly as configured in
 `packages/pricing-engine/src/config.ts` (`DEFAULT_METHODOLOGY_CONFIG`) and

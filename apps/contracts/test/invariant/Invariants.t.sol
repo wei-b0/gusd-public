@@ -83,7 +83,7 @@ contract InvariantTest is Test, Deployers, IWorld {
         s_ledger.setTreasury(makeAddr("treasury"));
         s_usdc.mint(address(this), 1e6);
         s_usdc.approve(address(s_gusd), type(uint256).max);
-        s_gusd.mintUSDC(1e6, address(this));
+        s_gusd.mint(1e6, address(this));
         s_gusd.approve(address(s_sg), type(uint256).max);
         s_sg.seed(1e6);
         s_issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
@@ -112,11 +112,11 @@ contract InvariantTest is Test, Deployers, IWorld {
 
     function _initCanonicalPool() internal {
         s_usdc.mint(address(this), 20_000_000e6);
-        s_gusd.mintUSDC(20_000_000e6, address(this));
+        s_gusd.mint(20_000_000e6, address(this));
         s_usdc.mint(actors[0], 10_000_000e6);
         vm.startPrank(actors[0]);
         s_usdc.approve(address(s_gusd), type(uint256).max);
-        s_gusd.mintUSDC(10_000_000e6, actors[0]);
+        s_gusd.mint(10_000_000e6, actors[0]);
         s_gusd.approve(address(s_issuance), type(uint256).max);
         s_issuance.issue(H100, 200e18, actors[0]);
         vm.stopPrank();
@@ -139,7 +139,7 @@ contract InvariantTest is Test, Deployers, IWorld {
     }
 
     // IWorld facade passthroughs
-    function usdc() external view override returns (address) {
+    function underlying() external view override returns (address) {
         return address(s_usdc);
     }
 

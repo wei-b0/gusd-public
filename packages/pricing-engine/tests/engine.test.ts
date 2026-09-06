@@ -748,3 +748,144 @@ describe("panelOverrides", () => {
     expect(r.price).toBe(16);
   });
 });
+
+// === movement allowance (v0.3.0) ==============================================
+
+describe("movement allowance", () => {
+  /** The pre-0.3.0 shape: no movement section at all. Destructured, not
+   *  `undefined`-assigned — canonicalJson rejects undefined values, and a
+   *  JSON-stored config could never carry the key as undefined anyway. */
+  const { movement: _off, ...MOVEMENT_OFF } = DEFAULT_METHODOLOGY_CONFIG;
+  /** Wide allowance so bounds are unambiguous against 4dp rounding. */
+  const MOVEMENT_WIDE: MethodologyConfig = {
+    ...DEFAULT_METHODOLOGY_CONFIG,
+    movement: { allowancePct: 0.01, slotMs: 0, reversion: 0.7, stepPct: 0.4 },
+  };
+
+  const four = ["a", "b", "c", "d"].map((id, i) => providerPrice(id, 4.2 + i * 0.05));
+  const prior = {
+    price: 4.275,
+    computedAt: new Date(T0.getTime() - 60_000),
+    candidateId: "prior-m",
+  };
+
+  /** The un-drifted anchor for the same input. */
+  const anchor = (input: IndexInput): number => {
+    const { movement: _m, ...cfg } = input.config;
+    return computeIndex({ ...input, config: cfg }).price!;
+  };
+
+  it("first publication prints the pure anchor (no prior → no offset)", () => {
+    const r = computeIndex(makeInput(four));
+    expect(r.calcParams.movementOffset).toBeNull();
+    expect(r.price).toBe(anchor(makeInput(four)));
+  });
+
+  it("keeps the published figure within the accepted threshold of the anchor", () => {
+    const r = computeIndex(makeInput(four, { prior, config: DEFAULT_METHODOLOGY_CONFIG }));
+    const a = anchor(makeInput(four, { prior }));
+    expect(r.calcParams.movementOffset).not.toBeNull();
+    expect(Math.abs(r.price! - a)).toBeLessThanOrEqual(
+      a * DEFAULT_METHODOLOGY_CONFIG.movement!.allowancePct + 1e-9,
+    );
+  });
+
+  it("clamps a distant prior at the allowance edge and walks it back", () => {
+    // Prior 5% above the anchor: the reversion term alone exceeds the
+    // allowance, so the first figure sits exactly at anchor + allowance and
+    // successive publications carry the gap back down.
+    const distant = { ...prior, price: 4.275 * 1.05 };
+    const stepPrior = (p: { price: number }, k: number): IndexInput["prior"] => ({
+      price: p.price,
+      computedAt: new Date(T0.getTime() - 60_000 + k),
+      candidateId: `p${k}`,
+    });
+    const first = computeIndex(
+      makeInput(four, { prior: stepPrior(distant, 0), config: MOVEMENT_WIDE }),
+    );
+    const a = anchor(makeInput(four, { prior: distant }));
+    // (3 decimals: the clamp edge itself is round4'd on publish)
+    expect(first.price).toBeCloseTo(a * 1.01, 3);
+
+    // The walk converges into the band and never leaves it. Each step gets a
+    // fresh slot (now advances) so the deterministic step reseeds.
+    let current = { price: first.price!, computedAt: distant.computedAt, candidateId: "w0" };
+    for (let k = 1; k <= 40; k++) {
+      const now = new Date(T0.getTime() + k * 1000);
+      const next = computeIndex(
+        makeInput(four, { prior: current, now, config: MOVEMENT_WIDE }),
+      );
+      expect(Math.abs(next.price! - a)).toBeLessThanOrEqual(a * 0.01 + 1e-9);
+      current = { price: next.price!, computedAt: now, candidateId: `w${k}` };
+    }
+  });
+
+  it("is deterministic: the same input yields a byte-identical receipt", () => {
+    const a = computeIndex(makeInput(four, { prior, config: DEFAULT_METHODOLOGY_CONFIG }));
+    const b = computeIndex(makeInput(four, { prior, config: DEFAULT_METHODOLOGY_CONFIG }));
+    expect(a.receipt).toBe(b.receipt);
+    expect(a.price).toBe(b.price);
+  });
+
+  it("reseeds across slots, so the walk actually moves over time", () => {
+    const offsets = new Set<string>();
+    let current: IndexInput["prior"] = prior;
+    for (let k = 0; k < 12; k++) {
+      const now = new Date(T0.getTime() + k * DEFAULT_METHODOLOGY_CONFIG.movement!.slotMs);
+      const r = computeIndex(makeInput(four, { prior: current, now }));
+      offsets.add(r.calcParams.movementOffset as string);
+      current = { price: r.price!, computedAt: now, candidateId: `s${k}` };
+    }
+    expect(offsets.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it("publishes the pure anchor when the section is absent or zeroed", () => {
+    const zeroed: MethodologyConfig = {
+      ...DEFAULT_METHODOLOGY_CONFIG,
+      movement: { allowancePct: 0, slotMs: 0, reversion: 0.7, stepPct: 0.4 },
+    };
+    for (const config of [MOVEMENT_OFF, zeroed]) {
+      const r = computeIndex(makeInput(four, { prior, config }));
+      expect(r.calcParams.movementOffset).toBeNull();
+      expect(r.price).toBe(anchor(makeInput(four, { prior })));
+    }
+  });
+
+  it("never drifts a carried-forward (stale) or withheld figure", () => {
+    const carried = computeIndex(makeInput([], { prior, config: DEFAULT_METHODOLOGY_CONFIG }));
+    expect(carried.status).toBe("stale");
+    expect(carried.price).toBe(4.275);
+    expect(carried.calcParams.movementOffset).toBeNull();
+  });
+});
+
+describe("validateMethodologyConfig: movement section", () => {
+  it("accepts a config without the section (pre-0.3.0 shape)", () => {
+    const { movement: _m, ...legacy } = DEFAULT_METHODOLOGY_CONFIG;
+    expect(validateMethodologyConfig(legacy)).toEqual(legacy);
+  });
+
+  it("rejects an out-of-range allowance", () => {
+    const bad = {
+      ...DEFAULT_METHODOLOGY_CONFIG,
+      movement: { ...DEFAULT_METHODOLOGY_CONFIG.movement!, allowancePct: 0.5 },
+    };
+    expect(() => validateMethodologyConfig(bad)).toThrow(/movement\.allowancePct/);
+  });
+
+  it("rejects reversion ≥ 1", () => {
+    const bad = {
+      ...DEFAULT_METHODOLOGY_CONFIG,
+      movement: { ...DEFAULT_METHODOLOGY_CONFIG.movement!, reversion: 1 },
+    };
+    expect(() => validateMethodologyConfig(bad)).toThrow(/movement\.reversion/);
+  });
+
+  it("rejects unknown keys inside the section", () => {
+    const bad = {
+      ...DEFAULT_METHODOLOGY_CONFIG,
+      movement: { ...DEFAULT_METHODOLOGY_CONFIG.movement!, drift: 1 },
+    };
+    expect(() => validateMethodologyConfig(bad)).toThrow(/unknown key/);
+  });
+});

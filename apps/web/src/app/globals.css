@@ -60,6 +60,10 @@
   --color-rule-active: var(--color-rule-active);
   --color-rev-fg: var(--color-rev-fg);
   --font-terminal: var(--font-terminal);
+  /* Retire Tailwind's default font tokens: any stray font-sans/font-mono
+     utility resolves to the terminal face instead of silently leaving it. */
+  --font-sans: var(--font-terminal);
+  --font-mono: var(--font-terminal);
 }
 
 body {
@@ -68,6 +72,34 @@ body {
   font-family: var(--font-terminal);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* Canvas text — the charts' axes and legends — cannot resolve CSS variables
+   or next/font's emitted family names. This stable alias points at the same
+   committed files the app font loads (same URLs, one shared download). */
+@font-face {
+  font-family: "JetBrains Mono Local";
+  src: url("/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono Local";
+  src: url("/fonts/jetbrains-mono/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono Local";
+  src: url("/fonts/jetbrains-mono/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono Local";
+  src: url("/fonts/jetbrains-mono/JetBrainsMono-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-display: swap;
 }
 
 /* Every figure and numeral: tabular-locked, the machine's only face. */
@@ -91,6 +123,7 @@ body {
   font-family: var(--font-terminal);
   font-weight: 800;
   letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Reverse video — the terminal's active states. */
@@ -111,10 +144,20 @@ body {
   color: var(--color-rev-fg);
 }
 
-/* Tick flash: a changed figure re-prints with one pulse of its role color. */
+/* Tick flash: a changed figure re-prints with one pulse of its role color —
+   the terminal's own reverse video. The pulse mounts at a solid role-color
+   cell with dark ink (the .rev-g/.rev-d/.rev-w look), holds at full strength
+   for the first third, then releases on a long tail back to the printed
+   figure. Low-alpha washes read as a whisper on the dark glass; a
+   reverse-video punch does not. */
 @keyframes flash-cell {
   from {
     background-color: var(--flash, transparent);
+    color: var(--flash-ink, inherit);
+  }
+  35% {
+    background-color: var(--flash, transparent);
+    color: var(--flash-ink, inherit);
   }
   to {
     background-color: transparent;
@@ -123,16 +166,46 @@ body {
 .flash-up,
 .flash-down,
 .flash-wire {
-  animation: flash-cell 0.7s ease-out both;
+  animation: flash-cell 2.4s ease-out both;
 }
 .flash-up {
-  --flash: rgba(102, 247, 154, 0.2);
+  --flash: var(--ph-bright);
+  --flash-ink: var(--color-rev-fg);
 }
 .flash-down {
-  --flash: rgba(255, 107, 99, 0.2);
+  --flash: var(--color-down);
+  --flash-ink: var(--color-rev-fg);
 }
 .flash-wire {
-  --flash: rgba(69, 212, 232, 0.18);
+  --flash: var(--color-wire);
+  --flash-ink: var(--color-rev-fg);
+}
+
+/* Tick arrows: the pulse's direction glyph, printed beside the figure. The
+   pop rides the pulse from the gutter — absolutely positioned, so no figure
+   ever shifts — and fades with it; the hold keeps the last tick's direction
+   on show until the next one. */
+@keyframes arrow-pop {
+  from,
+  35% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.tick-pop {
+  position: absolute;
+  left: calc(100% + 0.25em);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.66em;
+  animation: arrow-pop 2.4s ease-out both;
+}
+.tick-hold {
+  display: inline-block;
+  margin-left: 0.3em;
+  font-size: 0.66em;
 }
 
 /* Abnormal rows: the ░ texture plus a text tag — never color alone. */
@@ -173,10 +246,12 @@ input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .flash-up,
-  .flash-down,
-  .flash-wire,
+  /* Color pulses are not motion — the changed-figure signal stays. What moves
+     or fades is off: the opacity-pulse utility and the arrow pop. */
   .motion-safe\:animate-pulse {
     animation: none;
+  }
+  .tick-pop {
+    display: none;
   }
 }

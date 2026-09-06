@@ -4,24 +4,28 @@
  * gUSD — the settlement unit section. Two distinct product flows behind one
  * task switcher (TabBar), never stacked and never blended:
  *
- *   Mint gUSD — USDC ⇄ gUSD through the GUSD contract. Minting pulls USDC
- *               and mints gUSD net of the mint fee; redeeming burns gUSD
- *               and pays USDC net of the redeem fee. Quotes are the
- *               contract's own previews — the same math execution runs.
- *               Its tab also carries the mint activity ledger.
+ *   Get gUSD — any supported stable ⇄ gUSD on one surface. The desk prices
+ *               the whole route — swap or bridge to the reserve asset, then
+ *               the 1:1 mint — and runs every leg through one action path.
+ *               Bridging and the en-route conversion are machinery: the
+ *               ledger's route row and the bridge lane, never a second
+ *               interface. Its tab also carries the mint activity ledger.
  *   Earn with sGUSD — liquid gUSD becomes earning capital. Its tab also
  *               carries the earning ledger.
  *
  * Minting never converts market positions at the Index — that model does
  * not exist in the product. Reading the page — the rates, the fees, the
- * activity — stays public; acting needs a wallet.
+ * activity — stays public; acting needs a wallet, and the desk's own CTA
+ * is the connect button until one exists.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { ActionRecord } from "@/domain/actions";
-import type { EarnDirection, EarnQuote, MintDirection, MintQuote } from "@/domain/types";
+import type { EarnDirection, EarnQuote } from "@/domain/types";
 import { fmtClock, fmtFull, fmtGusdLedger, fmtHash } from "@/domain/format";
+import { formatStableRaw } from "@/domain/units";
+import { LedgerRow } from "@/components/ui/ledger";
 import { ActionStatus, PhaseTag } from "@/components/ui/action-status";
 import { WalletlessNote } from "@/components/ui/walletless-note";
 import {
@@ -33,8 +37,11 @@ import {
   useWalletSession,
 } from "@/data/services";
 import { getOnchainAccountStore, useOnchainAccount } from "@/data/onchain/account-store";
+import { stablesFor, type StableMeta } from "@/data/web3/stables";
+import { contractReads } from "@/data/web3/reads";
 import { Gusd, SGusd } from "@/components/ui/pair";
 import { TuiPanel } from "@/components/ui/panel";
+import { GetDesk } from "@/components/gusd/get-desk";
 import { TabBar } from "@/components/ui/tab-bar";
 
 export default function GusdPage() {
@@ -58,7 +65,8 @@ export default function GusdPage() {
       <p className="max-w-prose text-[12.5px] leading-relaxed text-primary">
         Every GPU market settles in gUSD. gUSD is liquid protocol capital — it acquires GPU
         assets, receives the proceeds when positions sell, and deploys into sGUSD to earn. New
-        gUSD enters by minting USDC into the protocol; it exits by redeeming back.
+        gUSD enters through the desk below — from any supported stable, already here or
+        bridged in from another chain; it exits by redeeming back.
       </p>
 
       <div className="mt-5 border-b border-rule-strong pb-1">
@@ -78,15 +86,15 @@ export default function GusdPage() {
             label="gUSD flows"
           />
 
-          {/* Mint — the issuance prototype and its receipts. Hidden, not
+          {/* Mint — the single funding surface and its receipts. Hidden, not
               unmounted, so the form survives a tab switch. */}
           <div
             role="tabpanel"
-            aria-label="Mint gUSD"
+            aria-label="Get gUSD"
             hidden={desk !== "mint"}
             className="mt-6 space-y-6"
           >
-            <MintDesk />
+            <GetDesk />
             <MintActivity />
           </div>
 
@@ -163,224 +171,15 @@ function ModelStrip({ connected }: { connected: boolean }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* 01 — Mint gUSD                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * The mint desk — USDC ⇄ gUSD through the GUSD contract. Quotes are the
- * contract's own previews (execution-identical), so what the ledger shows
- * is what mintUSDC/redeemUSDC will do. Reading is public; acting needs the
- * wallet: one submit becomes the runner's plan (approval for mints, then
- * the action), and its live record fills the receipt slot.
- */
-function MintDesk() {
-  const { mint } = useServices();
-  const session = useWalletSession();
-  const onchain = useOnchainAccount(getOnchainAccountStore());
-  const [direction, setDirection] = useState<MintDirection>("mint");
-  const [amountText, setAmountText] = useState("1000");
-  const [quote, setQuote] = useState<MintQuote | null>(null);
-  const [settled, setSettled] = useState<ActionRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // One in-flight action per surface; both hooks stay mounted so hook order
-  // never depends on the direction switch.
-  const activeMint = useActiveAction("mint");
-  const activeRedeem = useActiveAction("redeem");
-  const active = direction === "mint" ? activeMint : activeRedeem;
-
-  const connected = session.status === "connected";
-  const walletBound = onchain.address !== null;
-  const balance = direction === "mint" ? onchain.usdc : onchain.gUsd;
-  const amount = Number(amountText);
-  const validAmount = Number.isFinite(amount) && amount > 0;
-  const paused = quote?.paused ?? false;
-  const inputLabel = direction === "mint" ? "USDC" : "gUSD";
-  const outputLabel = direction === "mint" ? "gUSD" : "USDC";
-
-  // Previews are async contract reads — debounce the keystroke, cancel on
-  // unmount, and never land a quote for an input that has since changed.
-  useEffect(() => {
-    setSettled(null);
-    setError(null);
-    if (!validAmount) {
-      setQuote(null);
-      return;
-    }
-    let alive = true;
-    const timer = setTimeout(() => {
-      mint
-        .quote(direction, amount)
-        .then((q) => {
-          if (alive) setQuote(q);
-        })
-        .catch(() => {
-          if (alive) setQuote(null);
-        });
-    }, 250);
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [mint, direction, amount, validAmount]);
-
-  async function onSubmit() {
-    setError(null);
-    setSettled(null);
-    try {
-      const record =
-        direction === "mint" ? await mint.mint(amount) : await mint.redeem(amount);
-      setSettled(record);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "The transaction didn't start.");
-    }
+/** The chain's funding stables, cheapest fail in the balances rail: no
+ *  deployment/config → empty list and the rail drops its stable rows rather
+ *  than crashing the page. */
+function useStableAssets(): StableMeta[] {
+  try {
+    return stablesFor();
+  } catch {
+    return [];
   }
-
-  return (
-    <TuiPanel
-      no="01"
-      title={
-        <>
-          Mint <Gusd />
-        </>
-      }
-      meta="USDC ⇄ gUSD"
-    >
-      <div className="p-3.5">
-        <p className="text-[11.5px] leading-relaxed text-dim">
-          Minting pulls USDC and mints gUSD net of the mint fee; redeeming burns gUSD and pays
-          USDC net of the redeem fee. The quotes below are the contract&apos;s own previews —
-          the same math execution runs.
-        </p>
-        <div className="mt-3">
-          <WalletlessNote />
-        </div>
-      </div>
-
-      <div className="px-3.5 pb-3.5">
-        {/* Direction */}
-        <div className="grid grid-cols-2 border border-rule-strong" role="group" aria-label="Mint direction">
-          {(["mint", "redeem"] as const).map((d) => (
-            <button
-              key={d}
-              type="button"
-              aria-pressed={direction === d}
-              onClick={() => {
-                setDirection(d);
-                setAmountText("1000");
-              }}
-              className={`slug py-2.5 transition-colors ${
-                direction === d ? (d === "mint" ? "rev-g" : "rev-d") : "text-dim hover:text-data"
-              }`}
-            >
-              {d === "mint" ? (
-                <>
-                  Mint · USDC → <Gusd />
-                </>
-              ) : (
-                <>
-                  Redeem · <Gusd /> → USDC
-                </>
-              )}
-            </button>
-          ))}
-        </div>
-
-        {/* Amount */}
-        <div className="mt-3.5 flex items-baseline justify-between">
-          <span className="slug text-dim">Amount · {inputLabel}</span>
-          {walletBound && (
-            <span className="num text-[10.5px] text-dim">
-              balance {fmtGusdLedger(balance)} {inputLabel}
-            </span>
-          )}
-        </div>
-        <div className="mt-1.5 flex items-stretch border border-rule-strong bg-ground focus-within:border-amber">
-          <input
-            type="text"
-            inputMode="decimal"
-            value={amountText}
-            onChange={(e) => setAmountText(e.target.value.replace(/[^0-9.]/g, ""))}
-            aria-label={`Amount in ${inputLabel}`}
-            className="num w-full bg-transparent px-3 py-2.5 text-[15px] text-data outline-none"
-          />
-          <div className="flex items-stretch border-l border-rule">
-            {[0.25, 0.5, 1].map((frac) => (
-              <button
-                key={frac}
-                type="button"
-                disabled={!walletBound || balance <= 0}
-                onClick={() => setAmountText(String(Number((balance * frac).toFixed(6))))}
-                className="num border-l border-rule px-2.5 text-[11px] text-dim first:border-l-0 hover:text-amber disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {frac * 100}%
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Quote ledger — previews are execution-identical, so these rows
-            sum to the input at ledger precision */}
-        <dl className="mt-3.5 space-y-1.5 text-[12.5px]">
-          <LedgerRow
-            label={direction === "mint" ? "You deposit" : "You redeem"}
-            value={validAmount ? `${fmtGusdLedger(amount)} ${inputLabel}` : "—"}
-          />
-          <LedgerRow
-            label={`Fee · ${quote ? (quote.feeBps / 100).toFixed(2) + "%" : "—"}`}
-            value={quote ? `${fmtGusdLedger(quote.fee)} ${inputLabel}` : "—"}
-          />
-          <LedgerRow
-            label="You receive"
-            value={quote ? `${fmtGusdLedger(quote.output)} ${outputLabel}` : "—"}
-            strong
-          />
-        </dl>
-
-        {paused && (
-          <p className="mt-3 text-[11.5px] leading-relaxed text-amber">
-            {direction === "mint"
-              ? "Minting is paused by the protocol operator — try again later."
-              : "Redemption is paused by the protocol operator — try again later."}
-          </p>
-        )}
-
-        {!connected && (
-          <p className="mt-3 text-[11.5px] leading-relaxed text-dim">
-            Connect a wallet to mint — nothing signs without one.
-          </p>
-        )}
-
-        {(active ?? settled) && <ActionStatus record={(active ?? settled) as ActionRecord} />}
-
-        {error && (
-          <p role="alert" className="mt-3 border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
-            {error}
-          </p>
-        )}
-
-        <button
-          type="button"
-          onClick={onSubmit}
-          disabled={active !== null || !validAmount || paused || !connected}
-          className={`slug mt-3.5 w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
-            direction === "mint" ? "rev-g hover:opacity-90" : "border border-down text-down hover:bg-down/10"
-          }`}
-        >
-          {active !== null ? (
-            "Working…"
-          ) : direction === "mint" ? (
-            <>
-              Mint <Gusd />
-            </>
-          ) : (
-            <>Redeem for USDC</>
-          )}
-        </button>
-      </div>
-    </TuiPanel>
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -417,14 +216,14 @@ function EarnDesk() {
   const seeded = earn.seeded !== false;
 
   // Vault previews are async contract reads — debounce, cancel on unmount,
-  // never land a quote for an input that has since changed.
+  // never land a quote for an input that has since changed. The stale quote
+  // clears up front: during the debounce the ledger shows "—", never the
+  // previous direction's numbers.
   useEffect(() => {
     setSettled(null);
     setError(null);
-    if (!validAmount) {
-      setQuote(null);
-      return;
-    }
+    setQuote(null);
+    if (!validAmount) return;
     let alive = true;
     const timer = setTimeout(() => {
       earnPort
@@ -647,13 +446,13 @@ function Cell({
 }
 
 /* ------------------------------------------------------------------ */
-/* 03 — Mint activity                                                  */
+/* 02 — Mint activity                                                  */
 /* ------------------------------------------------------------------ */
 
 /**
- * This session's mint-desk actions, newest first — mints and redemptions
- * with their live phases and receipt hashes. Session-local evidence, never
- * a portfolio or history source.
+ * This session's desk actions, newest first — mints and redemptions with
+ * their live phases and receipt hashes. Session-local evidence, never a
+ * portfolio or history source.
  */
 function MintActivity() {
   const actions = useActions();
@@ -706,6 +505,9 @@ function Balances({ account }: { account: ReturnType<typeof useAccount> }) {
     setConnecting(true);
     try {
       await auth.connect();
+    } catch {
+      // A closed wallet modal is a normal exit, not an error state — the
+      // panel just returns to its resting voice.
     } finally {
       setConnecting(false);
     }
@@ -743,9 +545,71 @@ function Balances({ account }: { account: ReturnType<typeof useAccount> }) {
       <dl className="p-3.5">
         <Row label={<>Liquid · <Gusd /></>} value={fmtFull(account.gUsdBalance)} />
         <Row label={<>Earning · <SGusd /></>} value={fmtFull(account.sGUsdBalance)} />
+        <FundingStableRows account={account} />
         <Row label="Positions" value={`${account.positions.length} markets`} />
       </dl>
     </TuiPanel>
+  );
+}
+
+/**
+ * The wallet's funding stables — what the mint desk draws from. The reserve
+ * comes straight off the account snapshot; other whitelisted stables are one
+ * direct read each, the same source the desk's balance line uses. Rows drop
+ * silently when the chain has no display config (fail-soft, like the desk).
+ */
+function FundingStableRows({ account }: { account: ReturnType<typeof useAccount> }) {
+  const session = useWalletSession();
+  const stables = useStableAssets();
+  const reserve = stables[0] ?? null;
+  const others = stables.slice(1);
+  const key = others.map((s) => s.address).join(",");
+  const [reads, setReads] = useState<Record<string, number | null>>({});
+
+  useEffect(() => {
+    if (!account.connected || session.address === null || others.length === 0) {
+      setReads({});
+      return;
+    }
+    let alive = true;
+    Promise.all(
+      key.split(",").map(async (addr) => {
+        try {
+          const raw = await contractReads().balanceOf(
+            addr as `0x${string}`,
+            session.address as `0x${string}`,
+          );
+          return [addr, formatStableRaw(raw)] as const;
+        } catch {
+          return [addr, null] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (alive) setReads(Object.fromEntries(pairs));
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account.connected, session.address, key]);
+
+  if (!account.connected) return null;
+  return (
+    <>
+      {reserve !== null && (
+        <Row label={`Reserve · ${reserve.symbol}`} value={fmtFull(account.stableBalance)} />
+      )}
+      {others.map((s) => {
+        const v = reads[s.address];
+        return (
+          <Row
+            key={s.address}
+            label={`Funding · ${s.symbol}`}
+            value={v === undefined || v === null ? "—" : fmtFull(v)}
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -768,17 +632,6 @@ function EarningLedger() {
 /* ------------------------------------------------------------------ */
 /* Shared bits                                                         */
 /* ------------------------------------------------------------------ */
-
-function LedgerRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <dt className={`slug ${strong ? "text-bright" : "text-dim"}`}>{label}</dt>
-      <dd className={`num ${strong ? "text-[14px] font-bold text-bright" : "text-[12.5px] text-data"}`}>
-        {value}
-      </dd>
-    </div>
-  );
-}
 
 function Row({ label, value }: { label: ReactNode; value: string }) {
   return (

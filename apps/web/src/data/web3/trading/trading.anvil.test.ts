@@ -62,7 +62,7 @@ d("trading desk against the deployed protocol", () => {
     const contracts = getContracts();
     const fund = 3_000_000_000n;
     const fundHash = await wallet.writeContract({
-      address: contracts.addresses.usdc,
+      address: contracts.addresses.underlying,
       abi: MOCK_MINT_ABI,
       functionName: "mint",
       args: [owner, fund],
@@ -70,12 +70,12 @@ d("trading desk against the deployed protocol", () => {
       chain: null,
     });
     await waitForTransactionReceipt(getPublicClient(), { hash: fundHash });
-    const need = await planMintApproval(owner, fund);
+    const need = await planMintApproval(owner, contracts.addresses.underlying, fund);
     if (need) {
       const approve = await approveSpec(need, "mint").execute(wallet);
       await waitForTransactionReceipt(getPublicClient(), { hash: approve.hash });
     }
-    const { hash } = await mintSpec(fund, owner).execute(wallet);
+    const { hash } = await mintSpec({ asset: contracts.addresses.underlying, amountInRaw: fund, minUnderlyingOutRaw: fund, poolKey: null, to: owner }).execute(wallet);
     await waitForTransactionReceipt(getPublicClient(), { hash });
   }, 30_000);
 
@@ -84,9 +84,10 @@ d("trading desk against the deployed protocol", () => {
     expect(quote).not.toBeNull();
     // The canonical pool holds no liquidity at genesis — the whole fill
     // prices through issuance, and the pool leg costs nothing.
-    expect(quote!.legs).toEqual({ pool: 0, issuance: 1 });
-    expect(quote!.fees.protocol).toBe(0);
     const issue = await contractReads().quoteIssue(gpuIdForAsset("H100"), parseGpuUnits(1));
+    expect(quote!.legs).toEqual([
+      { kind: "issuance", gpuUnits: 1, gUsd: issue.totalPaid, fees: { issuance: issue.fee } },
+    ]);
     expect(quote!.notional).toBeCloseTo(issue.totalPaid, 9);
     // The signed cap is the total plus the tolerance headroom.
     expect(quote!.maxPaid).toBeGreaterThan(issue.totalPaid);

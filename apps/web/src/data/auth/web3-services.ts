@@ -18,6 +18,7 @@ import { getIndexerClient } from "@/data/indexer/indexer-client";
 import { OnChainMintPort } from "@/data/web3/gusd/onchain-mint-port";
 import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
 import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
+import { AcrossBridgePort } from "@/data/web3/bridge/across";
 import { PrivyAuthPort } from "./privy-auth-port";
 
 /**
@@ -113,6 +114,11 @@ export class Web3Services implements Services {
       actions: this.actions,
       reconcile,
     });
+    this.bridge = new AcrossBridgePort({
+      getSession: () => this.auth.getSession(),
+      getWalletClient: (chainId) => this.auth.getWalletClient(chainId),
+      switchChain: (chainId) => this.auth.switchChain(chainId),
+    });
     this.trading = new OnChainTradingPort({
       getSession: () => this.auth.getSession(),
       actions: this.actions,
@@ -123,6 +129,7 @@ export class Web3Services implements Services {
 
   readonly mint: OnChainMintPort;
   readonly earn: OnChainEarnPort;
+  readonly bridge: AcrossBridgePort;
   readonly trading: OnChainTradingPort;
 
   get marketData() {

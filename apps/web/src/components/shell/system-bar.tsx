@@ -14,12 +14,23 @@ import { parseAssetId, type WalletSession } from "@/domain/types";
 import { fmtAddress, fmtClock, fmtFull } from "@/domain/format";
 import { Gusd, SGusd } from "@/components/ui/pair";
 import { useAccount, useServices, useWalletSession } from "@/data/services";
+import { stableConfig } from "@/data/web3/stables";
 import {
   chainIdFromCaip2,
   chainLabel,
   getActiveChain,
   isKnownChain,
 } from "@/data/web3/chains";
+
+/** The chain's reserve-asset symbol for the wallet readout. Fail-soft: the
+ *  shell must render even where no stable config exists (no deployment). */
+function stableSymbol(): string {
+  try {
+    return stableConfig().underlying.symbol;
+  } catch {
+    return "Stable";
+  }
+}
 
 /** Command word → route; null when the word is unknown. */
 function resolveCommand(raw: string): string | null {
@@ -37,9 +48,13 @@ function resolveCommand(raw: string): string | null {
     case "terminal":
       return target ? `/terminal/${target}` : "/terminal";
     case "oracle":
+      // Bare `oracle` lands on the Overview; an asset argument opens that
+      // benchmark's board row and panel receipt.
+      return target ? `/oracle?tab=benchmarks&bench=${target}` : "/oracle";
     case "index":
+      return target ? `/oracle?tab=benchmarks&bench=${target}` : "/oracle?tab=benchmarks";
     case "data":
-      return target ? `/oracle/${target}` : "/oracle";
+      return "/oracle?tab=developers";
     case "gusd":
     case "sgusd":
     case "mint":
@@ -219,7 +234,7 @@ function ConnectControl() {
               {(session.address || session.chainId) && <NetworkRow session={session} />}
               <Row label={<Gusd />} value={fmtFull(account.gUsdBalance)} />
               <Row label={<SGusd />} value={fmtFull(account.sGUsdBalance)} />
-              <Row label="USDC" value={fmtFull(account.usdcBalance)} />
+              <Row label={stableSymbol()} value={fmtFull(account.stableBalance)} />
               <Row label="Positions" value={String(account.positions.length)} />
             </dl>
             <button

@@ -13,6 +13,13 @@ const usd3 = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 3,
 });
 
+const usd4Fixed = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+});
+
 const usd3Fixed = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -49,9 +56,11 @@ const plain4Fixed = new Intl.NumberFormat("en-US", {
  * the plain formatters below.
  */
 
-/** Benchmark/Index price readout: $2.514 */
+/** Benchmark/Index price readout, fixed at 4 decimals — the tick's grain:
+ *  a benchmark that moves in the fourth decimal still lands visibly, and the
+ *  flash judges change at this same precision. $2.5140 */
 export function fmtUsdPrecise(value: number): string {
-  return usd3.format(value);
+  return usd4Fixed.format(value);
 }
 
 /** Chart-legend Index price, fixed at 3 decimals so one line never wobbles: $2.428 */
@@ -64,9 +73,10 @@ export function fmtUsdLegend(value: number): string {
  * carried by the figure itself, a column head, or the surrounding label.
  */
 
-/** Market price readout: 2.485 */
+/** Market price readout, fixed at 4 decimals to match the Index readout's
+ *  tick grain: 2.4853 */
 export function fmtGusdPrecise(value: number): string {
-  return plain3.format(value);
+  return plain4Fixed.format(value);
 }
 
 /** Market price with its unit: 2.485 gUSD */

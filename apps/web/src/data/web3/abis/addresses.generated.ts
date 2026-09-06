@@ -22,26 +22,35 @@ export interface ProtocolAddresses {
   router: Address;
   sgusd: Address;
   stateView: Address;
-  usdc: Address;
+  underlying: Address;
+  stableRouter: Address;
+  /** Funding assets whitelisted on this deployment's StableRouter — the
+   *  underlying first (constructor-whitelisted). Trust boundary: identity
+   *  comes from this record, never from token symbols. */
+  stables: Address[];
   weth: Address;
 }
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
   "31337": {
     "chainId": 31337,
-    "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0x60C4e0F3cFb170B5940C5e50587bF930D2e690cc",
-    "issuance": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
-    "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
-    "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    "gusd": "0xeC1BB74f5799811c0c1Bff94Ef76Fb40abccbE4a",
+    "hook": "0x34837387d9b3AAfdD1c4EB1F1BA26360479410cc",
+    "issuance": "0x3E661784267F128e5f706De17Fac1Fc1c9d56f30",
+    "ledger": "0x09120eAED8e4cD86D85a616680151DAA653880F2",
+    "oracle": "0x1D3EDBa836caB11C26A186873abf0fFeB8bbaE63",
     "oraclePublisher": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "permit2": "0x856e4424f806D16E8CBC702B3c0F2ede5468eae5",
-    "poolManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-    "positionManager": "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
-    "quoter": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
-    "router": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
-    "sgusd": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
-    "stateView": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
-    "usdc": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    "weth": "0x0165878A594ca255338adfa4d48449f69242Eb8F"
+    "permit2": "0xc6c651d671b1a4a71218ACe23a162bF68A07E163",
+    "poolManager": "0x9C85258d9A00C01d00ded98065ea3840dF06f09c",
+    "positionManager": "0x666432Ccb747B2220875cE185f487Ed53677faC9",
+    "quoter": "0x398E4948e373Db819606A459456176D31C3B1F91",
+    "router": "0x15Ff10fCc8A1a50bFbE07847A22664801eA79E0f",
+    "sgusd": "0xF6a8aD553b265405526030c2102fda2bDcdDC177",
+    "stableRouter": "0xAe9Ed85dE2670e3112590a2BB17b7283ddF44d9c",
+    "stables": [
+      "0x0F527785e39B22911946feDf580d87a4E00465f0"
+    ],
+    "stateView": "0xFCFE742e19790Dd67a627875ef8b45F17DB1DaC6",
+    "underlying": "0x0F527785e39B22911946feDf580d87a4E00465f0",
+    "weth": "0x01cf58e264d7578D4C67022c58A24CbC4C4a304E"
   }
 };

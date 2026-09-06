@@ -85,7 +85,7 @@ d("sGUSD stake/unstake against the deployed protocol", () => {
     const contracts = getContracts();
     const fund = 2_000_000_000n;
     const fundHash = await wallet.writeContract({
-      address: contracts.addresses.usdc,
+      address: contracts.addresses.underlying,
       abi: MOCK_MINT_ABI,
       functionName: "mint",
       args: [owner, fund],
@@ -93,12 +93,12 @@ d("sGUSD stake/unstake against the deployed protocol", () => {
       chain: null,
     });
     await waitForTransactionReceipt(getPublicClient(), { hash: fundHash });
-    const need = await planMintApproval(owner, fund);
+    const need = await planMintApproval(owner, contracts.addresses.underlying, fund);
     if (need) {
       const approve = await approveSpec(need, "mint").execute(wallet);
       await waitForTransactionReceipt(getPublicClient(), { hash: approve.hash });
     }
-    const { hash } = await mintSpec(fund, owner).execute(wallet);
+    const { hash } = await mintSpec({ asset: contracts.addresses.underlying, amountInRaw: fund, minUnderlyingOutRaw: fund, poolKey: null, to: owner }).execute(wallet);
     await waitForTransactionReceipt(getPublicClient(), { hash });
   }, 30_000);
 

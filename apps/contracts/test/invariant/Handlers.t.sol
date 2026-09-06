@@ -25,7 +25,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Interface the handlers use to reach the shared invariant world.
 interface IWorld {
-    function usdc() external view returns (address);
+    function underlying() external view returns (address);
     function gusd() external view returns (address);
     function issuance() external view returns (address);
     function h100() external view returns (address);
@@ -60,22 +60,22 @@ abstract contract HandlerBase is Test {
 contract HandlerMintRedeem is HandlerBase {
     constructor(IWorld world) HandlerBase(world) {}
 
-    function mintUSDC(uint256 actorSeed, uint256 amount) external {
+    function mint(uint256 actorSeed, uint256 amount) external {
         address actor = _actor(actorSeed);
         amount = bound(amount, 1e6, 1_000_000e6);
-        MockERC20Like(w.usdc()).mint(actor, amount);
+        MockERC20Like(w.underlying()).mint(actor, amount);
         vm.startPrank(actor);
-        MockERC20Like(w.usdc()).approve(w.gusd(), type(uint256).max);
-        GusdLike(w.gusd()).mintUSDC(amount, actor);
+        MockERC20Like(w.underlying()).approve(w.gusd(), type(uint256).max);
+        GusdLike(w.gusd()).mint(amount, actor);
         vm.stopPrank();
     }
 
-    function redeemUSDC(uint256 actorSeed, uint256 amount) external {
+    function redeem(uint256 actorSeed, uint256 amount) external {
         address actor = _actor(actorSeed);
         uint256 bal = GusdLike(w.gusd()).balanceOf(actor);
         if (bal == 0) return;
         vm.prank(actor);
-        GusdLike(w.gusd()).redeemUSDC(bound(amount, 1, bal), actor);
+        GusdLike(w.gusd()).redeem(bound(amount, 1, bal), actor);
     }
 
     function transferGusd(uint256 fromSeed, uint256 toSeed, uint256 amount) external {
@@ -95,8 +95,8 @@ interface MockERC20Like {
 
 interface GusdLike {
     function approve(address, uint256) external returns (bool);
-    function mintUSDC(uint256, address) external returns (uint256);
-    function redeemUSDC(uint256, address) external returns (uint256);
+    function mint(uint256, address) external returns (uint256);
+    function redeem(uint256, address) external returns (uint256);
     function balanceOf(address) external view returns (uint256);
     function transfer(address, uint256) external returns (bool);
 }
@@ -112,10 +112,10 @@ contract HandlerIssuance is HandlerBase {
         uint256 have = GusdLike(w.gusd()).balanceOf(actor);
         if (have < need) {
             uint256 deficit = need - have;
-            MockERC20Like(w.usdc()).mint(actor, deficit);
+            MockERC20Like(w.underlying()).mint(actor, deficit);
             vm.startPrank(actor);
-            MockERC20Like(w.usdc()).approve(w.gusd(), type(uint256).max);
-            GusdLike(w.gusd()).mintUSDC(deficit, actor);
+            MockERC20Like(w.underlying()).approve(w.gusd(), type(uint256).max);
+            GusdLike(w.gusd()).mint(deficit, actor);
             GusdLike(w.gusd()).approve(w.issuance(), type(uint256).max);
             vm.stopPrank();
         }
@@ -135,10 +135,10 @@ contract HandlerMarket is HandlerBase {
         PoolKey memory key = w.poolKey();
         bool gIsC0 = Currency.unwrap(key.currency0) == w.gusd();
         if (GusdLike(w.gusd()).balanceOf(actor) < amount) {
-            MockERC20Like(w.usdc()).mint(actor, amount);
+            MockERC20Like(w.underlying()).mint(actor, amount);
             vm.startPrank(actor);
-            MockERC20Like(w.usdc()).approve(w.gusd(), type(uint256).max);
-            GusdLike(w.gusd()).mintUSDC(amount, actor);
+            MockERC20Like(w.underlying()).approve(w.gusd(), type(uint256).max);
+            GusdLike(w.gusd()).mint(amount, actor);
             vm.stopPrank();
         }
         vm.startPrank(actor);

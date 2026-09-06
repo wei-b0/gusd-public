@@ -54,7 +54,7 @@ contract Demo is Script {
         address hookAddr = vm.parseJsonAddress(json, ".hook");
         address ledgerAddr = vm.parseJsonAddress(json, ".ledger");
         address sgusdAddr = vm.parseJsonAddress(json, ".sgusd");
-        address usdcAddr = vm.parseJsonAddress(json, ".usdc");
+        address usdcAddr = vm.parseJsonAddress(json, ".underlying");
         address managerAddr = vm.parseJsonAddress(json, ".poolManager");
         address stateViewAddr = vm.parseJsonAddress(json, ".stateView");
         address routerAddr = vm.parseJsonAddress(json, ".router");
@@ -76,7 +76,7 @@ contract Demo is Script {
             posm := posmAddr
         }
         IV4Quoter quoter = IV4Quoter(quoterAddr);
-        IERC20 usdc = IERC20(usdcAddr);
+        IERC20 underlying = IERC20(usdcAddr);
         GPUToken h100 = GPUToken(issuance.tokenOf(H100));
         StateView stateView = StateView(stateViewAddr);
 
@@ -100,8 +100,8 @@ contract Demo is Script {
         MockERC20(usdcAddr).mint(alice, 1_000_000e6);
         vm.stopBroadcast();
         vm.startBroadcast(ALICE_PK);
-        usdc.approve(gusdAddr, type(uint256).max);
-        gusd.mintUSDC(10_000e6, alice);
+        underlying.approve(gusdAddr, type(uint256).max);
+        gusd.mint(10_000e6, alice);
         gusd.approve(routerAddr, type(uint256).max);
         uint256 hookFees0 = hook.totalTradingFeesAccrued();
         uint256 ledgerGusd0 = gusd.balanceOf(ledgerAddr);
@@ -154,7 +154,7 @@ contract Demo is Script {
         MockERC20(usdcAddr).mint(bob, 1_000_000e6);
         vm.stopBroadcast();
         vm.startBroadcast(BOB_PK);
-        usdc.approve(routerAddr, type(uint256).max);
+        underlying.approve(routerAddr, type(uint256).max);
         (uint256 quotedIn,) = quoter.quoteExactOutputSingle(
             IV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: gIsC0, exactAmount: 2e18, hookData: ""})
         );
@@ -211,14 +211,14 @@ contract Demo is Script {
         vm.startBroadcast(BOB_PK);
         h100.approve(routerAddr, type(uint256).max);
         uint256 hookFees5 = hook.totalTradingFeesAccrued();
-        uint256 bobUsdcBefore = usdc.balanceOf(bob);
+        uint256 bobUsdcBefore = underlying.balanceOf(bob);
         GpuRouter.SellParams memory s5 = GpuRouter.SellParams({
             gpuId: H100, gpuIn: 1e18, payout: usdcAddr, minOut: 2e6, sqrtLimitX96: 0, recipient: bob
         });
         uint256 out5 = router.sell(s5);
         vm.stopBroadcast();
         require(h100.balanceOf(bob) == 6e18, "step5 tokens");
-        require(usdc.balanceOf(bob) - bobUsdcBefore == out5 && out5 >= 2e6, "step5 payout");
+        require(underlying.balanceOf(bob) - bobUsdcBefore == out5 && out5 >= 2e6, "step5 payout");
         require(hook.totalTradingFeesAccrued() > hookFees5, "step5 hook fee accrued");
         require(issuance.gpuReserve(H100) == 255_000_000, "step5 reserves untouched by trades");
 
@@ -230,8 +230,8 @@ contract Demo is Script {
         vm.stopBroadcast();
         vm.startBroadcast(BOB_PK);
         // bob pays this one in gUSD: mint it from his USDC and approve
-        usdc.approve(gusdAddr, type(uint256).max);
-        gusd.mintUSDC(10e6, bob);
+        underlying.approve(gusdAddr, type(uint256).max);
+        gusd.mint(10e6, bob);
         gusd.approve(routerAddr, type(uint256).max);
         (uint256 base6,,) = issuance.quoteIssue(H100, 1e18);
         GpuRouter.BuyParams memory b6 = GpuRouter.BuyParams({
@@ -264,7 +264,7 @@ contract Demo is Script {
         require(gusd.balanceOf(address(sg)) > sgAssetsBefore, "step7 vault funded");
 
         // ------------------------------------------- Definition-of-Success
-        require(usdc.balanceOf(gusdAddr) == gusd.totalSupply(), "EOS: reserve == supply");
+        require(underlying.balanceOf(gusdAddr) == gusd.totalSupply(), "EOS: reserve == supply");
         require(gusd.balanceOf(routerAddr) == 0 && h100.balanceOf(routerAddr) == 0, "EOS: router empty");
         require(issuance.gpuReserve(H100) == 258_000_000, "EOS: issuance reserve (250 + 5 + 3)");
         require(gusd.balanceOf(address(hook)) == 0, "EOS: hook drained");

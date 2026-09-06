@@ -8,8 +8,13 @@
  * without the product UX changing.
  */
 
-import type { WalletClient, Hex } from "viem";
+import type { WalletClient, Hex, Address } from "viem";
 import type { ActionOrigin, ActionRecord, ActionPlan } from "./actions";
+import type {
+  BridgeOrigin,
+  BridgeProgress,
+  BridgeQuote,
+} from "./bridge";
 import type {
   Account,
   AssetId,
@@ -94,20 +99,23 @@ export interface EarnPort {
 }
 
 /**
- * The mint layer — USDC ⇄ gUSD against the real GUSD contract. Previews are
- * execution-identical (the contract's own preview functions); mint and
- * redeem run through the action runner (one approval + one call for mint,
- * approval-free redeem) and resolve to the action record the desk renders.
- * Session history lives in the tx store.
+ * The mint layer — the chain's reserve asset (and whitelisted stables) ⇄
+ * gUSD against the real contracts. Previews are execution-identical
+ * (GUSD's own previews on the reserve path; StableRouter flows compose the
+ * v4 quote with them); mint and redeem run through the action runner (one
+ * approval + one call for mint, approval-free redeem on the reserve path)
+ * and resolve to the action record the desk renders. Session history lives
+ * in the tx store. `asset` is always a deployment-record address — the
+ * whitelist, never a symbol.
  */
 export interface MintPort {
   /** Execution-identical preview, or null for an invalid amount. Works
    *  without a session — the preview is public, acting is not. */
-  quote(direction: MintDirection, amount: number): Promise<MintQuote | null>;
-  /** Mint gUSD from USDC. Requires a connected wallet. */
-  mint(usdcAmount: number): Promise<ActionRecord>;
-  /** Redeem gUSD back to USDC. Requires a connected wallet. */
-  redeem(gusdAmount: number): Promise<ActionRecord>;
+  quote(direction: MintDirection, asset: Address, amount: number): Promise<MintQuote | null>;
+  /** Mint gUSD from the funding stable. Requires a connected wallet. */
+  mint(asset: Address, amount: number): Promise<ActionRecord>;
+  /** Redeem gUSD back to the funding stable. Requires a connected wallet. */
+  redeem(asset: Address, gusdAmount: number): Promise<ActionRecord>;
 }
 
 /**
@@ -197,12 +205,39 @@ export interface ActionPort {
   clear(): void;
 }
 
+/**
+ * The cross-chain funding layer — a third-party bridge aggregator (Across)
+ * that lands a stable from a supported origin chain into the wallet on the
+ * active chain, ready for the mint desk. The protocol never bridges and the
+ * port never mints: its last phase (`mint-ready`) hands off to `MintPort`.
+ * Capability-gated by the chain registry — ports on chains without funding
+ * capability stay inert.
+ */
+export interface BridgePort {
+  /** Origin chains this bridge serves, with their fundable tokens. */
+  origins(): BridgeOrigin[];
+  /**
+   * Price a bridge of `amount` (product units) of an origin token to the
+   * active chain's reserve asset. Null when the route cannot be priced —
+   * unknown origin, unsupported token, or the bridge API failed.
+   */
+  getQuote(originChainId: number, token: Address, amount: number): Promise<BridgeQuote | null>;
+  /**
+   * Drive the bridge for a quote this port issued. Yields progress through
+   * the phases and always terminates (the last yield is `mint-ready` or
+   * `failed`). Requires a connected wallet; the wallet may be asked to
+   * switch to the origin chain mid-flow.
+   */
+  execute(quote: BridgeQuote): AsyncIterable<BridgeProgress>;
+}
+
 export interface Services {
   marketData: MarketDataPort;
   trading: TradingPort;
   auth: AuthPort;
   earn: EarnPort;
   mint: MintPort;
+  bridge: BridgePort;
   tx: TxPort;
   actions: ActionPort;
 }

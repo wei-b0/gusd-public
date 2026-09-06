@@ -22,7 +22,7 @@
  * remount hydrates instantly from what was already fetched.
  */
 
-import { CANDLE_RETRY_MS, HISTORY_LIMIT, ORACLE_BASE_URL, POLL_INTERVAL_MS, WATCHDOG_MS } from "./config";
+import { CANDLE_RETRY_MS, HEALTH_POLL_MS, HISTORY_LIMIT, ORACLE_BASE_URL, POLL_INTERVAL_MS, WATCHDOG_MS } from "./config";
 import { ORACLE_PANELS } from "./panel-map";
 import { createOracleClient, OracleFetchError, type OracleClient } from "./client";
 import { foldCandidateIntoBuckets } from "./fold";
@@ -91,11 +91,6 @@ const INITIAL_STATE: OracleFeedState = {
 
 const PANEL_GPUS = Object.values(ORACLE_PANELS).map((ref) => ref.gpuId);
 
-interface CandidateFrame {
-  type?: string;
-  candidate?: CandidateDto;
-}
-
 export class OracleFeedStore {
   private client: OracleClient;
   private listeners = new Set<() => void>();
@@ -110,6 +105,14 @@ export class OracleFeedStore {
    *  never a stack of identical fetches across render ticks. */
   private candlePending = new Set<string>();
   private candleAttemptAt = new Map<string, number>();
+  /** In-flight/attempt bookkeeping for the lazily-ensured fetches
+   *  (ensureProviders / ensurePanelProviders) — same cooldown discipline. */
+  private providersPending = false;
+  private providersAttemptAt = 0;
+  private panelPending = new Set<string>();
+  private panelAttemptAt = new Map<string, number>();
+  /** Dedicated health tick (see HEALTH_POLL_MS). */
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(client: OracleClient = createOracleClient()) {
     this.client = client;
@@ -182,6 +185,52 @@ export class OracleFeedStore {
       });
   }
 
+  /** Make sure the provider registry is loading. Bootstrap fetches it, but a
+   *  rejection there (while prices succeeded) would otherwise leave the
+   *  registry empty for the whole session — ensure is the retry path. An
+   *  empty registry re-requests on the same cooldown as a failed candle
+   *  window, so a struggling oracle is never hammered per render. */
+  ensureProviders(): void {
+    if (typeof window === "undefined") return; // SSR never connects.
+    if (this.state.providers.length > 0 || this.providersPending) return;
+    if (Date.now() - this.providersAttemptAt < CANDLE_RETRY_MS) return;
+    this.providersAttemptAt = Date.now();
+    this.providersPending = true;
+    void this.client
+      .listProviders()
+      .then(
+        (providers) => this.commit({ providers }),
+        () => {
+          // Retry-eligible after the cooldown.
+        },
+      )
+      .finally(() => {
+        this.providersPending = false;
+      });
+  }
+
+  /** Make sure the contributor panel for one gpu is loading. An entry that
+   *  already exists is final — including null, the served 404 ("no candidate
+   *  ever computed"); a missing entry requests on the cooldown. Read-path
+   *  callers (the receipt hooks) rely on this being idempotent per render. */
+  ensurePanelProviders(gpuId: string): void {
+    if (typeof window === "undefined") return; // SSR never connects.
+    if (gpuId in this.state.panelProviders) return;
+    if (this.panelPending.has(gpuId)) return;
+    const lastAttempt = this.panelAttemptAt.get(gpuId);
+    if (lastAttempt !== undefined && Date.now() - lastAttempt < CANDLE_RETRY_MS) return;
+    this.panelAttemptAt.set(gpuId, Date.now());
+    this.panelPending.add(gpuId);
+    void this.fetchPanel(gpuId)
+      .catch(() => {
+        // Transport failure (not a served 404) — retry-eligible after the
+        // cooldown, like every other ensure.
+      })
+      .finally(() => {
+        this.panelPending.delete(gpuId);
+      });
+  }
+
   // -- lifecycle -----------------------------------------------------------
 
   private start(): void {
@@ -198,6 +247,8 @@ export class OracleFeedStore {
     this.pollTimer = null;
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.watchdogTimer = null;
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.setConnection("idle");
@@ -249,6 +300,7 @@ export class OracleFeedStore {
     this.noteSuccess();
     this.openStream();
     this.startWatchdog();
+    this.startHealthPoll();
   }
 
   private openStream(): void {
@@ -268,9 +320,11 @@ export class OracleFeedStore {
     source.addEventListener("candidate", (event: MessageEvent<string>) => {
       if (this.source !== source) return;
       try {
-        const frame = JSON.parse(event.data) as CandidateFrame;
-        if (frame.type === "candidate" && frame.candidate) {
-          if (this.mergeCandidate(frame.candidate)) this.noteSuccess();
+        // The stream types its payloads by event name — a "candidate" frame
+        // carries the DTO itself, not an envelope (apps/oracle server.ts).
+        const candidate = JSON.parse(event.data) as CandidateDto;
+        if (candidate && typeof candidate.gpuId === "string" && typeof candidate.calcHash === "string") {
+          if (this.mergeCandidate(candidate)) this.noteSuccess();
         }
       } catch {
         // A malformed frame is noise, not a transport failure.
@@ -405,6 +459,21 @@ export class OracleFeedStore {
     }, 15_000);
   }
 
+  /** Dedicated health tick: the stream paths refresh health only on resync
+   *  (a 90s-silence affair) — on a busy live stream the collector-health
+   *  consumer would otherwise go minutes stale. One cheap GET per minute. */
+  private startHealthPoll(): void {
+    if (this.healthTimer) return;
+    this.healthTimer = setInterval(() => {
+      void this.client.getHealth().then(
+        (health) => this.commit({ health }),
+        () => {
+          // The next tick retries; a struggling oracle is not hammered.
+        },
+      );
+    }, HEALTH_POLL_MS);
+  }
+
   // -- state ----------------------------------------------------------------
 
   /** Insert/replace one candidate if its publication hash is new. Returns
@@ -421,6 +490,15 @@ export class OracleFeedStore {
       ...(nextHistory ? { history: { ...this.state.history, [gpuId]: nextHistory } } : {}),
       ...(candles ? { candles } : {}),
     });
+    // Receipt lockstep: keep a loaded panel receipt on the publication it
+    // describes. The `!== undefined` guard makes this a no-op during
+    // bootstrap (which fetches panels itself) — one GET per publication
+    // after that, debounced ≥10s apart per gpu by the publisher.
+    if (this.state.panelProviders[gpuId] !== undefined && !this.panelPending.has(gpuId)) {
+      void this.fetchPanel(gpuId).catch(() => {
+        // The next publication or resync retries; not worth surfacing.
+      });
+    }
     return true;
   }
 

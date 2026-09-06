@@ -18,6 +18,7 @@ export class OracleServices implements Services {
   readonly auth: MockServices["auth"];
   readonly earn: MockServices["earn"];
   readonly mint: MockServices["mint"];
+  readonly bridge: MockServices["bridge"];
   readonly tx: MockServices["tx"];
   readonly actions: MockServices["actions"];
 
@@ -29,6 +30,7 @@ export class OracleServices implements Services {
     this.auth = mock.auth;
     this.earn = mock.earn;
     this.mint = mock.mint;
+    this.bridge = mock.bridge;
     this.tx = mock.tx;
     this.actions = mock.actions;
   }

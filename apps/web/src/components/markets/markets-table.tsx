@@ -2,16 +2,27 @@
 
 /**
  * MarketsTable — the discovery table. Every GPU asset market as a pair on
- * one ruled board: one canonical price, 24h movement, and — when a market
- * layer prices the row independently of the benchmark — the Index price and
- * the premium or discount the gap forms. Built for scanning and comparison;
- * a row routes to the market's desk on the Terminal.
+ * one ruled board: its last-48h shape, one canonical price, 24h movement,
+ * and — when a market layer prices the row independently of the benchmark —
+ * the Index price and the premium or discount the gap forms. Built for
+ * scanning and comparison; a row routes to the market's desk on the
+ * Terminal.
  */
 
 import Link from "next/link";
 import { marketMove24h, pairName, type Market } from "@/domain/types";
 import { fmtGusdCompact, fmtGusdPrecise, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
 import { TickFlash } from "@/components/ui/tick-flash";
+import { Sparkline } from "@/components/charts/sparkline";
+
+/**
+ * Venue-flow figures (Volume / Liquidity) are dormant while traction is
+ * early: with no venue layer they printed an unbroken column of "—" and
+ * priced nothing. The columns stay built — flip to restore them — and the
+ * figures they will carry come from actual swap volume and pool depth,
+ * never approximation.
+ */
+const SHOW_MARKET_FLOWS = false;
 
 export function MarketsTable({ markets }: { markets: Market[] }) {
   // One price per row. Where a venue prices the row (mock universe) the table
@@ -22,7 +33,7 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
   return (
     <div className="relative">
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-[12.5px]">
+        <table className="w-full table-auto border-collapse text-[12.5px]">
           <thead>
             <tr className="border-b border-rule text-left">
               <th scope="col" className="slug py-2 pl-3 pr-4 font-normal text-dim">Market</th>
@@ -30,6 +41,7 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
                 Price <span className="tracking-normal normal-case">{hasVenue ? "/ gUSD" : "/ GPU-hour"}</span>
               </th>
               <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">24h</th>
+              <th scope="col" className="slug px-2.5 py-2 text-left font-normal text-dim">Last 48h</th>
               {hasVenue && (
                 <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
                   Index price <span className="tracking-normal">/ GPU-hour</span>
@@ -38,12 +50,16 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
               {hasVenue && (
                 <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Premium / Discount</th>
               )}
-              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
-                Volume <span className="tracking-normal normal-case">/ gUSD</span>
-              </th>
-              <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right font-normal text-dim">
-                Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
-              </th>
+              {SHOW_MARKET_FLOWS && (
+                <>
+                  <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                    Volume <span className="tracking-normal normal-case">/ gUSD</span>
+                  </th>
+                  <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right font-normal text-dim">
+                    Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
+                  </th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -79,7 +95,7 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
 
   return (
     <tr className="group border-b border-rule transition-colors last:border-b-0 hover:bg-panel-deep">
-      <td className="py-2.5 pl-3 pr-4">
+      <td className="py-2 pl-3 pr-4">
         <Link href={`/terminal/${m.asset.id}`} className="block outline-none">
           <span className="num block whitespace-nowrap text-[14px] font-bold leading-tight text-data transition-colors group-hover:text-bright">
             {pairName(m.asset.id)}
@@ -89,13 +105,18 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
           </span>
         </Link>
       </td>
-      <td className="px-2.5 py-2.5 text-right">
+      <td className="px-2.5 py-2 text-right">
         {m.marketPrice !== null ? (
-          <TickFlash value={m.marketPrice} className="num inline-block text-[13.5px] font-bold text-bright">
+          <TickFlash
+            value={m.marketPrice}
+            precision={4}
+            arrow="pop"
+            className="num inline-block text-[13.5px] font-bold text-bright"
+          >
             {fmtGusdPrecise(m.marketPrice)}
           </TickFlash>
         ) : m.indexPrice !== null ? (
-          <TickFlash value={m.indexPrice} flash="wire" className="num inline-block text-[13.5px] font-bold text-wire">
+          <TickFlash value={m.indexPrice} precision={4} arrow="pop" className="num inline-block text-[13.5px] font-bold text-wire">
             {fmtUsdPrecise(m.indexPrice)}
           </TickFlash>
         ) : (
@@ -103,24 +124,43 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
         )}
       </td>
       <td
-        className={`px-2.5 py-2.5 text-right ${
+        className={`num px-2.5 py-2 text-right ${
           move === null || flat24 ? "text-dim" : move >= 0 ? "text-up" : "text-down"
         }`}
       >
         <span className={`${scale.size} ${scale.weight} inline-flex items-baseline gap-1`}>
+          {move === null ? (
+            "—"
+          ) : (
+            /* The 24h figure flashes only when it itself moves — a fresh
+               Index tick that leaves it unchanged prints silently. */
+            <TickFlash value={move} precision={2} className="inline-block">
+              {fmtPctSigned(move)}
+            </TickFlash>
+          )}
           {move === null || flat24 ? null : (
             <span aria-hidden className="text-[9px]">{move >= 0 ? "▲" : "▼"}</span>
           )}
-          {move === null ? "—" : fmtPctSigned(move)}
         </span>
       </td>
+      <td className="w-40 px-2.5 py-2 sm:w-56">
+        {/* One 48h shape per row, every trace the same width and height —
+            the comparison the column exists for, beside the 24h figure it
+            puts in context. */}
+        <Sparkline values={m.sparkline} stretch className="block h-8 w-full" />
+      </td>
       {hasVenue && (
-        <td className="px-2.5 py-2.5 text-right">
+        <td className="px-2.5 py-2 text-right">
           <span className="inline-flex items-center justify-end gap-1.5">
             {m.indexPrice === null ? (
               <span className="num inline-block text-[13.5px] text-dim">—</span>
             ) : (
-              <TickFlash value={m.indexPrice} flash="wire" className="num inline-block text-[13.5px] text-wire">
+              <TickFlash
+                value={m.indexPrice}
+                precision={4}
+                arrow="pop"
+                className="num inline-block text-[13.5px] text-wire"
+              >
                 {fmtUsdPrecise(m.indexPrice)}
               </TickFlash>
             )}
@@ -128,16 +168,20 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
         </td>
       )}
       {hasVenue && (
-        <td className={`px-2.5 py-2.5 text-right ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
+        <td className={`num px-2.5 py-2 text-right ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
           {basis === null ? "—" : fmtPctSigned(basis)}
         </td>
       )}
-      <td className="px-2.5 py-2.5 text-right text-dim">
-        {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)}
-      </td>
-      <td className="py-2.5 pl-2.5 pr-3 text-right text-dim">
-        {m.liquidityUsd === null ? "—" : fmtGusdCompact(m.liquidityUsd)}
-      </td>
+      {SHOW_MARKET_FLOWS && (
+        <>
+          <td className="num px-2.5 py-2 text-right text-dim">
+            {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)}
+          </td>
+          <td className="num py-2 pl-2.5 pr-3 text-right text-dim">
+            {m.liquidityUsd === null ? "—" : fmtGusdCompact(m.liquidityUsd)}
+          </td>
+        </>
+      )}
     </tr>
   );
 }

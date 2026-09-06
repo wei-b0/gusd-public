@@ -21,20 +21,21 @@ import {GPUHook} from "./hooks/GPUHook.sol";
 /// @title GpuRouter — the product surface: BUY GPU and SELL GPU, one tx each.
 /// @notice Hides gUSD mechanics, primary issuance, Uniswap v4 routing, LP and
 ///         protocol fee plumbing behind two actions:
-///         - buy(): exact GPU out, funded with USDC or gUSD, filled by a
-///           canonical-pool swap and/or primary issuance. Genesis markets
-///           have zero circulating supply, so early BUYs are 100% issuance
-///           with no pool involved.
+///         - buy(): exact GPU out, funded with the reserve asset (gUSD's
+///           `underlying`) or gUSD, filled by a canonical-pool swap and/or
+///           primary issuance. Genesis markets have zero circulating supply,
+///           so early BUYs are 100% issuance with no pool involved.
 ///         - buyExactIn(): spend an exact gUSD amount into the pool (the
 ///           "spend up to X" entrypoint; the hook enforces all-or-nothing).
-///         - sell(): exact GPU in, proceeds in gUSD or USDC. Pure secondary
-///           execution — no NAV redemption exists (PROTOCOL.md section 8).
+///         - sell(): exact GPU in, proceeds in gUSD or the reserve asset.
+///           Pure secondary execution — no NAV redemption exists
+///           (PROTOCOL.md section 8).
 /// @dev    Settle pattern inside unlock callbacks: sync -> transfer -> settle,
 ///         with the FULL funded balance settled before the swap (pay-then-
 ///         swap) so the hook's inside-swap fee take can never fail for
 ///         reserves. Any leg reverting reverts the whole transaction: v4
 ///         transient state rolls back and nothing settles early. GUSD paused
-///         => USDC legs revert; gUSD-direct paths still work.
+///         => reserve-asset legs revert; gUSD-direct paths still work.
 contract GpuRouter is SafeCallback, ReentrancyGuard {
     using PoolIdLibrary for PoolKey;
     using SafeERC20 for IERC20;
@@ -42,7 +43,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
     GUSD public immutable gUSD;
     GPUIssuance public immutable issuance;
     GPUHook public immutable hook;
-    IERC20 public immutable usdc;
+    IERC20 public immutable underlying;
 
     uint8 private constant ACTION_BUY_POOL = 0;
     uint8 private constant ACTION_BUY_EXACT_IN = 1;
@@ -84,7 +85,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint256 gpuOut; // total GPU tokens the recipient must receive
         uint256 poolGpuOut; // portion filled from the canonical pool
         uint256 issueGpuOut; // portion minted via primary issuance
-        address payment; // USDC or gUSD
+        address payment; // the reserve asset (underlying) or gUSD
         uint256 maxPaid; // gUSD-equivalent spend cap
         uint160 sqrtLimitX96; // 0 = wide
         address recipient; // 0 = msg.sender
@@ -93,26 +94,26 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
     struct SellParams {
         bytes32 gpuId;
         uint256 gpuIn;
-        address payout; // USDC or gUSD
+        address payout; // the reserve asset (underlying) or gUSD
         uint256 minOut; // in payout units
         uint160 sqrtLimitX96; // 0 = wide
         address recipient; // 0 = msg.sender
     }
 
-    constructor(IPoolManager poolManager_, GUSD gUSD_, GPUIssuance issuance_, GPUHook hook_, IERC20 usdc_)
+    constructor(IPoolManager poolManager_, GUSD gUSD_, GPUIssuance issuance_, GPUHook hook_)
         SafeCallback(poolManager_)
     {
         gUSD = gUSD_;
         issuance = issuance_;
         hook = hook_;
-        usdc = usdc_;
+        underlying = gUSD_.underlying();
         // The manager pulls gUSD only via router-initiated settle(); issuance
-        // pulls gUSD for the issuance leg; GUSD pulls USDC on mintUSDC. Max
-        // approvals are safe: the router never holds funds at rest (asserted
-        // on every flow).
+        // pulls gUSD for the issuance leg; GUSD pulls the reserve asset on
+        // mint. Max approvals are safe: the router never holds funds at rest
+        // (asserted on every flow).
         IERC20(address(gUSD_)).forceApprove(address(poolManager_), type(uint256).max);
         IERC20(address(gUSD_)).forceApprove(address(issuance_), type(uint256).max);
-        usdc_.forceApprove(address(gUSD_), type(uint256).max);
+        underlying.forceApprove(address(gUSD_), type(uint256).max);
     }
 
     // ----------------------------------------------------------------- BUY
@@ -132,10 +133,10 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         // 1) fund: pull `maxPaid`, holding it as gUSD on the router.
         if (p.payment == address(gUSD)) {
             IERC20(address(gUSD)).safeTransferFrom(msg.sender, address(this), p.maxPaid);
-        } else if (p.payment == address(usdc)) {
+        } else if (p.payment == address(underlying)) {
             IERC20(p.payment).safeTransferFrom(msg.sender, address(this), p.maxPaid);
             // nets the mint fee; the minted amount is what is available
-            gUSD.mintUSDC(p.maxPaid, address(this));
+            gUSD.mint(p.maxPaid, address(this));
         } else {
             revert UnsupportedPayment();
         }
@@ -208,7 +209,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
 
         // gUSD needed so the payout bound holds after the redeem fee
         uint256 requiredGusd = p.minOut;
-        if (p.payout == address(usdc)) {
+        if (p.payout == address(underlying)) {
             requiredGusd = Math.mulDiv(p.minOut, 10_000, 10_000 - gUSD.redeemFeeBps(), Math.Rounding.Ceil);
         } else if (p.payout != address(gUSD)) {
             revert UnsupportedPayment();
@@ -228,7 +229,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             IERC20(address(gUSD)).safeTransfer(to, gusdNet);
             out = gusdNet;
         } else {
-            out = gUSD.redeemUSDC(gusdNet, to);
+            out = gUSD.redeem(gusdNet, to);
         }
         if (IERC20(address(gUSD)).balanceOf(address(this)) != 0) revert DustLeft();
         if (IERC20(gpuToken).balanceOf(address(this)) != 0) revert DustLeft();

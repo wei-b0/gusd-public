@@ -28,7 +28,7 @@ import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 abstract contract GpuRouterTestBase is Test, Deployers {
     using PoolIdLibrary for PoolKey;
 
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
@@ -51,8 +51,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     function setUp() public virtual {
         vm.warp(1_000_000);
         deployFreshManagerAndRouters();
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
         oracle = new MockGPUPriceOracle(address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
@@ -68,7 +68,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         hook = GPUHook(hookAddr);
         new GPUHook{salt: salt}(IPoolManager(address(manager)), address(gusd), issuance, ledger, address(this));
 
-        router = new GpuRouter(IPoolManager(address(manager)), gusd, issuance, hook, IERC20(address(usdc)));
+        router = new GpuRouter(IPoolManager(address(manager)), gusd, issuance, hook);
 
         gusd.setRevenueSink(ledger);
         RevenueLedger(ledger).setVault(makeAddr("sgusdVault"));
@@ -91,10 +91,10 @@ abstract contract GpuRouterTestBase is Test, Deployers {
 
         // fund users + approvals to the router
         _dealGusd(alice, 10_000_000e6);
-        deal(address(usdc), alice, 10_000_000e6);
+        deal(address(underlying), alice, 10_000_000e6);
         vm.startPrank(alice);
         IERC20(address(gusd)).approve(address(router), type(uint256).max);
-        IERC20(address(usdc)).approve(address(router), type(uint256).max);
+        IERC20(address(underlying)).approve(address(router), type(uint256).max);
         vm.stopPrank();
         _issueGpuTo(bob, 1_000e18);
         vm.startPrank(bob);
@@ -143,10 +143,10 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     }
 
     function _dealGusd(address to, uint256 gusdAmt) internal {
-        deal(address(usdc), to, gusdAmt);
+        deal(address(underlying), to, gusdAmt);
         vm.startPrank(to);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(gusdAmt, to);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(gusdAmt, to);
         vm.stopPrank();
     }
 
@@ -233,7 +233,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     /// BUY funded with USDC: internal mintUSDC; change still refunds as gUSD.
     function test_buy_viaPool_usdcPayment() public {
         uint256 gpuOut = 1e12;
-        uint256 aliceUsdcBefore = usdc.balanceOf(alice);
+        uint256 aliceUsdcBefore = underlying.balanceOf(alice);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
         vm.prank(alice);
@@ -243,14 +243,14 @@ abstract contract GpuRouterTestBase is Test, Deployers {
                 gpuOut: gpuOut,
                 poolGpuOut: gpuOut,
                 issueGpuOut: 0,
-                payment: address(usdc),
+                payment: address(underlying),
                 maxPaid: 2_000_000e6,
                 sqrtLimitX96: 0,
                 recipient: alice
             })
         );
 
-        assertEq(usdc.balanceOf(alice), aliceUsdcBefore - 2_000_000e6, "USDC pulled = maxPaid");
+        assertEq(underlying.balanceOf(alice), aliceUsdcBefore - 2_000_000e6, "USDC pulled = maxPaid");
         assertEq(gpu.balanceOf(alice), gpuOut, "exact GPU out");
         // change refunds as gUSD (mint fee is 0 in this rig)
         assertGt(gusd.balanceOf(alice) - aliceGusdBefore, 0, "gUSD change refunded");
@@ -485,17 +485,17 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 supplyBefore = gusd.totalSupply();
-        uint256 bobUsdcBefore = usdc.balanceOf(bob);
+        uint256 bobUsdcBefore = underlying.balanceOf(bob);
 
         vm.prank(bob);
         uint256 out = router.sell(
             GpuRouter.SellParams({
-                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(usdc), minOut: minOut, sqrtLimitX96: 0, recipient: bob
+                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(underlying), minOut: minOut, sqrtLimitX96: 0, recipient: bob
             })
         );
 
         assertGe(out, minOut, "payout bound holds after redeem fee");
-        assertEq(usdc.balanceOf(bob), bobUsdcBefore + out);
+        assertEq(underlying.balanceOf(bob), bobUsdcBefore + out);
         // exact gusdNet from supply accounting: dSupply = -gusdNet + redeemFee
         uint256 redeemFee = gusd.balanceOf(ledger) - ledgerBefore;
         uint256 gusdNet = redeemFee + (supplyBefore - gusd.totalSupply());

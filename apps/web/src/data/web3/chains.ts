@@ -2,8 +2,9 @@
  * The chain registry — every chain the app can speak of, with exactly one
  * active. Built from public env at module load (frozen at build time, like
  * the rest of NEXT_PUBLIC_*). Anvil 31337 is the working target; Base
- * Sepolia / Base exist as env-gated entries so enabling them is a config
- * change, not a code change — no other network is ever invented here.
+ * Sepolia / Base and Robinhood Testnet / Robinhood exist as env-gated
+ * entries so enabling them is a config change, not a code change — no
+ * other network is ever invented here.
  *
  * Contract addresses live beside this registry in ./abis/addresses.generated.ts
  * (sourced from apps/contracts/deployments/<id>.json) and resolve through
@@ -22,6 +23,8 @@ function rpcUrlFor(chainId: number): string | null {
   }
   if (chainId === 84_532) return process.env.NEXT_PUBLIC_RPC_URL_84532 ?? null;
   if (chainId === 8453) return process.env.NEXT_PUBLIC_RPC_URL_8453 ?? null;
+  if (chainId === 46_630) return process.env.NEXT_PUBLIC_RPC_URL_46630 ?? null;
+  if (chainId === 4663) return process.env.NEXT_PUBLIC_RPC_URL_4663 ?? null;
   return null;
 }
 
@@ -46,10 +49,37 @@ const BASE: Chain = defineChain({
   rpcUrls: { default: { http: ["https://mainnet.base.org"] } },
 });
 
+/** Robinhood Chain — Arbitrum Orbit L2 where USDG is the canonical stable.
+ *  Both endpoints verified live (eth_chainId 46630 / 4663). */
+const ROBINHOOD_TESTNET: Chain = defineChain({
+  id: 46_630,
+  name: "robinhood-testnet",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.testnet.chain.robinhood.com"] } },
+});
+
+const ROBINHOOD: Chain = defineChain({
+  id: 4663,
+  name: "robinhood",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
+});
+
+/** Per-chain product capabilities. Config-driven so feature gates read from
+ *  the registry, never from chainId scatter in components. */
+interface ChainCapabilities {
+  /** Third-party cross-chain funding (the Across-powered panel) is offered
+   *  live on this chain. Across serves mainnets only. */
+  crossChainFunding: boolean;
+  /** The funding panel renders with a guidance-only note (no live bridge):
+   *  a testnet where the bridge doesn't operate but funding still matters. */
+  crossChainGuidance: boolean;
+}
+
 interface ChainEntry {
   chain: Chain;
   /** Registry name used in logs and tests. */
-  key: "anvil" | "base-sepolia" | "base";
+  key: "anvil" | "base-sepolia" | "base" | "robinhood-testnet" | "robinhood";
   /** Status label for the network row: "Anvil · dev", "Base · mainnet". */
   label: string;
   /** Params for wallet_addEthereumChain when the wallet lacks the chain. */
@@ -59,6 +89,7 @@ interface ChainEntry {
     nativeCurrency: { name: string; symbol: string; decimals: number };
     rpcUrls: string[];
   };
+  capabilities: ChainCapabilities;
 }
 
 const REGISTRY: Record<number, ChainEntry> = {
@@ -72,6 +103,7 @@ const REGISTRY: Record<number, ChainEntry> = {
       nativeCurrency: ANVIL.nativeCurrency,
       rpcUrls: ["http://127.0.0.1:8545"],
     },
+    capabilities: { crossChainFunding: false, crossChainGuidance: false },
   },
   [BASE_SEPOLIA.id]: {
     chain: BASE_SEPOLIA,
@@ -83,6 +115,7 @@ const REGISTRY: Record<number, ChainEntry> = {
       nativeCurrency: BASE_SEPOLIA.nativeCurrency,
       rpcUrls: ["https://sepolia.base.org"],
     },
+    capabilities: { crossChainFunding: false, crossChainGuidance: false },
   },
   [BASE.id]: {
     chain: BASE,
@@ -94,6 +127,32 @@ const REGISTRY: Record<number, ChainEntry> = {
       nativeCurrency: BASE.nativeCurrency,
       rpcUrls: ["https://mainnet.base.org"],
     },
+    capabilities: { crossChainFunding: true, crossChainGuidance: false },
+  },
+  [ROBINHOOD_TESTNET.id]: {
+    chain: ROBINHOOD_TESTNET,
+    key: "robinhood-testnet",
+    label: "Robinhood Testnet · testnet",
+    addParams: {
+      chainId: "0xb626",
+      chainName: "Robinhood Testnet",
+      nativeCurrency: ROBINHOOD_TESTNET.nativeCurrency,
+      rpcUrls: ["https://rpc.testnet.chain.robinhood.com"],
+    },
+    // Across serves mainnets only — the funding panel degrades to guidance.
+    capabilities: { crossChainFunding: false, crossChainGuidance: true },
+  },
+  [ROBINHOOD.id]: {
+    chain: ROBINHOOD,
+    key: "robinhood",
+    label: "Robinhood · mainnet",
+    addParams: {
+      chainId: "0x1237",
+      chainName: "Robinhood",
+      nativeCurrency: ROBINHOOD.nativeCurrency,
+      rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
+    },
+    capabilities: { crossChainFunding: true, crossChainGuidance: false },
   },
 };
 
@@ -127,6 +186,23 @@ export function isChainSupported(chainId: number): boolean {
 /** Human label for the network row: "Anvil · dev". */
 export function chainLabel(chainId: number): string | null {
   return REGISTRY[chainId]?.label ?? null;
+}
+
+/** Product capabilities for a chain id, or null when unknown. Feature gates
+ *  read this, never raw chain ids.
+ *
+ *  Dev-only override: NEXT_PUBLIC_ENABLE_FUNDING_DEV ("live" | "guidance")
+ *  forces the cross-chain funding surface onto the configured chain so the
+ *  panels are reviewable where the rest of the app actually works (Anvil).
+ *  Real quotes have nowhere to go there — Across serves mainnets only — so
+ *  the live panel honestly reports "no route". Never set in production. */
+export function chainCapabilities(chainId: number): ChainCapabilities | null {
+  const caps = REGISTRY[chainId]?.capabilities ?? null;
+  const dev = process.env.NEXT_PUBLIC_ENABLE_FUNDING_DEV ?? "";
+  if (caps === null || dev === "" || chainId !== CONFIGURED_CHAIN_ID) return caps;
+  if (dev === "live") return { ...caps, crossChainFunding: true, crossChainGuidance: false };
+  if (dev === "guidance") return { ...caps, crossChainFunding: false, crossChainGuidance: true };
+  return caps;
 }
 
 /** Build-time RPC override for a chain, if any. */

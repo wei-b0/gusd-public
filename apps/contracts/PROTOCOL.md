@@ -19,7 +19,7 @@ gUSD is a protocol-native monetary layer for an onchain GPU asset economy.
 The system consists of:
 
 ```text
-USDC
+chain reserve asset (USDG / USDC)
   ↓
 gUSD
   ├── sgUSD
@@ -38,10 +38,18 @@ The protocol aims to create liquid, fungible onchain assets representing the eco
 
 gUSD is the protocol-native dollar.
 
-Initially:
+gUSD mints 1:1 against **one reserve asset per chain** — the chain's canonical
+regulated stablecoin, called the `underlying` throughout this spec and in the
+contracts:
+
+| Chain | Reserve asset | Notes |
+| --- | --- | --- |
+| Robinhood Chain (4663 / 46630) | **USDG** (Global Dollar, Paxos) | the chain's canonical stable; no native USDC/USDT exists there |
+| Base, Ethereum, other USDC-canonical chains | **USDC** | Circle's canonical token |
+| Anvil (dev) | mock USDC | solmate MockERC20 wearing USDC's identity by Deploy default |
 
 ```text
-1 USDC
+1 unit of the chain's reserve asset
   ↓
 1 gUSD
 ```
@@ -51,12 +59,21 @@ and:
 ```text
 1 gUSD
   ↓
-1 USDC
+1 unit of the chain's reserve asset
 ```
 
 subject to configured protocol fees.
 
-The initial implementation should use full USDC reserve backing.
+Beyond the reserve asset, the **StableRouter** accepts additional
+owner-whitelisted 6-decimal stables (e.g. USDT where a real one exists): each
+is swapped to the reserve asset on Uniswap v4 (caller-supplied pool,
+`minOut`-bounded) before the mint, so every funding route lands in the same
+reserve. Identity is deployment-config only — the whitelist is set by the
+owner, never derived from token symbols (lookalike USDC/USDT scam tokens
+exist on every chain).
+
+The implementation uses full reserve backing: `reserveBalance() ==
+totalSupply()` at all times, in every funding path.
 
 gUSD is intended to become the common:
 
@@ -200,7 +217,7 @@ The oracle may support substantially more GPU configurations than are tokenized 
 # 4. Monetary Architecture
 
 ```text
-                              USDC
+                 chain reserve asset (USDG / USDC)
                                 │
                            reserve backing
                                 │
@@ -226,26 +243,38 @@ The capital represented by each branch must be accounted for separately.
 
 # 5. gUSD Reserve
 
-USDC is the initial reserve asset underlying gUSD.
+The reserve is a single fully-backed pool of the chain's reserve asset
+(USDG on Robinhood Chain, USDC on USDC-canonical chains — see §2).
+
+**Reserve-asset risk.** On Robinhood Chain the reserve is USDG, issued by
+Paxos. Paxos operates an on-chain blocklist/freeze capability on its
+issuances; a freeze targeting the protocol's reserve wallet or the token
+contract could halt mints and — worse — redemptions of gUSD on that chain.
+This risk is accepted and monitored: it is the price of using the chain's
+canonical regulated stable, and the StableRouter's `pause()` plus GUSD's own
+pause are the operational brakes if issuance halts. The same structural
+exposure exists on any chain whose reserve asset has an issuer kill switch
+(USDC included). gUSD's reserve backing is only as redeemable as the
+underlying issuer allows.
 
 Example:
 
 ```text
 User deposits:
-10,000 USDC
+10,000 USDG (or USDC on USDC chains)
 
 Protocol reserve:
-+10,000 USDC
++10,000 USDG
 
 User:
 +10,000 gUSD
 ```
 
-The reverse process burns gUSD and releases USDC.
+The reverse process burns gUSD and releases the reserve asset.
 
 The initial protocol should not depend on:
 
-- lending reserve USDC,
+- lending the reserve asset,
 - fractional reserves,
 - algorithmic stabilization,
 - GPU collateral,
@@ -735,10 +764,10 @@ The H100 may itself be created through primary issuance.
 
 The protocol contains several economically distinct pools of capital.
 
-## USDC Reserve
+## Reserve Pool
 
 ```text
-USDC
+chain reserve asset (USDG / USDC)
  ↓
 backs gUSD
 ```
@@ -814,7 +843,8 @@ The final percentages are not yet fixed.
 The intended economic loop is:
 
 ```text
-USDC enters
+reserve-asset funding enters (USDG / USDC / whitelisted stables
+via the StableRouter)
     ↓
 gUSD grows
     ↓
@@ -839,12 +869,12 @@ The GPU economy therefore creates structural demand for gUSD.
 
 # 23. Why gUSD Exists
 
-The GPU protocol could technically use USDC directly.
+The GPU protocol could technically use the reserve asset directly.
 
 gUSD exists because the ambition is broader than:
 
 ```text
-GPU_TOKEN / USDC trading
+GPU_TOKEN / USDG (or USDC) trading
 ```
 
 gUSD becomes:
@@ -868,37 +898,47 @@ For example, the frontend may expose:
 
 ```text
 BUY H100
-Pay with USDC
+Pay with gUSD
 ```
 
-while internally routing:
+while internally routing through the secondary market.
+
+## Stable routing
+
+The mint desk offers every funding stable the deployment whitelists:
 
 ```text
-USDC
- ↓
-gUSD
- ↓
-H100
+MINT gUSD
+Fund with: [USDG] [USDT] [USDC …]
 ```
 
-Likewise:
+The chain's reserve asset is the home asset and mints directly through
+GUSD; any other whitelisted stable routes through the StableRouter, which
+swaps it to the reserve asset on Uniswap v4 before minting — the user sees
+one quote with one floor, the reserve asset never becomes a second product
+token, and redemption can pay out in any whitelisted stable the same way.
 
-```text
-SELL H100
-Receive USDC
-```
+Stable identity is never read from token metadata (`symbol()`/`name()`):
+lookalike USDC/USDT scam tokens exist on every chain. The frontend names
+assets from two hand-written sources only — the deployment record and its
+own per-chain display config — cross-checked against each other and failed
+loudly on mismatch.
 
-can route:
+## Cross-chain funding
 
-```text
-H100
- ↓
-gUSD
- ↓
-USDC
-```
+Users on other chains fund the active chain through third-party bridging
+aggregators (Across today) at the UI layer. The policy:
 
-gUSD can remain the internal settlement layer without introducing unnecessary UX friction.
+- **the protocol never bridges and never custodies bridged value** — the
+  bridge is a third-party service whose quotes and fills live entirely
+  outside the protocol's action runner;
+- the bridge's guaranteed minimum output is what the mint hand-off prefills,
+  so the user's floor is explicit;
+- a post-deposit bridge failure is surfaced honestly (the deposit still
+  fills — the user is told not to re-bridge);
+- **supply is chain-local**: gUSD minted on one chain exists only on that
+  chain. Cross-chain funding moves the *reserve asset* into the wallet; it
+  never makes gUSD itself portable.
 
 ---
 
@@ -910,10 +950,11 @@ gUSD can remain the internal settlement layer without introducing unnecessary UX
 gUSD cannot be created without eligible reserve backing.
 ```
 
-For V1:
+For V1, on every chain and every funding path (direct reserve mints and
+StableRouter swap mints alike):
 
 ```text
-1 gUSD ↔ 1 USDC
+1 gUSD ↔ 1 unit of the chain's reserve asset
 ```
 
 ---
@@ -989,12 +1030,16 @@ The initial protocol does not require:
 - perpetuals,
 - user short positions,
 - lending markets,
-- cross-chain deployment,
 - custom AMM curves,
 - reserve yield deployment,
 - algorithmic gUSD stabilization,
 - automated GPU buyback systems,
-- automated multi-GPU LP vaults.
+- automated multi-GPU LP vaults,
+- cross-chain gUSD fungibility / supply portability (each deployment's
+  supply is chain-local; the reserve backing on one chain says nothing
+  about another),
+- protocol-operated bridges (cross-chain funding is a third-party service
+  at the UI layer — the protocol never custodies bridged value).
 
 These may become future products but are not foundational requirements.
 
@@ -1005,7 +1050,7 @@ These may become future products but are not foundational requirements.
 The first complete protocol flow should demonstrate:
 
 ```text
-USDC
+chain reserve asset (USDG / USDC)
   ↓
 gUSD
   ↓

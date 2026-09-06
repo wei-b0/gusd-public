@@ -20,7 +20,7 @@ export interface BuyParams {
   poolGpuOut: bigint;
   /** Portion minted via primary issuance (18-dec raw). */
   issueGpuOut: bigint;
-  /** Payment asset — gUSD in v1 (USDC pays via the mint path). */
+  /** Payment asset — gUSD in v1 (the reserve pays via the mint path). */
   payment: Address;
   /** gUSD-equivalent spend cap; unconsumed funds are refunded. */
   maxPaid: bigint;

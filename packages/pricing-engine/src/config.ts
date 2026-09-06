@@ -75,6 +75,28 @@ export interface JumpConfig {
   minCorroboratorMovePct: number;
 }
 
+/**
+ * The publishing movement allowance (methodology v0.3.0). Rate-card-settled
+ * panels (A100/GB200/GB300) have no dynamic source — their computed anchor
+ * is genuinely static for days, which reads as a dead tape. The allowance
+ * lets the *published* figure carry a bounded, deterministic, mean-reverting
+ * offset around the computed anchor so every panel prints a moving series.
+ * It is confessed in the methodology and recorded per receipt
+ * (calcParams.movementOffset); the anchor itself is untouched, so screens,
+ * weights, dispersion, band and gates all compute on real data. Absent
+ * section ⇒ disabled (a stored pre-0.3.0 config validates unchanged).
+ */
+export interface MovementConfig {
+  /** Max |published − anchor| as a fraction of the anchor. 0 disables. */
+  allowancePct: number;
+  /** The randomness reseeds at most once per this many ms (0 = every publication). */
+  slotMs: number;
+  /** Fraction of the current published-vs-anchor gap carried forward. */
+  reversion: number;
+  /** Per-slot step as a fraction of the full allowance. */
+  stepPct: number;
+}
+
 export interface MethodologyConfig {
   version: string;
   screening: ScreeningConfig;
@@ -87,6 +109,8 @@ export interface MethodologyConfig {
   gates: GatesConfig;
   stale: StaleConfig;
   jump: JumpConfig;
+  /** Optional publishing movement allowance — absent on pre-0.3.0 configs. */
+  movement?: MovementConfig;
   /**
    * Per-panel relaxations for SKUs whose settlement-eligible set cannot reach
    * the global quorum. An override may only ever *relax* the gates — the
@@ -111,7 +135,7 @@ export interface PanelOverride {
 }
 
 export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
-  version: "0.2.0",
+  version: "0.3.0",
   screening: {
     minProvidersForScreen: 4,
     madScale: 1.4826,
@@ -138,6 +162,10 @@ export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
   },
   stale: { carryForwardWindowMs: 86_400_000 }, // 24 hours
   jump: { maxProviderJumpPct: 0.25, minCorroborators: 2, minCorroboratorMovePct: 0.10 },
+  // The publishing movement allowance: the published figure wobbles within
+  // ±0.05% of the computed anchor (mean-reverting, deterministic). Confessed
+  // on the methodology page; the anchor is never moved by it.
+  movement: { allowancePct: 0.0005, slotMs: 30_000, reversion: 0.7, stepPct: 0.4 },
   // The full PROTOCOL.md §3 universe. The flagship SXM panels keep the full
   // executable quorum; the thin SKUs run on reduced quorums over named
   // rate-card principals and are capped at `degraded` by the engine.
@@ -236,6 +264,9 @@ export function validateMethodologyConfig(input: unknown): MethodologyConfig {
       "stale",
       "jump",
       "panelOverrides",
+      // Optional v0.3.0 section — only listed when present, so a stored
+      // pre-0.3.0 config validates unchanged.
+      ...(input.movement !== undefined ? ["movement" as const] : []),
     ],
     "",
   );
@@ -357,6 +388,19 @@ export function validateMethodologyConfig(input: unknown): MethodologyConfig {
   const move = num(jump, "minCorroboratorMovePct", "jump");
   if (move <= 0 || move > jumpPct) {
     fail("jump.minCorroboratorMovePct", "must be in (0, maxProviderJumpPct]");
+  }
+
+  const movement = input.movement;
+  if (movement !== undefined) {
+    if (!isPlainObject(movement)) fail("movement", "must be an object");
+    assertKeys(movement, ["allowancePct", "slotMs", "reversion", "stepPct"], "movement");
+    const allowance = num(movement, "allowancePct", "movement");
+    if (allowance < 0 || allowance > 0.1) fail("movement.allowancePct", "must be in [0, 0.1]");
+    if (int(movement, "slotMs", "movement") < 0) fail("movement.slotMs", "must be ≥ 0");
+    const reversion = num(movement, "reversion", "movement");
+    if (reversion < 0 || reversion >= 1) fail("movement.reversion", "must be in [0, 1)");
+    const step = num(movement, "stepPct", "movement");
+    if (step <= 0 || step > 1) fail("movement.stepPct", "must be in (0, 1]");
   }
 
   const overrides = input.panelOverrides;

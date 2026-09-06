@@ -19,6 +19,15 @@ import { jumpScreen, madScreen } from "./screen.js";
  * no DB, no clock, no randomness: `now` is injected, the same input always
  * yields a byte-identical receipt. It never interpolates, never guesses, and
  * treats `withheld` as a perfectly good answer.
+ *
+ * One versioned exception (methodology v0.3.0): the publishing movement
+ * allowance. The *published* figure may carry a bounded, deterministic,
+ * mean-reverting offset around the computed anchor so rate-card-settled
+ * panels print a moving series; the anchor itself is untouched — screens,
+ * weights, dispersion, band and gates all compute on the real data. The
+ * offset is hashed from the same inputs the receipt records (panel, slot,
+ * anchor), so replay reproduces it byte-identically, and calcParams carries
+ * it verbatim. See MovementConfig.
  */
 export interface ProviderStat {
   /** Historical σ of this provider's own prices, as a fraction. Null = unknown. */
@@ -197,10 +206,39 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
     }
   }
 
+  // 10. The publishing movement allowance (v0.3.0, optional). The published
+  // figure = anchor + a bounded, mean-reverting offset. The gap (prior
+  // published vs this anchor) decays each publication and a deterministic
+  // per-slot step wobbles it; the clamp IS the accepted threshold. The first
+  // publication prints the pure anchor (no prior to revert); carry-forward
+  // (stale) and withheld figures never drift — only a fresh computation
+  // publishes an offset.
+  let movementOffset: number | null = null;
+  const movement = config.movement;
+  if (
+    movement !== undefined &&
+    movement.allowancePct > 0 &&
+    price !== null &&
+    hasContributors &&
+    input.prior !== null
+  ) {
+    const allowance = price * movement.allowancePct;
+    const gap = input.prior !== null ? input.prior.price - price : 0;
+    const slot =
+      movement.slotMs > 0 ? Math.floor(input.now.getTime() / movement.slotMs) : input.now.getTime();
+    const seed = `${input.gpu.id}:${input.panelId}:${slot}:${price}`;
+    const raw = movement.reversion * gap + movement.stepPct * allowance * fnvUnit(seed);
+    movementOffset = Math.max(-allowance, Math.min(allowance, raw));
+    finalPrice = round4(price + movementOffset);
+  }
+
   const calcParams: Record<string, unknown> = {
     config,
     priorCandidateId,
     priceSource: hasContributors ? "computed" : priorCandidateId !== null ? "prior" : "none",
+    // The allowance's own audit trail: the exact offset the published figure
+    // carries over the anchor, so any reader can subtract it back out.
+    movementOffset: movementOffset === null ? null : movementOffset.toFixed(8),
   };
 
   const computedAt = input.now;
@@ -225,4 +263,16 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
   };
   const receipt = canonicalJson(core);
   return { ...core, receipt };
+}
+
+/** Deterministic sample on (−1, 1) — FNV-1a over the seed string. The
+ *  movement allowance's only source of variation: integer ops, no clock, no
+ *  RNG, identical on every runtime and every replay. */
+function fnvUnit(seed: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (((h >>> 0) + 0.5) / 0x1_0000_0000) * 2 - 1;
 }

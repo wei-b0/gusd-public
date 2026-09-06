@@ -2,13 +2,12 @@
 
 /**
  * TerminalDesk — the one roof: analyse and execute a market in a single
- * dense composition. The market detail page folded in here — the desk is
- * deliberately the only surface with depth and a trade ticket: the chart,
- * premium/discount history, statistics, Index sources, both tapes, the GPU
- * reference, and the order slip. There is no unbound desk: `/terminal`
- * 308s to the default desk (H100), and the markets rail navigates, so every
- * desk has the market's own URL. Desktop is spatial; mobile is sequential
- * tasks via the tab strip.
+ * dense composition. The desk is deliberately the only surface with depth
+ * and a trade ticket: the chart, statistics, the Index feed, both tapes,
+ * the GPU reference, and the order slip. There is no unbound desk:
+ * `/terminal` 308s to the default desk (H100), and the markets rail
+ * navigates, so every desk has the market's own URL. Desktop is spatial;
+ * mobile is sequential tasks via the tab strip.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -22,13 +21,10 @@ import {
   type AssetSpec,
   type ChartRange,
   type Market,
-  type MarketSnapshot,
   type MarketStats,
   type MarketTrade,
-  type ProviderObservation,
 } from "@/domain/types";
 import {
-  fmtAge,
   fmtClock,
   fmtFull,
   fmtGusd,
@@ -43,7 +39,6 @@ import {
 } from "@/domain/format";
 import { useAccount, useMarketSnapshot, useMarkets, useServices } from "@/data/services";
 import { TvPriceChart } from "@/components/charts/tv-price-chart";
-import { BasisChart, buildBasisPoints } from "@/components/charts/basis-chart";
 import { OrderSlip } from "@/components/markets/order-slip";
 import { AllTape } from "@/components/markets/all-tape";
 import { IndexStatusChip } from "@/components/ui/index-status-chip";
@@ -53,7 +48,7 @@ import { TickFlash } from "@/components/ui/tick-flash";
 import { TuiPanel } from "@/components/ui/panel";
 
 const RANGES = CHART_RANGES;
-const TABS = ["Overview", "Chart", "Trade", "Index", "Activity"] as const;
+const TABS = ["Overview", "Chart", "Trade", "Activity"] as const;
 
 export function TerminalDesk({ asset }: { asset: AssetId }) {
   // The bound market comes from the route — the rail's links are the switch.
@@ -86,11 +81,25 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[230px_minmax(0,1fr)_310px]">
-        {/* Left rail — the markets, the session's position here, the hardware */}
-        <div className={`order-4 space-y-5 lg:order-1 ${cellVis(["Overview"])}`}>
-          <div>
-            <TuiPanel no="01" title="Markets" meta={`${markets.length} markets`}>
-              <div>
+        {/* Left rail — the markets, the session's position here, the hardware.
+            The rail tiles its column: the Markets frame grows to the row's
+            height (the tallest column's), so the rail bottoms out with the
+            plate and the trade rail instead of stranding ground before the
+            statistics strip — slack lives inside the frame, beneath the
+            list, the way a board's empty quota does. */}
+        <div
+          className={`order-4 space-y-5 lg:order-1 lg:flex lg:flex-col ${
+            tab === "Overview" ? "" : "hidden"
+          } lg:block`}
+        >
+          <div className="lg:grow">
+            <TuiPanel
+              no="01"
+              title="Markets"
+              meta={`${markets.length} markets`}
+              className="lg:flex lg:h-full lg:flex-col"
+            >
+              <div className="lg:flex-1">
                 {markets.map((mk) => {
                   const active = mk.asset.id === asset;
                   const move = marketMove24h(mk);
@@ -124,12 +133,18 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                           move === null || flat ? "text-dim" : move >= 0 ? "text-up" : "text-down"
                         }`}
                       >
+                        {move === null ? (
+                          "—"
+                        ) : (
+                          <TickFlash value={move} precision={2} className="inline-block">
+                            {fmtPctSigned(move)}
+                          </TickFlash>
+                        )}
                         {move === null || flat ? null : (
                           <span aria-hidden className="text-[8px]">
                             {move >= 0 ? "▲" : "▼"}
                           </span>
                         )}
-                        {move === null ? "—" : fmtPctSigned(move)}
                       </span>
                     </Link>
                   );
@@ -147,11 +162,17 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
           </div>
         </div>
 
-        {/* Center — the plate */}
+        {/* Center — the plate. The panel is a flex column that fills the
+            grid row, and the chart is its flex-1 body: the row's height is
+            the tallest column's (ticket + Index feed), so the plate bottoms
+            out with the right rail at every viewport instead of freezing at
+            a vh height and stranding dead space beneath it. */}
         <div className={`order-1 min-w-0 lg:order-2 ${cellVis(["Chart"])}`}>
-          <div>
+          <div className="flex h-full flex-col">
             <TuiPanel
               no="02"
+              className="flex h-full flex-col"
+              bodyClassName="flex min-h-0 flex-1 flex-col"
               title={<Pair id={m.asset.id} />}
               meta={`${hasMarket ? "hourly" : range} candles · UTC`}
               right={
@@ -184,7 +205,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                       ) : (
                         <TickFlash
                           value={m.indexPrice}
-                          flash="wire"
+                          precision={4}
+                          arrow="hold"
                           className="disp text-[26px] leading-none text-wire"
                         >
                           {fmtUsdPrecise(m.indexPrice)}
@@ -198,19 +220,27 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                           flatIndex24 ? "text-dim" : m.indexChange24hPct >= 0 ? "text-up" : "text-down"
                         }`}
                       >
+                        <TickFlash value={m.indexChange24hPct} precision={2} className="inline-block">
+                          {fmtPctSigned(m.indexChange24hPct)}
+                        </TickFlash>
                         {flatIndex24 ? null : (
                           <span aria-hidden className="text-[9px]">
                             {m.indexChange24hPct >= 0 ? "▲" : "▼"}
                           </span>
-                        )}
-                        {fmtPctSigned(m.indexChange24hPct)} · 24h
+                        )}{" "}
+                        · 24h
                       </span>
                     ) : null}
                   </>
                 ) : (
                   <>
                     <span className="inline-flex items-baseline gap-1.5">
-                      <TickFlash value={m.marketPrice} className="disp text-[26px] leading-none text-bright">
+                      <TickFlash
+                        value={m.marketPrice}
+                        precision={4}
+                        arrow="hold"
+                        className="disp text-[26px] leading-none text-bright"
+                      >
                         {fmtGusdPrecise(m.marketPrice)}
                       </TickFlash>
                       <span className="num text-[11px] text-dim">gUSD</span>
@@ -220,12 +250,19 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                         m.change24hPct === null || flat24 ? "text-dim" : m.change24hPct >= 0 ? "text-up" : "text-down"
                       }`}
                     >
+                      {m.change24hPct === null ? (
+                        "—"
+                      ) : (
+                        <TickFlash value={m.change24hPct} precision={2} className="inline-block">
+                          {fmtPctSigned(m.change24hPct)}
+                        </TickFlash>
+                      )}
                       {m.change24hPct === null || flat24 ? null : (
                         <span aria-hidden className="text-[9px]">
                           {m.change24hPct >= 0 ? "▲" : "▼"}
                         </span>
-                      )}
-                      {m.change24hPct === null ? "—" : fmtPctSigned(m.change24hPct)} · 24h
+                      )}{" "}
+                      · 24h
                     </span>
                     <span className="inline-flex items-baseline gap-1.5">
                       <span className="slug flex items-baseline gap-1.5 text-dim">
@@ -236,7 +273,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                       ) : (
                         <TickFlash
                           value={m.indexPrice}
-                          flash="wire"
+                          precision={4}
                           className="num text-[14px] leading-none text-wire"
                         >
                           {fmtUsdPrecise(m.indexPrice)}
@@ -263,11 +300,11 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   </span>
                 )}
               </div>
-              <div className="p-2 pr-3">
+              <div className="min-h-0 flex-1 p-2 pr-3">
                 <TvPriceChart
                   asset={asset}
                   range={range}
-                  className="h-96 lg:h-[56vh] lg:min-h-95"
+                  className="h-full min-h-96 lg:min-h-95"
                 />
               </div>
               <div className="border-t border-rule px-3.5 py-2">
@@ -279,15 +316,17 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
           </div>
         </div>
 
-        {/* Right rail — the trade, then the Index feed */}
-        <div className={`order-2 space-y-5 lg:order-3 ${cellVis(["Trade", "Index"])}`}>
+        {/* Right rail — the trade, then the Index feed. One task on mobile
+            too: the feed is the ticket's reference leg, exactly where it
+            sits on the desktop rail. */}
+        <div className={`order-2 space-y-5 lg:order-3 ${cellVis(["Trade"])}`}>
           <div className={vis("Trade")}>
             <TuiPanel no="03" title="Trade" meta={<TradeMeta assetId={m.asset.id} />}>
               <OrderSlip assetId={m.asset.id} referencePrice={m.marketPrice ?? m.indexPrice} />
             </TuiPanel>
           </div>
 
-          <div className={vis("Index")}>
+          <div className={vis("Trade")}>
             <TuiPanel
               title="Index feed"
               meta={snapshot.quality ? `${snapshot.quality.sourcesLive}/${snapshot.quality.sourcesTotal} live` : "—"}
@@ -302,7 +341,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   ) : (
                     <TickFlash
                       value={m.indexPrice}
-                      flash="wire"
+                      precision={4}
                       className="num text-[16px] font-bold leading-none text-wire"
                     >
                       {fmtUsdPrecise(m.indexPrice)}
@@ -311,7 +350,17 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                 </div>
                 <Row
                   label="Publication"
-                  value={snapshot.quality?.publication ? `#${snapshot.quality.publication}` : "—"}
+                  value={
+                    snapshot.quality?.publication ? (
+                      /* One cyan pulse per real landing — the hash changes only
+                         when data arrives, independent of any price moving. */
+                      <TickFlash value={snapshot.quality.publication} flash="wire" className="inline-block">
+                        {`#${snapshot.quality.publication}`}
+                      </TickFlash>
+                    ) : (
+                      "—"
+                    )
+                  }
                   tone="wire"
                 />
                 <Row
@@ -320,12 +369,12 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   tone="wire"
                 />
                 <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
-                  Source panel on{" "}
+                  Provider detail on the{" "}
                   <Link
-                    href={`/oracle/${m.asset.id}`}
+                    href={`/oracle?tab=benchmarks&bench=${m.asset.id}`}
                     className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright"
                   >
-                    Index sources
+                    oracle Benchmarks tab
                   </Link>
                   .
                 </p>
@@ -334,25 +383,21 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
           </div>
         </div>
 
-        {/* Row two — the gap beside the statistics panel. The order utilities
-            keep the mobile stack (rail 4, plate 1, right rail 2) ahead of the
-            depth zones on every task. */}
-        <div className={`order-5 min-w-0 lg:order-4 lg:col-span-2 ${cellVis(["Index"])}`}>
-          <PremiumHistory snapshot={snapshot} range={range} />
-        </div>
-        <div className={`order-6 lg:order-5 lg:col-span-1 lg:col-start-3 ${cellVis(["Overview"])}`}>
+        {/* Row two — the statistics strip, spanning the full width. The dl
+            tiles into listing-board cells so the desk's widest band keeps the
+            desk's density instead of stretching four sparse pairs across it.
+            The order utilities keep the mobile stack (rail 4, plate 1, right
+            rail 2) ahead of the depth zones on every task. */}
+        <div className={`order-6 lg:order-4 lg:col-span-3 ${cellVis(["Overview"])}`}>
           <Statistics market={m} stats={snapshot.stats} />
         </div>
 
-        {/* Full-width depth — sources, then the activity zone */}
-        <div className={`order-7 lg:order-6 lg:col-span-3 ${cellVis(["Index"])}`}>
-          <IndexSources snapshot={snapshot} />
-        </div>
-        <div className={`order-8 lg:order-7 lg:col-span-3 ${cellVis(["Activity"])}`}>
+        {/* Full-width depth — the activity zone */}
+        <div className={`order-8 lg:order-5 lg:col-span-3 ${cellVis(["Activity"])}`}>
           <Tape trades={snapshot.recentTrades} />
         </div>
-        <div className={`order-9 lg:order-8 lg:col-span-3 ${cellVis(["Activity"])}`}>
-          <TuiPanel no="08" title="All-market tape" meta="all markets · newest first">
+        <div className={`order-9 lg:order-6 lg:col-span-3 ${cellVis(["Activity"])}`}>
+          <TuiPanel no="07" title="All-market tape" meta="all markets · newest first">
             <AllTape />
           </TuiPanel>
         </div>
@@ -393,8 +438,10 @@ function PositionPanel({ asset, account }: { asset: AssetId; account: ReturnType
 }
 
 /**
- * The Trade panel's fee-stack line — the real LP + protocol bps from the
- * market's onchain registration. "—" while unregistered.
+ * The Trade panel's fee-schedule line — the market's onchain fee schedule
+ * (LP + protocol + issuance). It names the market's rates, not any one
+ * quote's fees; the slip's ledger carries what a specific fill incurs.
+ * "—" while unregistered.
  */
 function TradeMeta({ assetId }: { assetId: string }) {
   const { trading } = useServices();
@@ -409,7 +456,7 @@ function TradeMeta({ assetId }: { assetId: string }) {
         if (alive) {
           setMeta(
             a
-              ? `fees ${(a.poolFeeBps / 100).toFixed(2)}% LP · ${(a.hookFeeBps / 100).toFixed(2)}% protocol`
+              ? `schedule ${(a.poolFeeBps / 100).toFixed(2)}% LP · ${(a.hookFeeBps / 100).toFixed(2)}% protocol · ${(a.issuanceFeeBps / 100).toFixed(2)}% issuance`
               : "unregistered",
           );
         }
@@ -428,55 +475,6 @@ function TradeMeta({ assetId }: { assetId: string }) {
  * Depth panels folded in from the retired market detail page. They keep the
  * market page's grammar (panel + caption + honesty empty-states) on the desk.
  * ------------------------------------------------------------------------- */
-
-function PremiumHistory({
-  snapshot,
-  range,
-}: {
-  snapshot: MarketSnapshot;
-  range: ChartRange;
-}) {
-  // Basis needs two independent legs. Without a venue price there is no gap
-  // to chart — the candles would just be the Index measured against itself.
-  const hasMarket = snapshot.market.marketPrice !== null;
-  const points = hasMarket ? buildBasisPoints(snapshot.candles, snapshot.index) : [];
-  const basis = snapshot.market.basisPct;
-  const premium = basis !== null && basis >= 0;
-  return (
-    <TuiPanel
-      no="04"
-      title="Premium / discount history"
-      meta="market vs Index"
-      right={
-        <span className={`num text-[12px] font-bold ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
-          {basis === null ? "—" : `${premium ? "Premium" : "Discount"} ${fmtPctSigned(basis)}`}
-        </span>
-      }
-    >
-      {points.length < 2 ? (
-        // No premium line can be drawn — say why rather than print an empty
-        // chart. Without a venue price the reason is structural, not depth.
-        <div className="flex h-56 items-center justify-center px-6 text-center lg:h-[30vh] lg:min-h-56">
-          <p className="slug text-amber">
-            {hasMarket
-              ? "No overlapping history yet — the oracle's publications don't reach this market's candle window. The premium line fills as oracle history accrues."
-              : "Basis measures the market price against the Index. This market has no venue price yet — the premium line fills when the market goes live."}
-          </p>
-        </div>
-      ) : (
-        <div className="p-2 pr-3">
-          <BasisChart points={points} range={range} className="h-56 lg:h-[30vh] lg:min-h-56" />
-        </div>
-      )}
-      <div className="border-t border-rule px-3.5 py-2">
-        <p className="text-[11px] leading-relaxed text-dim">
-          The gap between the market price and the Index price. Above zero the market trades at a
-          premium; below zero, at a discount.
-        </p>
-      </div>
-    </TuiPanel>
-  );
-}
 
 function Statistics({ market: m, stats }: { market: Market; stats: MarketStats }) {
   const hasMarket = m.marketPrice !== null;
@@ -500,7 +498,7 @@ function Statistics({ market: m, stats }: { market: Market; stats: MarketStats }
       title="Market statistics"
       meta={hasMarket ? "trailing 30d window · prices in gUSD" : "trailing windows · $ / GPU-hour"}
     >
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-0 p-3.5">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-0 p-3.5 md:grid-cols-3 lg:grid-cols-5">
         {cells.map((cell) => (
           <div
             key={cell.label}
@@ -521,97 +519,10 @@ function Statistics({ market: m, stats }: { market: Market; stats: MarketStats }
   );
 }
 
-function IndexSources({ snapshot }: { snapshot: MarketSnapshot }) {
-  const q = snapshot.quality;
-  return (
-    <TuiPanel
-      no="06"
-      title="Index sources"
-      meta={q ? `${q.sourcesLive}/${q.sourcesTotal} live${q.publication ? ` · #${q.publication}` : ""}` : "—"}
-    >
-      <div className="relative mt-2">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-[12px]">
-            <thead>
-              <tr className="border-b border-rule text-left">
-                <th scope="col" className="slug py-1.5 pl-3.5 pr-4 font-normal text-dim">Source</th>
-                <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Weight</th>
-                <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Observed</th>
-                <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Coverage</th>
-                <th scope="col" className="slug py-1.5 pr-3.5 text-right font-normal text-dim">Age</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.providers.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-3 text-center text-[11.5px] text-dim">
-                    Provider panel unavailable right now — the Index level above still carries
-                    the oracle's latest publication.
-                  </td>
-                </tr>
-              ) : (
-                snapshot.providers.map((p) => (
-                <tr key={p.id} className={p.status !== "live" ? "hatch" : undefined}>
-                  <td className="py-2 pl-3.5 pr-4">
-                    <span className="flex items-center gap-2 whitespace-nowrap">
-                      <ProviderLamp status={p.status} />
-                      <span className="text-[12.5px] text-data">{p.provider}</span>
-                      {p.status !== "live" && (
-                        <span className="slug border border-rule-strong px-1 py-0.5 text-[8.5px] text-dim">
-                          {p.status === "stale" ? "Stale" : "Delayed"}
-                        </span>
-                      )}
-                    </span>
-                  </td>
-                  <td className="num px-2.5 py-2 text-right text-data">
-                    {p.weightPct === null ? "—" : `${p.weightPct.toFixed(1)}%`}
-                  </td>
-                  <td className="num px-2.5 py-2 text-right text-wire">
-                    {p.priceUsdPerGpuHour === null ? "—" : fmtUsdPrecise(p.priceUsdPerGpuHour)}
-                  </td>
-                  <td className="num px-2.5 py-2 text-right text-data">
-                    {p.coveragePct === null ? "—" : `${p.coveragePct.toFixed(0)}%`}
-                  </td>
-                  <td className="num py-2 pr-3.5 text-right text-dim">
-                    {p.lastObservedAt === null || snapshot.quality === null
-                      ? "—"
-                      : fmtAge(p.lastObservedAt, snapshot.quality.updatedAt)}
-                  </td>
-                </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        {/* Advertise the horizontal swipe where the panel clips */}
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-[linear-gradient(to_left,var(--color-ground),transparent)] lg:hidden"
-        />
-      </div>
-      <p className="px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
-        Index Price is the weighted reference across these provider observations. Sources inform
-        the benchmark — they never set the market price.
-      </p>
-    </TuiPanel>
-  );
-}
-
-function ProviderLamp({ status }: { status: ProviderObservation["status"] }) {
-  const glyph = status === "live" ? "●" : status === "delayed" ? "◐" : "○";
-  const tone =
-    status === "live" ? "text-up" : status === "delayed" ? "text-amber" : "text-dim";
-  return (
-    <span role="img" aria-label={status} className={`num text-[9px] leading-none ${tone}`}>
-      {glyph}
-    </span>
-  );
-}
-
 function Tape({ trades }: { trades: MarketTrade[] }) {
   const rows = [...trades].slice(-14).reverse();
   return (
-    <TuiPanel no="07" title="Recent trades" meta="this market · newest first">
+    <TuiPanel no="06" title="Recent trades" meta="this market · newest first">
       <div className="border-t border-rule">
         {rows.length === 0 ? (
           <p className="px-3.5 py-6 text-center text-[11.5px] text-dim">
@@ -646,7 +557,7 @@ function TapeRow({ trade }: { trade: MarketTrade }) {
 
 function Reference({ asset }: { asset: AssetSpec }) {
   return (
-    <TuiPanel no="09" title="Underlying GPU" meta="hardware reference">
+    <TuiPanel no="04" title="Underlying GPU" meta="hardware reference">
       <div className="space-y-1.5 p-3.5">
         <Row label="Reference SKU" value={asset.referenceSku} />
         <Row label="Vendor" value={asset.vendor === "nvidia" ? "NVIDIA" : "AMD"} />
@@ -663,7 +574,7 @@ function Row({
   tone = "data",
 }: {
   label: ReactNode;
-  value: string;
+  value: ReactNode;
   tone?: "data" | "wire";
 }) {
   return (

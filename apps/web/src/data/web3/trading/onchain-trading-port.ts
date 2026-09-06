@@ -1,11 +1,15 @@
 /**
  * The real trading port — GPU ⇄ gUSD through the shared action runner.
- * Every submit becomes one ActionPlan: a fresh execution-identical quote
- * (the router's own quoteIssue + the hook-aware V4Quoter), the gUSD or GPU
- * approval when the allowance is short, a pre-signature simulation, and
- * reconciliation of the account store on confirmation. The account view
- * projects the interim onchain account store (the Ponder successor lands
- * later) — never demo capital, never invented cost basis.
+ * Every submit re-quotes fresh — the desk's displayed quote is a preview;
+ * the plan signs against one computed at submit time — then becomes one
+ * ActionPlan: the balance pre-flight (a short wallet is refused before any
+ * signature is requested), the gUSD or GPU approval when the allowance is
+ * short, a pre-signature simulation of the exact calldata, and
+ * reconciliation of the account store on confirmation. Quote and execution run the same
+ * protocol pricing path and math; the signed caps (`maxPaid`/`minOut`)
+ * bound the fill if state moves between quote and inclusion. The account
+ * view projects the interim onchain account store (the Ponder successor
+ * lands later) — never demo capital, never invented cost basis.
  */
 
 import type { Address } from "viem";
@@ -18,8 +22,9 @@ import type {
   TradeQuote,
   TradeRequest,
 } from "@/domain/types";
-import { fmtAddress, fmtUnits } from "@/domain/format";
-import { parseGpuUnits, parseGusd } from "@/domain/units";
+import { fmtAddress, fmtGusdLedger, fmtUnits } from "@/domain/format";
+import { legUnits } from "@/domain/types";
+import { formatGpuUnits, formatGusdRaw, parseGpuUnits, parseGusd } from "@/domain/units";
 import { GPU_ROUTER_ABI } from "../abis/gpu_router";
 import { getContracts } from "../contracts";
 import { simulateWrite } from "../simulate";
@@ -114,20 +119,40 @@ export class OnChainTradingPort implements TradingPort {
     const sizeRaw = parseGpuUnits(request.size);
     const approvals: ApprovalNeed[] = [];
     if (request.side === "buy") {
-      // The router pulls the full cap and refunds the change — the exact
-      // cap is the honest ask, never max.
+      // Balance pre-flight, before any signature is requested: the router
+      // pulls the full signed cap up front (change refunded), so the
+      // wallet must hold the cap — a short wallet is refused here rather
+      // than asked to approve an order that can't fill. Mint and earn
+      // gate their balances the same way.
+      const capRaw = parseGusd(quote.maxPaid);
+      const heldRaw = await this.quoteDeps.reads.balanceOf(
+        getContracts().addresses.gusd as Address,
+        owner,
+      );
+      if (heldRaw < capRaw) {
+        throw new Error(
+          `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy needs up to ${fmtGusdLedger(quote.maxPaid)} gUSD. Mint gUSD from the reserve asset first.`,
+        );
+      }
       const need = await planApproval(
         getContracts().addresses.gusd as Address,
         "gUSD",
         getContracts().addresses.router as Address,
         "router",
         owner,
-        parseGusd(quote.maxPaid),
+        capRaw,
       );
       if (need) approvals.push(need);
     } else {
       const reg = await this.quoteDeps.reads.registration(gpuId);
       if (!reg) throw new Error(NO_QUOTE);
+      // Same pre-flight on the sell side: no GPU holding, no approval ask.
+      const heldRaw = await this.quoteDeps.reads.balanceOf(reg.token, owner);
+      if (heldRaw < sizeRaw) {
+        throw new Error(
+          `This wallet holds ${fmtUnits(formatGpuUnits(heldRaw))} ${request.asset} — this sell needs ${fmtUnits(request.size)} ${request.asset}.`,
+        );
+      }
       const need = await planApproval(
         reg.token,
         request.asset,
@@ -142,8 +167,8 @@ export class OnChainTradingPort implements TradingPort {
     const buyStruct = () => ({
       gpuId,
       gpuOut: sizeRaw,
-      poolGpuOut: parseGpuUnits(quote.legs.pool),
-      issueGpuOut: parseGpuUnits(quote.legs.issuance),
+      poolGpuOut: parseGpuUnits(legUnits(quote, "pool")),
+      issueGpuOut: parseGpuUnits(legUnits(quote, "issuance")),
       payment: getContracts().addresses.gusd as Address,
       maxPaid: parseGusd(quote.maxPaid),
       sqrtLimitX96: 0n,
@@ -196,8 +221,8 @@ function tradeSnapshot(quote: TradeQuote): QuoteSnapshot {
             size: quote.size,
             maxPaid: quote.maxPaid,
             notional: quote.notional,
-            poolLeg: quote.legs.pool,
-            issuanceLeg: quote.legs.issuance,
+            poolLeg: legUnits(quote, "pool"),
+            issuanceLeg: legUnits(quote, "issuance"),
           }
         : { size: quote.size, minOut: quote.minOut, notional: quote.notional },
   };
@@ -208,7 +233,7 @@ function projectAccount(snap: {
   address: string | null;
   gUsd: number;
   sGusd: number;
-  usdc: number;
+  stable: number;
   positions: readonly { gpuId: `0x${string}`; asset: AssetId | null; size: number }[];
 }): Account {
   return {
@@ -217,7 +242,7 @@ function projectAccount(snap: {
     address: snap.address,
     gUsdBalance: snap.gUsd,
     sGUsdBalance: snap.sGusd,
-    usdcBalance: snap.usdc,
+    stableBalance: snap.stable,
     // Pre-indexer there is no cost-basis source: avgEntry stays null and
     // the UI prints "—" rather than a fabricated 0.
     positions: snap.positions.flatMap((p) =>

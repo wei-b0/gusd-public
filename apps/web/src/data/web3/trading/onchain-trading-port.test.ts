@@ -32,6 +32,9 @@ const h = vi.hoisted(() => ({
   quoteArgs: null as unknown[] | null,
   availability: null as unknown,
   allowance: 0n as bigint,
+  /** Raw balances the fake ERC-20 read hands back per token flavor. */
+  gusdBalance: 10_000_000n,
+  gpuBalance: 10n ** 19n,
   registration: {
     token: "0x00000000000000000000000000000000000a0002",
   } as unknown,
@@ -75,10 +78,12 @@ const BUY_QUOTE: TradeQuote = {
   size: 2,
   price: 2.5,
   notional: 5,
-  fees: { pool: 0, protocol: 0.02, issuance: 0.01 },
   maxPaid: 5.2525,
   minOut: 0,
-  legs: { pool: 1.5, issuance: 0.5 },
+  legs: [
+    { kind: "pool", gpuUnits: 1.5, gUsd: 4, fees: { protocol: 0.02 } },
+    { kind: "issuance", gpuUnits: 0.5, gUsd: 1, fees: { issuance: 0.01 } },
+  ],
   toleranceBps: 50,
   quotedAtMs: 1,
   blockNumber: 1,
@@ -89,10 +94,9 @@ const SELL_QUOTE: TradeQuote = {
   side: "sell",
   price: 1.9,
   notional: 3.8,
-  fees: { pool: 0, protocol: 0.02, issuance: 0 },
   maxPaid: 0,
   minOut: 1.9,
-  legs: { pool: 2, issuance: 0 },
+  legs: [{ kind: "pool", gpuUnits: 2, gUsd: 3.8, fees: { protocol: 0.02 } }],
 };
 
 class FakeActions implements ActionPort {
@@ -159,7 +163,11 @@ function makePort() {
     actions,
     accountStore: store as unknown as OnChainAccountStore,
     quoteDeps: {
-      reads: { registration: async () => h.registration },
+      reads: {
+        registration: async () => h.registration,
+        balanceOf: async (token: Address) =>
+          token.toLowerCase() === GPU_TOKEN ? h.gpuBalance : h.gusdBalance,
+      },
     },
   } as never);
   return { port, actions, store };
@@ -172,6 +180,8 @@ beforeEach(() => {
   h.quote = BUY_QUOTE;
   h.quoteArgs = null;
   h.allowance = 0n;
+  h.gusdBalance = 10_000_000n;
+  h.gpuBalance = 10n ** 19n;
   h.registration = { token: GPU_TOKEN };
   h.sim = { ok: true };
   h.simReq = null;
@@ -191,7 +201,13 @@ describe("quote / describeAsset", () => {
   });
 
   it("describes assets through the quote layer", async () => {
-    h.availability = { issuanceEnabled: true, poolRegistered: true, poolFeeBps: 30, hookFeeBps: 50 };
+    h.availability = {
+      issuanceEnabled: true,
+      poolRegistered: true,
+      poolFeeBps: 30,
+      hookFeeBps: 50,
+      issuanceFeeBps: 50,
+    };
     const { port } = makePort();
     expect(await port.describeAsset("H100")).toEqual(h.availability);
   });
@@ -212,6 +228,25 @@ describe("execute gates", () => {
     const { port, actions } = makePort();
     await expect(port.execute(BUY_REQUEST)).rejects.toThrow(
       "This order can't be quoted right now — check the size and try again.",
+    );
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("refuses a buy whose cap exceeds the wallet's gUSD, before any approval ask", async () => {
+    h.gusdBalance = parseGusd(2);
+    const { port, actions } = makePort();
+    await expect(port.execute(BUY_REQUEST)).rejects.toThrow(
+      "This wallet holds 2.0000 gUSD — this buy needs up to 5.2525 gUSD. Mint gUSD from the reserve asset first.",
+    );
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("refuses a sell of more GPU than the wallet holds, before any approval ask", async () => {
+    h.quote = SELL_QUOTE;
+    h.gpuBalance = parseGpuUnits(1);
+    const { port, actions } = makePort();
+    await expect(port.execute({ asset: "H100", side: "sell", size: 2 })).rejects.toThrow(
+      "This wallet holds 1.000 H100 — this sell needs 2.000 H100.",
     );
     expect(actions.plans).toHaveLength(0);
   });

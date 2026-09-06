@@ -1,20 +1,24 @@
 /**
- * Trade quotes — the execution-identical stack the order slip signs
- * against. Buys are exact-out through `router.buy`: the desk prices the
- * pool leg with the hook-aware V4Quoter (quote == execute) and the
+ * Trade quotes — the execution stack the order slip signs against. Buys
+ * are exact-out through `router.buy`: the desk prices the pool leg with
+ * the hook-aware V4Quoter (the same pricing path execution runs) and the
  * issuance leg with the contract's own `quoteIssue`, then signs a
  * `maxPaid` cap the router pulls and refunds from. Sells are exact-in
- * through `router.sell`, signing a `minOut` payout floor.
+ * through `router.sell`, signing a `minOut` payout floor. Neither quote
+ * pre-commits the fill — state can move between eth_call and inclusion —
+ * so execution is bounded by the signed limits, not by the quote.
  *
  * Honesty rules the math keeps: the quoter already runs the hook, so its
  * amount IS all-in — the protocol fee is split out for display only, and
  * LP fees stay inside the market leg rather than being fabricated as a
- * row. Genesis pools hold no depth: the pool leg binary-searches what the
- * pool can actually fill and the remainder prices through issuance.
+ * row. Fees live on the legs that incur them; the UI derives the fee
+ * copy from the leg set, never from static market metadata. Genesis
+ * pools hold no depth: the pool leg binary-searches what the pool can
+ * actually fill and the remainder prices through issuance.
  */
 
 import type { Address } from "viem";
-import type { AssetId, TradeAvailability, TradeQuote } from "@/domain/types";
+import type { AssetId, TradeAvailability, TradeLeg, TradeQuote } from "@/domain/types";
 import { applyBps, formatGpuUnits, parseGpuUnits } from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
 import { canonicalPoolKey, isBuyZeroForOne } from "../pool";
@@ -48,7 +52,7 @@ export function defaultQuoteDeps(): QuoteDeps {
 const UINT128_MAX = 2n ** 128n - 1n;
 
 /** One single-pool quote argument — the v4 quoter's own params struct. */
-interface QuoteSingleParams {
+export interface QuoteSingleParams {
   poolKey: { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address };
   zeroForOne: boolean;
   exactAmount: bigint;
@@ -59,16 +63,21 @@ interface QuoteSingleParams {
  * The quoter's quote functions are declared nonpayable (they call the
  * poolManager's unlock), so viem's getContract files them under write —
  * but they are pure simulations executed by eth_call. The read surface is
- * the honest seam; it is cast to the two signatures the desk uses.
+ * the honest seam; it is cast to the two signatures the desk uses. Shared
+ * with the mint desk's StableRouter swap leg (quoterReadFor); the
+ * deps-seamed quoterRead stays the trading stack's entry.
  */
-function quoterRead(deps: QuoteDeps): {
+export interface QuoterRead {
   quoteExactOutputSingle(args: [QuoteSingleParams]): Promise<[bigint, bigint]>;
   quoteExactInputSingle(args: [QuoteSingleParams]): Promise<[bigint, bigint]>;
-} {
-  return deps.contracts.quoter.read as unknown as {
-    quoteExactOutputSingle(args: [QuoteSingleParams]): Promise<[bigint, bigint]>;
-    quoteExactInputSingle(args: [QuoteSingleParams]): Promise<[bigint, bigint]>;
-  };
+}
+
+export function quoterReadFor(contracts: ReturnType<typeof getContracts>): QuoterRead {
+  return contracts.quoter.read as unknown as QuoterRead;
+}
+
+function quoterRead(deps: QuoteDeps): QuoterRead {
+  return quoterReadFor(deps.contracts);
 }
 
 /**
@@ -160,6 +169,7 @@ export async function describeAsset(
         // availability surface speaks bps, so convert here once.
         poolFeeBps: Number(reg.poolParams.fee) / 100,
         hookFeeBps: await deps.reads.hookFeeBps(),
+        issuanceFeeBps: reg.issuanceFeeBps,
       }
     : null;
   availabilityCache.set(asset, { at: Date.now(), value });
@@ -236,12 +246,29 @@ export async function quoteBuy(
     if (base === 0n && total === 0n) return null; // no oracle publication
   }
 
-  // The quoter's amountIn already carries the hook's take; split it out for
-  // the fee line only — the row that signs is the all-in total.
-  const { hook } = deps.contracts;
-  const hookFeeBps = Number(await hook.read.hookFeeBps());
-  const poolNetRaw = (poolCostRaw * 10_000n) / (10_000n + BigInt(hookFeeBps));
-  const protocolFeeRaw = poolCostRaw - poolNetRaw;
+  // Legs carry their own fees — the UI derives the fee copy from this set,
+  // so the slip never shows a fee this fill doesn't incur. The pool leg's
+  // amountIn already carries the hook's take; split it out for the fee line
+  // only — the row that signs is the all-in total.
+  const legs: TradeLeg[] = [];
+  if (poolRaw > 0n) {
+    const hookFeeBps = Number(await deps.contracts.hook.read.hookFeeBps());
+    const poolNetRaw = (poolCostRaw * 10_000n) / (10_000n + BigInt(hookFeeBps));
+    legs.push({
+      kind: "pool",
+      gpuUnits: formatGpuUnits(poolRaw),
+      gUsd: Number(poolCostRaw) / 1e6,
+      fees: { protocol: Number(poolCostRaw - poolNetRaw) / 1e6 },
+    });
+  }
+  if (issueRaw > 0n) {
+    legs.push({
+      kind: "issuance",
+      gpuUnits: formatGpuUnits(issueRaw),
+      gUsd: Number(issuanceTotalRaw) / 1e6,
+      fees: { issuance: Number(issuanceFeeRaw) / 1e6 },
+    });
+  }
 
   const notionalRaw = poolCostRaw + issuanceTotalRaw;
   if (notionalRaw === 0n) return null;
@@ -253,10 +280,9 @@ export async function quoteBuy(
     size,
     price: Number(notionalRaw) / 1e6 / size,
     notional: Number(notionalRaw) / 1e6,
-    fees: { pool: 0, protocol: Number(protocolFeeRaw) / 1e6, issuance: Number(issuanceFeeRaw) / 1e6 },
     maxPaid: Number(maxPaidRaw) / 1e6,
     minOut: 0,
-    legs: { pool: formatGpuUnits(poolRaw), issuance: formatGpuUnits(issueRaw) },
+    legs,
     toleranceBps,
     quotedAtMs: deps.now(),
     blockNumber,
@@ -319,10 +345,16 @@ export async function quoteSell(
     size,
     price: Number(netRaw) / 1e6 / size,
     notional: Number(netRaw) / 1e6,
-    fees: { pool: 0, protocol: Number(protocolFeeRaw) / 1e6, issuance: 0 },
     maxPaid: 0,
     minOut: Number(minOutRaw) / 1e6,
-    legs: { pool: size, issuance: 0 },
+    legs: [
+      {
+        kind: "pool",
+        gpuUnits: size,
+        gUsd: Number(netRaw) / 1e6,
+        fees: { protocol: Number(protocolFeeRaw) / 1e6 },
+      },
+    ],
     toleranceBps,
     quotedAtMs: deps.now(),
     blockNumber,

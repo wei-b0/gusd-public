@@ -39,5 +39,11 @@ export const HISTORY_LIMIT = 500;
  *  failed fetch — a retry on every notify would hammer a struggling oracle. */
 export const CANDLE_RETRY_MS = 30_000;
 
+/** Cadence of the dedicated health tick. The stream paths only refresh
+ *  health on resync (after 90s of silence) — on a busy live stream the
+ *  collector-health table would otherwise go minutes stale. One cheap GET
+ *  per minute keeps it current. */
+export const HEALTH_POLL_MS = 60_000;
+
 /** Per-request REST timeout. */
 export const FETCH_TIMEOUT_MS = 5_000;

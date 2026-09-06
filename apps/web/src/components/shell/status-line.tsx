@@ -17,6 +17,8 @@ import { fmtAge, fmtStamp } from "@/domain/format";
 import { useServices } from "@/data/services";
 import { DATA_SOURCE } from "@/data/oracle/config";
 import { getOracleFeed } from "@/data/oracle/feed";
+import { DEMO_TICKS } from "@/data/demo";
+import { TickFlash } from "@/components/ui/tick-flash";
 
 interface WireInfo {
   quality: IndexQuality | null;
@@ -54,19 +56,19 @@ function useWireQuality(): WireInfo | null {
 }
 
 /** The feed's connection state, oracle mode only — the mock data source
- *  never touches the feed (and never opens a connection). */
-function useConnection() {
+ *  never touches the feed (and never opens a connection), and the dev-only
+ *  tick demonstrator reads the mock universe too. */
+function useConnection(enabled: boolean) {
   const feed = getOracleFeed();
   return useSyncExternalStore(
-    (cb) => (DATA_SOURCE === "oracle" ? feed.subscribe(cb) : () => {}),
-    () => (DATA_SOURCE === "oracle" ? feed.getState().connection : "idle"),
+    (cb) => (enabled ? feed.subscribe(cb) : () => {}),
+    () => (enabled ? feed.getState().connection : "idle"),
     () => "idle",
   );
 }
 
 export function StatusLine() {
   const wire = useWireQuality();
-  const connection = useConnection();
   const q = wire?.quality ?? null;
   const indexStatus = wire?.indexStatus;
 
@@ -80,7 +82,10 @@ export function StatusLine() {
     return () => clearInterval(id);
   }, []);
 
-  const oracle = DATA_SOURCE === "oracle";
+  // Demo mode flips on after mount (`now` is the mounted flag), so server and
+  // first client render agree — no hydration surface.
+  const oracle = DATA_SOURCE === "oracle" && !(DEMO_TICKS && now !== null);
+  const connection = useConnection(oracle);
   const lampDown = oracle && (connection === "down" || indexStatus === "withheld" || indexStatus === "frozen");
   const lampUp = lampDown
     ? false
@@ -111,7 +116,15 @@ export function StatusLine() {
         )}
         {q && (
           <span className="num hidden shrink-0 text-[10.5px] text-dim md:inline">
-            {q.publication ? `#${q.publication}` : "—"}
+            {q.publication ? (
+              /* One cyan pulse per real landing — the hash changes only when
+                 data arrives, independent of any price moving. */
+              <TickFlash value={q.publication} flash="wire" className="inline-block">
+                {`#${q.publication}`}
+              </TickFlash>
+            ) : (
+              "—"
+            )}
           </span>
         )}
         <span aria-hidden className="h-px min-w-4 flex-1 bg-rule" />

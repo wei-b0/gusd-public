@@ -32,7 +32,7 @@ import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 abstract contract GPUHookTestBase is Test, Deployers {
     using PoolIdLibrary for PoolKey;
 
-    MockERC20 internal usdc;
+    MockERC20 internal underlying;
     GUSD internal gusd;
     MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
@@ -52,8 +52,8 @@ abstract contract GPUHookTestBase is Test, Deployers {
     function setUp() public virtual {
         vm.warp(1_000_000);
         deployFreshManagerAndRouters();
-        usdc = new MockERC20("USD Coin", "USDC", 6);
-        gusd = new GUSD(IERC20(address(usdc)), address(this));
+        underlying = new MockERC20("USD Coin", "USDC", 6);
+        gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
         oracle = new MockGPUPriceOracle(address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
@@ -128,10 +128,10 @@ abstract contract GPUHookTestBase is Test, Deployers {
     }
 
     function _dealBoth(address to, uint256 gusdAmt, uint256 gpuAmt) internal {
-        deal(address(usdc), to, gusdAmt);
+        deal(address(underlying), to, gusdAmt);
         vm.startPrank(to);
-        usdc.approve(address(gusd), type(uint256).max);
-        gusd.mintUSDC(gusdAmt, to);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(gusdAmt, to);
         vm.stopPrank();
     }
 

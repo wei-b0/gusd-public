@@ -25,7 +25,9 @@ const KEYS = [
 
 export function FnKeys() {
   const pathname = usePathname();
-  const oracleActive = pathname === "/oracle" || pathname.startsWith("/oracle/");
+  // The oracle lives on one URL now; query deep links (?tab=…) keep the
+  // pathname at /oracle.
+  const oracleActive = pathname === "/oracle";
   return (
     <nav
       aria-label="Primary navigation"

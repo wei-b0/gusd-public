@@ -50,6 +50,7 @@ import {
   historyToIndexPoints,
   lastKnownIndexPrice,
   mapIndexStatus,
+  mapIndexTelemetry,
   mapProviders,
   mapQuality,
   sparklineFromBuckets,
@@ -186,7 +187,8 @@ export class OracleMarketData implements MarketDataPort {
    *  fields go null with `unavailable`; with candidates but no asserted
    *  price (withheld from birth) the status carries the truth and the figure
    *  prints "—". Basis has no meaning without a market price and stays null
-   *  in oracle mode. */
+   *  in oracle mode. Publication telemetry rides the same candidate series —
+   *  null with no candidates, never zeros posed as live wire facts. */
   private overlayMarket(m: Market, now: number): Market {
     if (!isOracleBacked(m.asset.id)) return m;
     const gpuId = ORACLE_PANELS[m.asset.id].gpuId;
@@ -201,6 +203,7 @@ export class OracleMarketData implements MarketDataPort {
         indexChange24hPct: null,
         basisPct: null,
         indexStatus: "unavailable",
+        indexTelemetry: null,
         volume24hUsd: null,
         liquidityUsd: null,
         sparkline: [],
@@ -223,6 +226,7 @@ export class OracleMarketData implements MarketDataPort {
       indexChange24hPct: deriveChange24h(hourlyPoints ?? points, now),
       basisPct: null,
       indexStatus: mapIndexStatus(latest, now),
+      indexTelemetry: mapIndexTelemetry(candidates, now),
       volume24hUsd: null,
       liquidityUsd: null,
       sparkline:
