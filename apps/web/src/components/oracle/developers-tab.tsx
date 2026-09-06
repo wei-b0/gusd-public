@@ -91,9 +91,9 @@ export function DevelopersTab() {
             <table className="w-full border-collapse text-[12px]">
               <thead>
                 <tr className="border-b border-rule-strong text-left">
-                  <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Parameter</th>
-                  <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Routes</th>
-                  <th scope="col" className="px-2.5 py-2 pr-3.5 font-normal text-dim">
+                  <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Parameter</th>
+                  <th scope="col" className="slug px-2.5 py-2 text-dim">Routes</th>
+                  <th scope="col" className="px-2.5 py-2 pr-3.5 text-dim">
                     <span className="slug">Meaning</span>
                   </th>
                 </tr>

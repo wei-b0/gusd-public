@@ -36,26 +36,26 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
         <table className="w-full table-auto border-collapse text-[12.5px]">
           <thead>
             <tr className="border-b border-rule text-left">
-              <th scope="col" className="slug py-2 pl-3 pr-4 font-normal text-dim">Market</th>
-              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+              <th scope="col" className="slug py-2 pl-3 pr-4 text-dim">Market</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                 Price <span className="tracking-normal normal-case">{hasVenue ? "/ gUSD" : "/ GPU-hour"}</span>
               </th>
-              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">24h</th>
-              <th scope="col" className="slug px-2.5 py-2 text-left font-normal text-dim">Last 48h</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim">24h</th>
+              <th scope="col" className="slug px-2.5 py-2 text-left text-dim">Last 48h</th>
               {hasVenue && (
-                <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                   Index price <span className="tracking-normal">/ GPU-hour</span>
                 </th>
               )}
               {hasVenue && (
-                <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Premium / Discount</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Premium / Discount</th>
               )}
               {SHOW_MARKET_FLOWS && (
                 <>
-                  <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                     Volume <span className="tracking-normal normal-case">/ gUSD</span>
                   </th>
-                  <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right font-normal text-dim">
+                  <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right text-dim">
                     Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
                   </th>
                 </>
@@ -159,7 +159,7 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
                 value={m.indexPrice}
                 precision={4}
                 arrow="pop"
-                className="num inline-block text-[13.5px] text-wire"
+                className="num inline-block text-[13.5px] font-bold text-wire"
               >
                 {fmtUsdPrecise(m.indexPrice)}
               </TickFlash>
@@ -168,7 +168,7 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
         </td>
       )}
       {hasVenue && (
-        <td className={`num px-2.5 py-2 text-right ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
+        <td className={`num px-2.5 py-2 text-right font-bold ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"}`}>
           {basis === null ? "—" : fmtPctSigned(basis)}
         </td>
       )}

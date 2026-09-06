@@ -141,11 +141,11 @@ function CollectorHealth() {
         <table className="w-full border-collapse text-[12px]">
           <thead>
             <tr className="border-b border-rule-strong text-left">
-              <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Collector</th>
-              <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Breaker</th>
-              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Last success</th>
-              <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Last failure</th>
-              <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">Consecutive</th>
+              <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Collector</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Breaker</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Last success</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Last failure</th>
+              <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Consecutive</th>
             </tr>
           </thead>
           <tbody>
@@ -228,9 +228,9 @@ function PanelFreshness() {
         <table className="w-full border-collapse text-[12px]">
           <thead>
             <tr className="border-b border-rule-strong text-left">
-              <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Panel</th>
-              <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Status</th>
-              <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">Last publication</th>
+              <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Panel</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Status</th>
+              <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Last publication</th>
             </tr>
           </thead>
           <tbody>

@@ -38,7 +38,7 @@ export function TuiPanel({
         {no ? (
           <span className="num text-[12px] font-bold leading-none text-amber">{no}</span>
         ) : null}
-        <h2 className="slug text-amber">{title}</h2>
+        <h2 className="slug font-extrabold text-amber">{title}</h2>
         {note ? <span className="slug text-dim">{note}</span> : null}
         <span aria-hidden className="h-px min-w-4 flex-1 bg-rule" />
         {meta ? <span className="num text-[10px] text-dim">{meta}</span> : null}

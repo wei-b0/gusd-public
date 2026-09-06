@@ -270,12 +270,12 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                         Index <IndexStatusChip status={m.indexStatus} />
                       </span>
                       {m.indexPrice === null ? (
-                        <span className="num text-[14px] leading-none text-dim">—</span>
+                        <span className="num text-[14px] font-bold leading-none text-dim">—</span>
                       ) : (
                         <TickFlash
                           value={m.indexPrice}
                           precision={4}
-                          className="num text-[14px] leading-none text-wire"
+                          className="num text-[14px] font-bold leading-none text-wire"
                         >
                           {fmtUsdPrecise(m.indexPrice)}
                         </TickFlash>
@@ -527,7 +527,7 @@ function Statistics({ market: m, stats }: { market: Market; stats: MarketStats }
             className="flex items-baseline justify-between gap-2 border-b border-rule py-2"
           >
             <dt className="slug text-dim">{cell.label}</dt>
-            <dd className="num text-[12.5px] text-data">{cell.value}</dd>
+            <dd className="num text-[12.5px] font-bold text-data">{cell.value}</dd>
           </div>
         ))}
       </dl>

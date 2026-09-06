@@ -103,7 +103,7 @@ function PortfolioBook() {
       {/* Portfolio value — exposure + liquid + earning, one read */}
       <TuiPanel title="Portfolio value" meta="marked to the live market">
         <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2 px-3.5 py-3.5">
-          <p className="disp text-[28px] leading-none text-bright">{fmtGusd(total)}</p>
+          <p className="disp text-[26px] leading-none text-bright">{fmtGusd(total)}</p>
           <p className="num text-[11px] leading-relaxed text-dim">
             Market positions {fmtGusd(positionsValue)} · gUSD {fmtFull(account.gUsdBalance)} · sGUSD{" "}
             {fmtGusd(sGUsdValue)}
@@ -131,12 +131,12 @@ function PortfolioBook() {
               <table className="w-full border-collapse text-[12px]">
                 <thead>
                   <tr className="border-b border-rule text-left">
-                    <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Market</th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Size</th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Avg entry</th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Last price</th>
-                    <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Value</th>
-                    <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">
+                    <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Market</th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Size</th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Avg entry</th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Last price</th>
+                    <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Value</th>
+                    <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">
                       P&amp;L <span className="tracking-normal normal-case">/ gUSD</span>
                     </th>
                   </tr>
@@ -163,12 +163,12 @@ function PortfolioBook() {
                           {last === null ? "—" : fmtGusdPrecise(last)}
                           <span className="ml-1 text-[10px] text-dim">{unit}</span>
                         </td>
-                        <td className="num px-2.5 py-2.5 text-right text-bright">
+                        <td className="num px-2.5 py-2.5 text-right font-bold text-bright">
                           {value === null ? "—" : fmtGusd(value)}
                         </td>
                         <td
                           className={`num py-2.5 pr-3.5 text-right whitespace-nowrap ${
-                            flat || pnl === null ? "text-dim" : pnl >= 0 ? "text-up" : "text-down"
+                            flat || pnl === null ? "text-dim" : pnl >= 0 ? "font-bold text-up" : "font-bold text-down"
                           }`}
                         >
                           {pnl === null || pnlPct === null

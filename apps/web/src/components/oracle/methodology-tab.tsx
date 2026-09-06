@@ -26,11 +26,11 @@ export function MethodologyTab() {
           <table className="w-full border-collapse text-[12px]">
             <thead>
               <tr className="border-b border-rule-strong text-left">
-                <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Stage</th>
-                <th scope="col" className="px-2.5 py-2 font-normal text-dim">
+                <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Stage</th>
+                <th scope="col" className="px-2.5 py-2 text-dim">
                   <span className="slug">Rule</span>
                 </th>
-                <th scope="col" className="slug py-2 pl-2.5 pr-3.5 text-right font-normal text-dim">Parameters</th>
+                <th scope="col" className="slug py-2 pl-2.5 pr-3.5 text-right text-dim">Parameters</th>
               </tr>
             </thead>
             <tbody>
@@ -167,10 +167,10 @@ function ProviderRegistry() {
         <table className="w-full border-collapse text-[12px]">
           <thead>
             <tr className="border-b border-rule-strong text-left">
-              <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Source</th>
-              <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Type</th>
-              <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Role</th>
-              <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">Cadence</th>
+              <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Source</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Type</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Role</th>
+              <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Cadence</th>
             </tr>
           </thead>
           <tbody>

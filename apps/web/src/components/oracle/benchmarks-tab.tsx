@@ -56,19 +56,19 @@ export function BenchmarksTab({ bench, onBench }: { bench: AssetId; onBench: (id
           <table className="w-full border-collapse text-[12px]">
             <thead>
               <tr className="border-b border-rule-strong text-left">
-                <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Benchmark</th>
-                <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Index Price / GPU-hour</th>
-                <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">24h</th>
+                <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Benchmark</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Index Price / GPU-hour</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">24h</th>
                 {hasVenue && (
-                  <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Premium / Discount</th>
+                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Premium / Discount</th>
                 )}
                 {hasVenue && (
-                  <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">
+                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                     Market Price <span className="tracking-normal normal-case">/ gUSD</span>
                   </th>
                 )}
-                <th scope="col" className="slug px-2.5 py-2 text-right font-normal text-dim">Sources</th>
-                <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">Updated</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Sources</th>
+                <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Updated</th>
               </tr>
             </thead>
             <tbody>
@@ -220,13 +220,13 @@ function PanelReceipt({ bench }: { bench: AssetId }) {
             <table className="w-full border-collapse text-[12px]">
               <thead>
                 <tr className="border-b border-rule text-left">
-                  <th scope="col" className="slug py-1.5 pl-3.5 pr-4 font-normal text-dim">Source</th>
-                  <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Weight</th>
-                  <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Method</th>
-                  <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">σ</th>
-                  <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim" title="Observations feeding the provider's vote">Sample</th>
-                  <th scope="col" className="slug px-2.5 py-1.5 text-right font-normal text-dim">Observed</th>
-                  <th scope="col" className="slug py-1.5 pr-3.5 text-right font-normal text-dim">Executable</th>
+                  <th scope="col" className="slug py-1.5 pl-3.5 pr-4 text-dim">Source</th>
+                  <th scope="col" className="slug px-2.5 py-1.5 text-right text-dim">Weight</th>
+                  <th scope="col" className="slug px-2.5 py-1.5 text-right text-dim">Method</th>
+                  <th scope="col" className="slug px-2.5 py-1.5 text-right text-dim">σ</th>
+                  <th scope="col" className="slug px-2.5 py-1.5 text-right text-dim" title="Observations feeding the provider's vote">Sample</th>
+                  <th scope="col" className="slug px-2.5 py-1.5 text-right text-dim">Observed</th>
+                  <th scope="col" className="slug py-1.5 pr-3.5 text-right text-dim">Executable</th>
                 </tr>
               </thead>
               <tbody>

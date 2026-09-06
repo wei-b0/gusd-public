@@ -52,10 +52,10 @@ export default function ProtocolPage() {
             <table className="w-full border-collapse text-[12px]">
               <thead>
                 <tr className="border-b border-rule-strong text-left">
-                  <th scope="col" className="slug py-2 pl-3.5 pr-4 font-normal text-dim">Pair</th>
-                  <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Venue</th>
-                  <th scope="col" className="slug px-2.5 py-2 font-normal text-dim">Hook</th>
-                  <th scope="col" className="slug py-2 pr-3.5 text-right font-normal text-dim">Status</th>
+                  <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Pair</th>
+                  <th scope="col" className="slug px-2.5 py-2 text-dim">Venue</th>
+                  <th scope="col" className="slug px-2.5 py-2 text-dim">Hook</th>
+                  <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Status</th>
                 </tr>
               </thead>
               <tbody>
