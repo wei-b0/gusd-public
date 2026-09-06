@@ -25,6 +25,7 @@
 import { CANDLE_RETRY_MS, HISTORY_LIMIT, ORACLE_BASE_URL, POLL_INTERVAL_MS, WATCHDOG_MS } from "./config";
 import { ORACLE_PANELS } from "./panel-map";
 import { createOracleClient, OracleFetchError, type OracleClient } from "./client";
+import { foldCandidateIntoBuckets } from "./fold";
 import type {
   CandleDto,
   CandidateDto,
@@ -40,12 +41,15 @@ export type Connection = "idle" | "connecting" | "live" | "polling" | "down";
  *  answered for [fromMs, toMs) at intervalSec, and the trailing edge stays
  *  live by merging candidates as they land. Sets are keyed per gpu by
  *  interval seconds — a deeper request for the same interval absorbs the
- *  shallower one rather than duplicating it. */
+ *  shallower one rather than duplicating it. `fetchedAt` timestamps the last
+ *  server answer so an empty window stays retry-eligible (see
+ *  `ensureCandles`) without being hammered. */
 export interface CandleSet {
   intervalSec: number;
   fromMs: number;
   toMs: number;
   buckets: CandleDto[];
+  fetchedAt: number;
 }
 
 export interface OracleFeedState {
@@ -130,12 +134,18 @@ export class OracleFeedStore {
   /** Make sure a candle set at `intervalSec` reaching back to `fromMs` is
    *  loading for this gpu. A covered window (or one in flight, or cooling
    *  down after a failure) is a no-op; the answer lands as a state commit,
-   *  so callers read optimistically and re-render on arrival. */
+   *  so callers read optimistically and re-render on arrival. An EMPTY set
+   *  covers its window only until its fetch goes stale — a legitimately
+   *  emptied series must retry, but on the same cooldown as a failure so a
+   *  young panel is never hammered per render. */
   ensureCandles(gpuId: string, intervalSec: number, fromMs: number): void {
     if (typeof window === "undefined") return; // SSR never connects.
     const key = `${gpuId}:${intervalSec}`;
     const set = this.state.candles[gpuId]?.[String(intervalSec)];
-    if (set && set.fromMs <= fromMs) return;
+    if (set && set.fromMs <= fromMs) {
+      if (set.buckets.length > 0) return;
+      if (Date.now() - set.fetchedAt < CANDLE_RETRY_MS) return;
+    }
     if (this.candlePending.has(key)) return;
     const lastAttempt = this.candleAttemptAt.get(key);
     if (lastAttempt !== undefined && Date.now() - lastAttempt < CANDLE_RETRY_MS) return;
@@ -415,11 +425,11 @@ export class OracleFeedStore {
   }
 
   /** Fold a freshly landed candidate into every loaded candle set of its
-   *  gpu — the trailing bucket's close/high/low, or a new bucket past the
-   *  last one. This is what keeps the charts live between server refetches;
-   *  the next full refetch restores the server's own bucketing. Null-priced
-   *  candidates (gated computations that asserted no figure) enter nothing —
-   *  a bucket fed by a null would invent a level. */
+   *  gpu. `foldCandidateIntoBuckets` is the single folding implementation —
+   *  server-grid parity including carried-bucket promotion and carried fill
+   *  across gaps — so the trailing edge matches the next server refetch.
+   *  Null-priced candidates (gated computations that asserted no figure)
+   *  enter nothing — a bucket fed by a null would invent a level. */
   private mergeIntoCandles(gpuId: string, candidate: CandidateDto): Record<string, Record<string, CandleSet>> | null {
     const sets = this.state.candles[gpuId];
     if (!sets) return null;
@@ -429,28 +439,14 @@ export class OracleFeedStore {
     let touched = false;
     const next: Record<string, CandleSet> = { ...sets };
     for (const [intervalKey, set] of Object.entries(sets)) {
-      const intervalMs = Number(intervalKey) * 1000;
-      const bucketT = Math.floor(t / intervalMs) * intervalMs;
-      if (bucketT < set.fromMs) continue; // outside the loaded window
-      const buckets = set.buckets;
-      let idx = buckets.length - 1;
-      while (idx >= 0 && buckets[idx]!.t > bucketT) idx -= 1;
-      const hit = idx >= 0 ? buckets[idx]! : null;
-      let nextBuckets: CandleDto[];
-      if (hit && hit.t === bucketT) {
-        nextBuckets = buckets.slice();
-        nextBuckets[idx] = {
-          t: hit.t,
-          open: hit.open,
-          high: Math.max(hit.high, price),
-          low: Math.min(hit.low, price),
-          close: price,
-          samples: hit.samples + 1,
-        };
-      } else {
-        nextBuckets = [...buckets.slice(0, idx + 1), { t: bucketT, open: price, high: price, low: price, close: price, samples: 1 }, ...buckets.slice(idx + 1)];
-      }
-      next[intervalKey] = { ...set, buckets: nextBuckets };
+      const folded = foldCandidateIntoBuckets(
+        set.buckets,
+        { t, price },
+        Number(intervalKey),
+        set.fromMs,
+      );
+      if (!folded) continue;
+      next[intervalKey] = { ...set, buckets: folded };
       touched = true;
     }
     return touched ? { ...this.state.candles, [gpuId]: next } : null;
@@ -458,11 +454,13 @@ export class OracleFeedStore {
 
   /** Absorb a fetched candle set: a concurrently landed deeper set wins the
    *  floor; buckets merge by open time with the fetch's server truth per
-   *  bucket. */
-  private absorbCandleSet(gpuId: string, res: CandlesResponse, fromMs: number): void {
-    if (res.candles.length === 0 && this.state.candles[gpuId]?.[String(res.intervalSec)]) {
-      return; // nothing new to say; keep the incumbent set
-    }
+   *  bucket. REST is the truth, so an EMPTY response is committed as-is —
+   *  the window genuinely has no series (yet), and `ensureCandles`' freshness
+   *  rule keeps it retry-eligible. Returns whether the absorption changed
+   *  the series STRUCTURALLY (first bucket moved, or the array shrank) —
+   *  the signal that a resync re-bucketed history rather than just extended
+   *  the tail, and the chart should reload from the server. */
+  private absorbCandleSet(gpuId: string, res: CandlesResponse, fromMs: number): boolean {
     const intervalKey = String(res.intervalSec);
     const incumbent = this.state.candles[gpuId]?.[intervalKey];
     const fetched: CandleSet = {
@@ -470,6 +468,7 @@ export class OracleFeedStore {
       fromMs,
       toMs: Date.parse(res.to),
       buckets: res.candles,
+      fetchedAt: Date.now(),
     };
     let merged: CandleSet;
     if (!incumbent || incumbent.fromMs <= fromMs) {
@@ -487,12 +486,30 @@ export class OracleFeedStore {
         buckets: [...byT.values()].sort((a, b) => a.t - b.t),
       };
     }
+    const structural = (() => {
+      if (!incumbent) return false; // first load — the chart is fetching anyway
+      if (incumbent.buckets.length === 0) return merged.buckets.length > 0;
+      if (merged.buckets.length === 0) return true;
+      return (
+        merged.buckets[0]!.t !== incumbent.buckets[0]!.t ||
+        merged.buckets.length < incumbent.buckets.length
+      );
+    })();
     this.commit({
       candles: {
         ...this.state.candles,
         [gpuId]: { ...this.state.candles[gpuId], [intervalKey]: merged },
       },
     });
+    return structural;
+  }
+
+  /** Public ingest for the chart's datafeed: absorb a /candles response the
+   *  store didn't fetch itself, so the store (stats, sparklines) and the
+   *  chart share one series state instead of issuing duplicate GETs.
+   *  Returns the structural-change signal — see `absorbCandleSet`. */
+  ingestCandles(gpuId: string, res: CandlesResponse, fromMs: number): boolean {
+    return this.absorbCandleSet(gpuId, res, fromMs);
   }
 
   private noteSuccess(): void {

@@ -242,8 +242,12 @@ export const RANGE_WINDOW_MS: Record<ChartRange, number> = {
 export interface Position {
   asset: AssetId;
   size: number;
-  /** gUSD cost basis per unit. */
-  avgEntry: number;
+  /**
+   * gUSD cost basis per unit. Null when no source asserts one — the chain
+   * has no cost-basis view pre-indexer, and printing 0 would fabricate the
+   * figure every P&L row leans on. UI renders "—".
+   */
+  avgEntry: number | null;
 }
 
 export interface Account {
@@ -258,6 +262,8 @@ export interface Account {
   address: string | null;
   gUsdBalance: number;
   sGUsdBalance: number;
+  /** The mint desk's funding asset — what gUSD is minted from. */
+  usdcBalance: number;
   positions: Position[];
 }
 
@@ -402,6 +408,77 @@ export interface TradeRequest {
   asset: AssetId;
   side: TradeSide;
   size: number;
+  /**
+   * Slippage tolerance, bps — buys sign `maxPaid` (quote × (1 + tol)),
+   * sells sign `minOut` (quote × (1 − tol)). Default 50 (0.5%).
+   */
+  toleranceBps?: number;
+}
+
+/** The fee stack of one trade quote, gUSD. LP fees ride inside the pool
+ *  swap's own price (never fabricated as a separate row); the hook's
+ *  protocol fee and the issuance fee are broken out. */
+export interface TradeFees {
+  /** LP fee inside the pool swap — 0 in the v1 quote (not separately
+   *  observable pre-trade; the pool's feeGrowth owns it). */
+  pool: number;
+  /** The hook's protocol trading fee on the gUSD leg. */
+  protocol: number;
+  /** Primary issuance fee (buys only). */
+  issuance: number;
+}
+
+/** How a buy splits between secondary depth and primary issuance. */
+export interface TradeLegs {
+  /** GPU units filled from the canonical pool. 0 at genesis. */
+  pool: number;
+  /** GPU units minted via primary issuance. */
+  issuance: number;
+}
+
+/**
+ * One trade quote — the execution-identical stack the order signs against:
+ * the router's own quoteIssue for the issuance leg, the V4Quoter (hook-aware,
+ * quote == execute) for the pool leg. Buys are exact-out: `maxPaid` is the
+ * gUSD spend cap the router pulls and refunds from; sells are exact-in:
+ * `minOut` is the payout floor. All gUSD figures are product units.
+ */
+export interface TradeQuote {
+  asset: AssetId;
+  side: TradeSide;
+  size: number;
+  /** Effective gUSD per unit — buys: quote total / size; sells: net proceeds / size. */
+  price: number;
+  /** gUSD total pre-tolerance: spend for buys, proceeds for sells. */
+  notional: number;
+  fees: TradeFees;
+  /** Buys: the signed spend cap — notional × (1 + tolerance). */
+  maxPaid: number;
+  /** Sells: the signed payout floor — notional × (1 − tolerance). */
+  minOut: number;
+  /** Buys: the pool/issuance split this quote priced. */
+  legs: TradeLegs;
+  /** Tolerance the cap/floor carry, bps. */
+  toleranceBps: number;
+  /** Wall-clock the quote was computed at — the stale-quote guard's clock. */
+  quotedAtMs: number;
+  /** Head block the quote priced at. */
+  blockNumber: number | null;
+}
+
+/**
+ * Onchain availability of one market — the slip's gate. The port returns
+ * null when the GPU has no settlement panel registered at all. Pool
+ * registration with zero depth is still "registered": the quote layer says
+ * whether depth exists.
+ */
+export interface TradeAvailability {
+  issuanceEnabled: boolean;
+  poolRegistered: boolean;
+  /** The pool's LP fee, bps (the desk's fee-stack line). */
+  poolFeeBps: number;
+  /** The hook's protocol trading fee, bps. */
+  hookFeeBps: number;
 }
 
 export interface TradeReceipt {
@@ -417,79 +494,64 @@ export interface TradeReceipt {
 }
 
 /* ---------------------------------------------------------------------------
- * Earning layer — gUSD into sGUSD.
+ * Earning layer — gUSD into sGUSD through the sgUSD vault.
  *
- * The exact yield sources and protocol revenue routing are not finalized;
- * every rate here is prototype data. The port exists so the real earning
- * adapter can replace the mock without the UX changing.
+ * The vault is a fee-free ERC-4626 over gUSD: deposit mints shares at the
+ * current share price, withdraw burns shares for assets. The share price is
+ * the yield — there is no APY source onchain, so none is displayed. The
+ * port's previews are the contract's own (execution-identical); balances
+ * live in the onchain account store, receipts in the session action ledger.
  * ------------------------------------------------------------------------- */
 
-/** Live state of the earning layer for the current session. */
+/** Which way the earn desk moves capital. */
+export type EarnDirection = "stake" | "unstake";
+
+/** Live public state of the earning layer — the vault's share price and
+ *  seed gate. Null figures mean "not read yet", not zero. */
 export interface EarnState {
-  connected: boolean;
-  /** gUSD available to deploy. */
-  availableUsd: number;
-  /** Earning balance, sGUSD units. */
-  sGUsd: number;
-  /** Earning balance valued in gUSD at the current rate. */
-  sGUsdValueUsd: number;
-  /** sGUSD → gUSD conversion rate. */
-  rate: number;
-  /** Trailing 30d annualized earning rate, percent. Prototype data. */
-  trailingApyPct: number;
-  /** Earnings accrued this session, gUSD. */
-  accruedUsd: number;
-  /** Recent earn receipts for this session, newest last. */
-  receipts: EarnReceipt[];
-  updatedAt: number;
+  /** gUSD per 1 sgUSD at the current share price (product units). */
+  rate: number | null;
+  /** False until the vault holds its seed deposit — deposits refuse. */
+  seeded: boolean | null;
+  /** Wall-clock the snapshot was read at; null before the first read. */
+  updatedAt: number | null;
 }
 
-export interface EarnReceipt {
-  kind: "deposit" | "withdraw";
-  /** gUSD moved. */
-  gUsdMoved: number;
-  /** sGUSD moved. */
-  sGUsdMoved: number;
-  /** Rate applied at execution. */
-  rate: number;
-  t: number;
+/** One execution-identical vault preview. The desk's input is always
+ *  denominated in gUSD (assets); shares are what moves. */
+export interface EarnQuote {
+  direction: EarnDirection;
+  /** gUSD the desk input. */
+  input: number;
+  /** sgUSD minted (stake) or burned (unstake). */
+  shares: number;
 }
 
 /* ---------------------------------------------------------------------------
- * Mint layer — deposit assets → protocol issuance → gUSD.
+ * Mint layer — USDC ⇄ gUSD, the real protocol pair.
  *
- * The conceptual flow: a user deposits a supported asset into the protocol's
- * issuance mechanism and receives minted gUSD. The real mechanism — which
- * assets are supported, collateral rules, underwriting, fees, issuance
- * constraints — is not finalized and is not invented here. The port models
- * only the user-visible shape of that flow (choose asset, amount, expected
- * gUSD, transaction information, receipt) so the real adapter can replace
- * the prototype without the UX changing. The prototype previews at a 1:1
- * placeholder rate and says so.
+ * gUSD enters through GUSD.mintUSDC (USDC in, gUSD out net of the mint fee)
+ * and leaves through GUSD.redeemUSDC (gUSD burned, USDC out net of the
+ * redeem fee). The contract's preview functions are execution-identical, so
+ * a preview IS the quote. Session receipts live in the tx store; the chain's
+ * events own history.
  * ------------------------------------------------------------------------- */
 
-/** Placeholder ids for supported deposit assets. The real catalogue is still
- *  being specified, so the UI keeps these deliberately generic. */
-export type DepositAssetId = "A" | "B" | "C";
+/** One side of the mint desk: mint (USDC in → gUSD out) or redeem (gUSD in
+ *  → USDC out). */
+export type MintDirection = "mint" | "redeem";
 
-export const DEPOSIT_ASSET_IDS: readonly DepositAssetId[] = ["A", "B", "C"];
-
-/** Display label for a placeholder deposit asset — "Asset A". */
-export function depositAssetName(id: DepositAssetId): string {
-  return `Asset ${id}`;
-}
-
+/** An execution-identical preview from the contract, in product units. */
 export interface MintQuote {
-  depositAsset: DepositAssetId;
-  amount: number;
-  /** Expected gUSD minted. */
-  gUsd: number;
-}
-
-export interface MintReceipt {
-  depositAsset: DepositAssetId;
-  amount: number;
-  /** gUSD minted. */
-  gUsdMoved: number;
-  t: number;
+  direction: MintDirection;
+  /** Input amount — USDC for mint, gUSD for redeem. */
+  input: number;
+  /** Output after the fee — gUSD for mint, USDC for redeem. */
+  output: number;
+  /** Fee taken on the input, same units as the input. */
+  fee: number;
+  /** The contract's current fee rate, bps. */
+  feeBps: number;
+  /** True when the protocol operator paused this flow. */
+  paused: boolean;
 }

@@ -9,5 +9,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // The gated suites (RUN_ANVIL_TESTS=1) all drive one shared anvil node —
+    // their wallet-funded sequences race if the files run in parallel. Unit
+    // suites stay parallel.
+    fileParallelism: process.env.RUN_ANVIL_TESTS !== "1",
   },
 });

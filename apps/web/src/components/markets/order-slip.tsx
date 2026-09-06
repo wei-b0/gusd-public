@@ -1,83 +1,145 @@
 "use client";
 
 /**
- * OrderSlip — the trade furniture inside the Trade panel. Quotes and fills
- * come from the TradingPort adapter; trading requires a connection. The
- * reference price is the one price the interfaces display (the API's in
- * oracle mode); when the data layer asserts none, the slip goes dormant
- * rather than quoting against nothing. The quote ledger prints at ledger
- * grade (fixed 4 decimals) so its rows visibly sum.
+ * OrderSlip — the trade furniture inside the Trade panel. Quotes come from
+ * the router stack itself (the contract's own quoteIssue and the
+ * hook-aware V4Quoter — quote == execute); execution runs through the
+ * action runner, so every submit walks approval → signature → confirmation
+ * as one visible action. The reference price stays the one price the desk
+ * displays; when the data layer asserts none, the slip goes dormant rather
+ * than quoting against nothing. The quote ledger prints at ledger grade
+ * (fixed 4 decimals) so its rows visibly close.
+ *
+ * Unavailable markets speak in place: an unregistered asset, a closed
+ * issuance, or an empty pool each get their own honest voice — never a
+ * silent dead button.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import type { TradeReceipt, TradeSide } from "@/domain/types";
+import { useEffect, useState } from "react";
+import type { ActionRecord } from "@/domain/actions";
+import type { TradeAvailability, TradeQuote, TradeSide } from "@/domain/types";
 import { parseAssetId } from "@/domain/types";
-import { fmtGusdLedger, fmtNotional, fmtStamp, fmtUnits } from "@/domain/format";
+import { fmtGusdLedger, fmtUnits } from "@/domain/format";
 import { Pair } from "@/components/ui/pair";
-import { useAccount, useServices } from "@/data/services";
+import { ActionStatus } from "@/components/ui/action-status";
+import { WalletlessNote } from "@/components/ui/walletless-note";
+import { useAccount, useActiveAction, useServices, useWalletSession } from "@/data/services";
+import { DEFAULT_TOLERANCE_BPS, TOLERANCE_PRESETS_BPS } from "@/data/web3/trading/quotes";
 
 export interface OrderSlipProps {
   assetId: string;
-  /** The displayed price — execution quotes against it. Null → no quote. */
+  /** The displayed price — the slip goes dormant without it. */
   referencePrice: number | null;
 }
 
-type Status =
-  | { kind: "idle" }
-  | { kind: "submitting" }
-  | { kind: "filled"; receipt: TradeReceipt }
-  | { kind: "error"; message: string };
+/** Debounce for the async quote calls — one per settled input, not one per keystroke. */
+const QUOTE_DEBOUNCE_MS = 250;
 
 export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
+  const session = useWalletSession();
+  const active = useActiveAction("trade");
   const [side, setSide] = useState<TradeSide>("buy");
   const [sizeText, setSizeText] = useState("1");
-  const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [toleranceBps, setToleranceBps] = useState(DEFAULT_TOLERANCE_BPS);
+  const [availability, setAvailability] = useState<TradeAvailability | null | undefined>(undefined);
+  const [quote, setQuote] = useState<TradeQuote | null>(null);
+  const [settled, setSettled] = useState<ActionRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const size = Number(sizeText);
   const validSize = Number.isFinite(size) && size > 0;
-
   const asset = parseAssetId(assetId);
-  // The quote prices off the reference price, so it re-quotes when the
-  // reference lands — the feed arrives async in oracle mode, and a memo
-  // computed before it must not stand as "no price".
-  const quote = useMemo(
-    () => (asset && validSize ? trading.quote({ asset, side, size }) : null),
-    [trading, asset, side, size, validSize, referencePrice],
-  );
+  const connected = session.status === "connected" && account.connected;
+
+  // The market's onchain gate — one read per asset, kept by the port.
+  useEffect(() => {
+    if (!asset) return;
+    let alive = true;
+    setAvailability(undefined);
+    trading
+      .describeAsset(asset)
+      .then((a) => {
+        if (alive) setAvailability(a);
+      })
+      .catch(() => {
+        if (alive) setAvailability(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [trading, asset]);
+
+  // The execution quote re-prices on every settled input and after an
+  // order lands (the balances behind presets and caps moved).
+  useEffect(() => {
+    if (!asset || !validSize || referencePrice === null) {
+      setQuote(null);
+      return;
+    }
+    let alive = true;
+    setQuote(null);
+    const timer = setTimeout(() => {
+      trading
+        .quote({ asset, side, size, toleranceBps })
+        .then((q) => {
+          if (alive) setQuote(q);
+        })
+        .catch(() => {
+          if (alive) setQuote(null);
+        });
+    }, QUOTE_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [trading, asset, side, size, validSize, toleranceBps, referencePrice, settled]);
 
   const position = account.positions.find((p) => p.asset === assetId);
 
   // Keep the receipt visible; reset to idle when the user changes inputs.
   useEffect(() => {
-    setStatus((s) => (s.kind === "filled" ? { kind: "idle" } : s));
-  }, [sizeText, side]);
+    setSettled((s) => (s ? null : s));
+  }, [sizeText, side, toleranceBps]);
+
+  // The availability gate, in the design system's amber voice. Undefined
+  // is "still checking", null is "the chain has no such market".
+  let gate: string | null = null;
+  if (availability === null) {
+    gate = "This market isn't registered onchain yet — orders open when the asset settles.";
+  } else if (availability) {
+    if (side === "sell" && !availability.poolRegistered) {
+      gate = "No secondary depth yet — sells open when the pool holds liquidity.";
+    } else if (side === "buy" && !availability.issuanceEnabled && !availability.poolRegistered) {
+      gate = "Neither issuance nor a market is open for this asset yet — orders wait for the operator.";
+    }
+  }
 
   async function onSubmit() {
     if (!asset) return;
-    if (!account.connected) {
-      setStatus({ kind: "error", message: "Connect to trade — demo capital is provided once connected." });
+    if (!connected) {
+      setError("Connect a wallet to trade — nothing signs without one.");
       return;
     }
     if (!validSize) {
-      setStatus({ kind: "error", message: "Enter a size greater than zero." });
+      setError("Enter a size greater than zero.");
       return;
     }
-    setStatus({ kind: "submitting" });
+    if (gate) return;
+    setError(null);
     try {
-      const receipt = await trading.execute({ asset, side, size });
-      setStatus({ kind: "filled", receipt });
-    } catch {
-      setStatus({ kind: "error", message: "The fill failed. Adjust the order and try again." });
+      const record = await trading.execute({ asset, side, size, toleranceBps });
+      setSettled(record);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The order didn't go through. Try again in a moment.");
     }
   }
 
   // Ledger terms, each printed at 4 decimals so the rows visibly close.
-  // No reference price → no quote rows: sizing an order against nothing
-  // would fabricate the one number the ledger exists to show.
-  const impactUsd = quote && referencePrice !== null ? size * (quote.price - referencePrice) : null;
-  const total = quote?.notional ?? (validSize && referencePrice !== null ? size * referencePrice : null);
+  // No quote → no ledger rows: sizing an order against nothing would
+  // fabricate the one number the ledger exists to show.
+  const feeTotal = quote ? quote.fees.protocol + quote.fees.issuance : null;
 
   return (
     <div className="space-y-3.5 p-3.5">
@@ -105,7 +167,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
 
       <div className="flex items-baseline justify-between">
         <span className="slug text-dim">Size · units</span>
-        {account.connected && position && position.size > 0 ? (
+        {connected && position && position.size > 0 ? (
           <span className="num text-[10.5px] text-dim">
             holding {fmtUnits(position.size)}
           </span>
@@ -134,31 +196,70 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         </div>
       </div>
 
-      {/* Quote ledger — the rows sum: price × size ± impact + fee = total, in gUSD */}
+      {/* Slippage tolerance — buys sign a spend cap, sells a payout floor */}
+      <div className="flex items-baseline justify-between">
+        <span className="slug text-dim">{side === "buy" ? "Max spend slip" : "Min receipt slip"}</span>
+        <div className="flex items-baseline" role="group" aria-label="Slippage tolerance">
+          {TOLERANCE_PRESETS_BPS.map((bps) => (
+            <button
+              key={bps}
+              type="button"
+              aria-pressed={toleranceBps === bps}
+              onClick={() => setToleranceBps(bps)}
+              className={`num border-b px-2 py-0.5 text-[11px] transition-colors ${
+                toleranceBps === bps
+                  ? "border-amber text-amber"
+                  : "border-transparent text-dim hover:text-data"
+              }`}
+            >
+              {bps / 100}%
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Quote ledger — size × est. price ≈ the cap, with the fee stack called out */}
       <dl className="space-y-1.5 text-[12.5px]">
         <LedgerRow
           label="Est. price"
-          value={
-            quote
-              ? fmtGusdLedger(quote.price)
-              : referencePrice !== null
-                ? fmtGusdLedger(referencePrice)
-                : "—"
-          }
+          value={quote ? fmtGusdLedger(quote.price) : "—"}
         />
-        {impactUsd != null && (
+        {quote && side === "buy" && quote.legs.pool > 0 && quote.legs.issuance > 0 && (
           <LedgerRow
-            label="Est. impact"
-            value={`${impactUsd >= 0 ? "+" : "−"}${fmtGusdLedger(Math.abs(impactUsd))}`}
+            label="Fill split"
+            value={`${fmtUnits(quote.legs.pool)} market + ${fmtUnits(quote.legs.issuance)} issuance`}
           />
         )}
-        <LedgerRow label="Est. fee" value={quote ? fmtGusdLedger(quote.feeUsd) : "—"} />
+        {quote && side === "buy" && quote.legs.pool === 0 && (
+          <LedgerRow label="Source" value="primary issuance" />
+        )}
+        {feeTotal !== null && (
+          <LedgerRow label="Est. fee · incl." value={fmtGusdLedger(feeTotal)} />
+        )}
         <LedgerRow
           label={side === "buy" ? "You pay" : "You receive"}
-          value={total != null ? `${fmtGusdLedger(total)} gUSD` : "—"}
+          value={
+            quote
+              ? `${fmtGusdLedger(side === "buy" ? quote.maxPaid : quote.minOut)} gUSD`
+              : "—"
+          }
           strong
         />
       </dl>
+
+      {availability === undefined && (
+        <p className="text-[11.5px] leading-relaxed text-dim">
+          Checking the market onchain…
+        </p>
+      )}
+
+      <WalletlessNote />
+
+      {gate && (
+        <p className="border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
+          {gate}
+        </p>
+      )}
 
       {referencePrice === null && (
         <p className="text-[11.5px] leading-relaxed text-dim">
@@ -166,38 +267,31 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         </p>
       )}
 
-      {!account.connected && (
+      {!connected && (
         <p className="text-[11.5px] leading-relaxed text-dim">
-          Connect to trade — demo capital is provided once connected.
+          Connect a wallet to trade — nothing signs without one.
         </p>
       )}
 
-      {status.kind === "error" && (
+      {error && (
         <p className="border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
-          {status.message}
+          {error}
         </p>
       )}
 
-      {status.kind === "filled" && (
-        <div className="border border-rule-strong bg-panel-deep p-2.5">
-          <p className="rev slug mb-2 inline-block px-1.5 py-0.5 text-[9.5px]">Filled</p>
-          <p className="num text-[11.5px] leading-relaxed text-data">
-            {status.receipt.side === "buy" ? "Bought" : "Sold"} {fmtUnits(status.receipt.size)}{" "}
-            <Pair id={status.receipt.asset} /> @ {fmtGusdLedger(status.receipt.fillPrice)} ·{" "}
-            {fmtNotional(status.receipt.notional)} gUSD · {fmtStamp(status.receipt.t)}
-          </p>
-        </div>
-      )}
+      {(active ?? settled) && <ActionStatus record={(active ?? settled) as ActionRecord} />}
 
       <button
         type="button"
         onClick={onSubmit}
-        disabled={status.kind === "submitting" || !validSize || referencePrice === null}
+        disabled={
+          active !== null || !validSize || quote === null || gate !== null || referencePrice === null
+        }
         className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
           side === "buy" ? "rev-g hover:opacity-90" : "rev-d hover:opacity-90"
         }`}
       >
-        {status.kind === "submitting" ? (
+        {active !== null ? (
           "Placing…"
         ) : (
           <>
@@ -207,7 +301,9 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       </button>
 
       <p className="num text-[10px] leading-relaxed text-dim">
-        Fee 6 bps · impact ~3 bps per unit · quoted in gUSD
+        {availability
+          ? `Fees ${(availability.poolFeeBps / 100).toFixed(2)}% LP · ${(availability.hookFeeBps / 100).toFixed(2)}% protocol · settles in gUSD`
+          : "Settles in gUSD"}
       </p>
     </div>
   );

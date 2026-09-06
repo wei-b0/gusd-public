@@ -48,7 +48,6 @@ import {
   deriveWindowStats,
   deriveWindowStatsFromCandles,
   historyToIndexPoints,
-  indexPointsToCandles,
   lastKnownIndexPrice,
   mapIndexStatus,
   mapProviders,
@@ -60,9 +59,6 @@ import { ORACLE_PANELS, isOracleBacked, type OracleAssetId } from "./panel-map";
 
 const DAY_MS = 86_400_000;
 const THIRTY_DAY_MS = 30 * DAY_MS;
-/** First-paint bridge grain for the 1m view: one-minute bars from the
- *  real prints already in hand. */
-const CANDLE_BUCKET_MS = 60_000;
 /** Sparkline grain: the last 48 hourly closes of the benchmark series —
  *  the register's trailing two days. */
 const SPARKLINE_INTERVAL_SEC = 3_600;
@@ -238,10 +234,8 @@ export class OracleMarketData implements MarketDataPort {
 
   /** Snapshot overlay: candles, series, provider panel, and stats all derive
    *  from the API's own data. Candles for EVERY range come from the
-   *  server-bucketed canonical benchmark series (client-side bucketing only
-   *  bridges the 1D first paint, from the candidate prints already in hand);
-   *  the Index line is the print series on 1D and the series' closes on the
-   *  longer ranges; window stats gate themselves on real coverage. The tape
+   *  server-bucketed canonical benchmark series — never client-side bucketed
+   *  prints; window stats gate themselves on real coverage. The tape
    *  is empty. With no candidates there is no publication to describe —
    *  quality is null, not an invented empty report. */
   private overlaySnapshot(
@@ -303,18 +297,15 @@ export class OracleMarketData implements MarketDataPort {
     // endpoint holds).
     const windowStart = now - series.windowMs;
     const rangeCandles = candlesOf(series.intervalSec).filter((c) => c.t >= windowStart);
-    const windowedPoints = points.filter((p) => p.t >= windowStart);
     const panel = state.panelProviders[gpuId];
     const providers: ProviderObservation[] = panel ? mapProviders(panel, now) : [];
     return {
       ...base,
       market,
-      candles:
-        series.intervalSec === 60 && rangeCandles.length === 0
-          ? // First paint bridge: bucket the prints already in hand while the
-            // server's one-minute series is in flight.
-            indexPointsToCandles(windowedPoints, CANDLE_BUCKET_MS)
-          : rangeCandles,
+      // Server-bucketed buckets only: no client-side candle synthesis. While
+      // a range's series is in flight the pane is empty for a tick — honest,
+      // and the chart's own loading state covers it.
+      candles: rangeCandles,
       // The candles ARE the canonical Index on this surface: the snapshot
       // ships no second rendering of the same series — no wire, no band,
       // no basis. (A real venue leg, and with it a true Index overlay,

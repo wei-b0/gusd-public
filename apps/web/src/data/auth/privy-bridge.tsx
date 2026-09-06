@@ -28,7 +28,6 @@ import { getAddress, recoverMessageAddress, stringToHex } from "viem";
 import { useServices } from "@/data/services";
 import { getActiveChain } from "@/data/web3/chains";
 import { isUserRejection, normalizeSignature } from "@/data/web3/wallet-client";
-import { fmtAddress } from "@/domain/format";
 import type { PrivyAuthPort } from "./privy-auth-port";
 import { PRODUCT_ERRORS } from "./privy-auth-port";
 import { createAuthedFetch } from "./authed-fetch";
@@ -323,9 +322,7 @@ export function PrivyBridge() {
     });
   }, [ready, authenticated, user, wallets, auth, logout, createWallet]);
 
-  // -- identity sync + account adoption --------------------------------------
-
-  const adoptedRef = useRef<string | null>(null);
+  // -- identity sync ----------------------------------------------------------
 
   useEffect(() => {
     const sync = async () => {
@@ -341,21 +338,14 @@ export function PrivyBridge() {
       }
     };
 
+    // The account store binds itself to the session in Web3Services; this
+    // seam only keeps the server-side identity record in step.
     return auth.subscribeSession((session) => {
       if (session.status === "connected" && session.did && session.address) {
-        if (adoptedRef.current !== session.address) {
-          adoptedRef.current = session.address;
-          // The account keeps prototype capital; the identity is now real.
-          services.trading.adoptSession({ label: fmtAddress(session.address), address: session.address });
-        }
         if (session.syncState === "idle") void sync();
-      } else if (session.status === "idle") {
-        adoptedRef.current = null;
-        services.trading.adoptSession(null);
-        services.tx.clear();
       }
     });
-  }, [auth, authedFetch, services]);
+  }, [auth, authedFetch]);
 
   return null;
 }

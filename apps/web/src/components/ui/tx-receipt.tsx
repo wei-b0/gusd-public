@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * TxReceipt — the receipt grammar for chain transactions, extending the
- * order-slip's: pending states read as amber system speech with the hash,
- * confirmation wears reverse video (the "Filled" pattern), and every
- * terminal failure speaks in the amber box, product-voiced, never a raw
- * error string. Red stays quarantined; a revert is amber, not shame.
+ * TxReceipt — the receipt grammar for single chain transactions: pending
+ * states read as amber system speech with the hash, confirmation wears
+ * reverse video (the "Filled" pattern), and every terminal failure speaks
+ * in the amber box, product-voiced, never a raw error string. Red stays
+ * quarantined; a revert is amber, not shame.
  *
- * Its only live producer this phase is TxDevPanel below, gated behind
- * NEXT_PUBLIC_ENABLE_TX_DEV. Product surfaces keep demo fills until the
- * protocol's real actions land — the honest-machine doctrine forbids
- * pretending otherwise. When they do, order-slip's receipt panel hosts
- * this component.
+ * Its live producer is TxDevPanel below, gated behind
+ * NEXT_PUBLIC_ENABLE_TX_DEV. Product surfaces render actions — approval
+ * plus call, however many transactions — through ActionStatus, which
+ * prints the same grammar per step; this component stays the dev panel's
+ * single-transaction view.
  */
 
 import { useState } from "react";

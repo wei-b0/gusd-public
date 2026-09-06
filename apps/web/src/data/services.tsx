@@ -14,6 +14,8 @@
 
 import { createContext, useContext, useMemo, useRef, useSyncExternalStore } from "react";
 import type { Services } from "@/domain/ports";
+import { isActionTerminal } from "@/domain/actions";
+import type { ActionOrigin, ActionRecord } from "@/domain/actions";
 import type {
   AssetId,
   ChartRange,
@@ -21,8 +23,6 @@ import type {
   EarnState,
   Market,
   MarketSnapshot,
-  MintReceipt,
-  TradeReceipt,
   TxRecord,
   WalletSession,
 } from "@/domain/types";
@@ -142,21 +142,6 @@ export function useAccount(): ReturnType<Services["trading"]["getAccount"]> {
   );
 }
 
-/** This session's simulated fills, oldest first; refreshed on fills. */
-export function useActivity(): TradeReceipt[] {
-  const { trading } = useServices();
-  const cache = useRef<TradeReceipt[] | null>(null);
-  return useSyncExternalStore(
-    (listener) =>
-      trading.subscribe(() => {
-        cache.current = trading.getActivity();
-        listener();
-      }),
-    () => cache.current ?? trading.getActivity(),
-    () => trading.getActivity(),
-  );
-}
-
 /** Live earning-layer state; re-renders on deposits, withdrawals, accrual. */
 export function useEarn(): EarnState {
   const { earn } = useServices();
@@ -164,21 +149,6 @@ export function useEarn(): EarnState {
     (listener) => earn.subscribe(listener),
     () => earn.getEarnState(),
     () => earn.getEarnState(),
-  );
-}
-
-/** This session's mint receipts, oldest first. */
-export function useMintActivity(): MintReceipt[] {
-  const { mint } = useServices();
-  const cache = useRef<MintReceipt[] | null>(null);
-  return useSyncExternalStore(
-    (listener) =>
-      mint.subscribe(() => {
-        cache.current = mint.getActivity();
-        listener();
-      }),
-    () => cache.current ?? mint.getActivity(),
-    () => mint.getActivity(),
   );
 }
 
@@ -203,6 +173,38 @@ export function useTransactions(): readonly TxRecord[] {
     (listener) => tx.subscribe(listener),
     () => tx.list(),
     () => tx.list(),
+  );
+}
+
+/** This session's actions end to end, newest first — what the desks render. */
+export function useActions(): readonly ActionRecord[] {
+  const { actions } = useServices();
+  return useSyncExternalStore(
+    (listener) => actions.subscribe(listener),
+    () => actions.list(),
+    () => actions.list(),
+  );
+}
+
+/**
+ * The in-flight action on one surface, if any. Desks use it to disable
+ * duplicate submits and to render the action's live phase in the receipt
+ * slot; a settled action leaves this null (the settled record stays in
+ * useActions for the receipt view).
+ */
+export function useActiveAction(origin: ActionOrigin): ActionRecord | null {
+  const { actions } = useServices();
+  return useSyncExternalStore(
+    (listener) => actions.subscribe(listener),
+    () => {
+      for (const record of actions.list()) {
+        if (record.origin === origin && !isActionTerminal(record.phase)) return record;
+      }
+      return null;
+    },
+    // Server render has no actions; the first client render agrees because
+    // the store starts empty.
+    () => null,
   );
 }
 

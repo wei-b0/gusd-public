@@ -11,12 +11,13 @@
  * tasks via the tab strip.
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   CHART_RANGES,
   marketMove24h,
   pairName,
+  parseAssetId,
   type AssetId,
   type AssetSpec,
   type ChartRange,
@@ -40,8 +41,8 @@ import {
   fmtUsdPrecise,
   isFlatPct,
 } from "@/domain/format";
-import { useAccount, useMarketSnapshot, useMarkets } from "@/data/services";
-import { PriceChart } from "@/components/charts/price-chart";
+import { useAccount, useMarketSnapshot, useMarkets, useServices } from "@/data/services";
+import { TvPriceChart } from "@/components/charts/tv-price-chart";
 import { BasisChart, buildBasisPoints } from "@/components/charts/basis-chart";
 import { OrderSlip } from "@/components/markets/order-slip";
 import { AllTape } from "@/components/markets/all-tape";
@@ -263,18 +264,15 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                 )}
               </div>
               <div className="p-2 pr-3">
-                <PriceChart
-                  candles={snapshot.candles}
-                  index={hasMarket ? snapshot.index : []}
+                <TvPriceChart
+                  asset={asset}
                   range={range}
-                  band={hasMarket}
-                  livePrice={m.marketPrice ?? undefined}
                   className="h-96 lg:h-[56vh] lg:min-h-95"
                 />
               </div>
               <div className="border-t border-rule px-3.5 py-2">
                 <p className="slug text-dim">
-                  {hasMarket ? "Band shows the premium / discount gap" : "Benchmark series · candles from the canonical benchmark history"}
+                  Benchmark series · candles from the canonical benchmark history
                 </p>
               </div>
             </TuiPanel>
@@ -284,7 +282,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
         {/* Right rail — the trade, then the Index feed */}
         <div className={`order-2 space-y-5 lg:order-3 ${cellVis(["Trade", "Index"])}`}>
           <div className={vis("Trade")}>
-            <TuiPanel no="03" title="Trade" meta="fee 6 bps">
+            <TuiPanel no="03" title="Trade" meta={<TradeMeta assetId={m.asset.id} />}>
               <OrderSlip assetId={m.asset.id} referencePrice={m.marketPrice ?? m.indexPrice} />
             </TuiPanel>
           </div>
@@ -370,7 +368,11 @@ function PositionPanel({ asset, account }: { asset: AssetId; account: ReturnType
       {account.connected ? (
         <dl className="space-y-1.5 p-3.5">
           <Row label={<Pair id={asset} />} value={position ? `${fmtUnits(position.size)} units` : "—"} />
-          <Row label="Avg entry" value={position ? fmtGusd(position.avgEntry) : "—"} />
+          {/* No cost-basis source pre-indexer: null prints "—", never 0. */}
+          <Row
+            label="Avg entry"
+            value={position ? (position.avgEntry === null ? "—" : fmtGusd(position.avgEntry)) : "—"}
+          />
           <Row label={<Gusd />} value={fmtGusdCompact(account.gUsdBalance)} />
           <Row label={<SGusd />} value={fmtGusdCompact(account.sGUsdBalance)} />
           <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
@@ -388,6 +390,38 @@ function PositionPanel({ asset, account }: { asset: AssetId; account: ReturnType
       )}
     </TuiPanel>
   );
+}
+
+/**
+ * The Trade panel's fee-stack line — the real LP + protocol bps from the
+ * market's onchain registration. "—" while unregistered.
+ */
+function TradeMeta({ assetId }: { assetId: string }) {
+  const { trading } = useServices();
+  const [meta, setMeta] = useState<string>("—");
+  useEffect(() => {
+    const asset = parseAssetId(assetId);
+    if (!asset) return;
+    let alive = true;
+    trading
+      .describeAsset(asset)
+      .then((a) => {
+        if (alive) {
+          setMeta(
+            a
+              ? `fees ${(a.poolFeeBps / 100).toFixed(2)}% LP · ${(a.hookFeeBps / 100).toFixed(2)}% protocol`
+              : "unregistered",
+          );
+        }
+      })
+      .catch(() => {
+        if (alive) setMeta("—");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [trading, assetId]);
+  return <span className="num text-[10px] text-dim">{meta}</span>;
 }
 
 /* ---------------------------------------------------------------------------

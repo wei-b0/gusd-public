@@ -43,3 +43,5 @@ yarn-error.log*
 cache
 deployments
 broadcast
+
+charting_library

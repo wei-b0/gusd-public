@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import type {
   FailureKind,
   PricingTier,
@@ -448,7 +448,10 @@ export async function getObservationsInWindow(
       and(
         eq(normalizedObservations.gpuId, params.gpuId),
         gte(normalizedObservations.observedAt, params.windowStart),
-        lte(normalizedObservations.observedAt, params.windowEnd),
+        // Half-open [windowStart, windowEnd): an observation stamped exactly
+        // at windowEnd belongs to the next window, not to two at once. The
+        // /candles bucketing uses the same half-open convention.
+        lt(normalizedObservations.observedAt, params.windowEnd),
       ),
     )
     .orderBy(normalizedObservations.observedAt);
@@ -652,7 +655,9 @@ export interface CandidateCandleRow {
  * OHLC over the canonical benchmark series (`index_candidates`) bucketed to
  * `intervalSec`. Every computed benchmark whose price is non-null enters its
  * interval: open/close are the first/last computation in the bucket (row id
- * breaks computed_at ties), high/low the extremes, samples the row count.
+ * breaks computed_at ties — earliest id wins open, latest id wins close, so
+ * both ends resolve to the same row only when every print in the bucket ties),
+ * high/low the extremes, samples the row count.
  * Publication gating (withheld/frozen) applies to the chain, not to this
  * stored series — the row's price is still the engine's benchmark estimate
  * for its window, which is exactly what a series view of the database shows.
@@ -684,7 +689,7 @@ export async function getCandidateCandles(
       (array_agg(price order by computed_at asc, id asc))[1]::float8 as open,
       max(price)::float8 as high,
       min(price)::float8 as low,
-      (array_agg(price order by computed_at desc, id asc))[1]::float8 as close,
+      (array_agg(price order by computed_at desc, id desc))[1]::float8 as close,
       count(*)::int as samples
     from windowed
     group by bucket

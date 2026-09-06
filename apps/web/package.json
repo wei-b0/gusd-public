@@ -4,10 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "prebuild": "node scripts/abi-sync.mjs",
     "build": "next build",
     "start": "next start",
+    "pretest": "node scripts/abi-sync.mjs",
     "lint": "eslint . --max-warnings 0",
     "check-types": "tsc --noEmit",
+    "abi:sync": "node scripts/abi-sync.mjs",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

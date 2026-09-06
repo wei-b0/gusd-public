@@ -9,23 +9,24 @@
  */
 
 import type { WalletClient, Hex } from "viem";
+import type { ActionOrigin, ActionRecord, ActionPlan } from "./actions";
 import type {
   Account,
   AssetId,
   ConnectAction,
   ConnectableWallet,
   ConnectFlow,
-  DepositAssetId,
   ChartRange,
-  EarnReceipt,
+  EarnDirection,
+  EarnQuote,
   EarnState,
   Market,
   MarketSnapshot,
   MarketTrade,
+  MintDirection,
   MintQuote,
-  MintReceipt,
-  SessionIdentity,
-  TradeReceipt,
+  TradeAvailability,
+  TradeQuote,
   TradeRequest,
   TradeSide,
   TxRecord,
@@ -47,66 +48,66 @@ export interface MarketDataPort {
   subscribe(listener: (markets: Market[]) => void): () => void;
 }
 
-export interface Quote {
-  asset: AssetId;
-  side: TradeSide;
-  size: number;
-  /** Expected gUSD per unit, including expected price impact. */
-  price: number;
-  /** gUSD in/out including estimated fee. */
-  notional: number;
-  feeUsd: number;
-  /** Prototype-only estimate; real routing arrives with the protocol. */
-  priceImpactPct: number;
-}
-
 export interface TradingPort {
   getAccount(): Account;
-  quote(request: TradeRequest): Quote | null;
   /**
-   * Prototype execution: simulates a fill locally and never broadcasts a
-   * transaction. Replaced by wallet + Uniswap v4 + gUSD hooks integration.
+   * Onchain availability of one market — the order slip's gate. Null when
+   * the asset has no settlement panel registered onchain at all.
    */
-  execute(request: TradeRequest): Promise<TradeReceipt>;
-  /** This session's simulated fills, oldest first. */
-  getActivity(): TradeReceipt[];
+  describeAsset(asset: AssetId): Promise<TradeAvailability | null>;
+  /**
+   * Execution-identical quote from the router stack (quoteIssue + the
+   * hook-aware V4Quoter), or null when the request cannot be quoted —
+   * unregistered asset, no secondary depth for sells, or an invalid size.
+   * Works without a session — quoting is public, acting is not.
+   */
+  quote(request: TradeRequest): Promise<TradeQuote | null>;
+  /**
+   * Execute through the action runner (approval + router call +
+   * reconciliation). Requires a connected wallet; resolves to the action
+   * record the desk renders, including every failure exit.
+   */
+  execute(request: TradeRequest): Promise<ActionRecord>;
   subscribe(listener: (account: Account) => void): () => void;
-  /**
-   * Adopt a real identity into the account — the auth bridge's channel for
-   * pushing the authenticated user's wallet into the (still demo-capital)
-   * account. Null ends the session. Adapter-internal concern: product code
-   * never calls this; it reads the account through getAccount/subscribe.
-   */
-  adoptSession(identity: SessionIdentity | null): void;
 }
 
 /**
- * The earning layer — deploying gUSD into sGUSD. Rates are prototype data
- * until the protocol's yield mechanics land; the seam stays identical.
+ * The earning layer — deploying gUSD into sGUSD through the vault. Previews
+ * are execution-identical (the contract's own ERC-4626 previews); deposit
+ * and withdraw run through the action runner (one gUSD approval for
+ * deposits, approval-free withdraws) and resolve to the action record the
+ * desk renders. The share price is the yield; there is no APY figure.
  */
 export interface EarnPort {
+  /** The vault's public facts — share price and seed gate. */
   getEarnState(): EarnState;
-  /** Move gUSD into the earning layer; returns the prototype receipt. */
-  deposit(gUsd: number): Promise<EarnReceipt>;
-  /** Return earning capital to gUSD at the current rate. */
-  withdraw(gUsd: number): Promise<EarnReceipt>;
-  subscribe(listener: (state: EarnState) => void): () => void;
+  /** Execution-identical vault preview, or null for an invalid amount.
+   *  Works without a session — the preview is public, acting is not. */
+  quote(direction: EarnDirection, gUsd: number): Promise<EarnQuote | null>;
+  /** Move gUSD into the earning layer. Requires a connected wallet. */
+  deposit(gUsd: number): Promise<ActionRecord>;
+  /** Return earning capital to gUSD. Requires a connected wallet. */
+  withdraw(gUsd: number): Promise<ActionRecord>;
+  subscribe(listener: () => void): () => void;
+  /** Re-read the vault's public facts (the share price can move). */
+  refresh(): Promise<void>;
 }
 
 /**
- * The mint layer — deposit assets → protocol issuance → gUSD. The real
- * issuance mechanism (deposit catalogue, collateral rules, underwriting,
- * fees, constraints) is not finalized; the port models only the flow a user
- * sees, and the prototype previews at a 1:1 placeholder rate.
+ * The mint layer — USDC ⇄ gUSD against the real GUSD contract. Previews are
+ * execution-identical (the contract's own preview functions); mint and
+ * redeem run through the action runner (one approval + one call for mint,
+ * approval-free redeem) and resolve to the action record the desk renders.
+ * Session history lives in the tx store.
  */
 export interface MintPort {
-  /** Expected issuance for a deposit amount. */
-  quote(depositAsset: DepositAssetId, amount: number): MintQuote | null;
-  /** Deposit into the issuance mechanism and receive minted gUSD. */
-  mint(depositAsset: DepositAssetId, amount: number): Promise<MintReceipt>;
-  /** This session's mint receipts, oldest first. */
-  getActivity(): MintReceipt[];
-  subscribe(listener: () => void): () => void;
+  /** Execution-identical preview, or null for an invalid amount. Works
+   *  without a session — the preview is public, acting is not. */
+  quote(direction: MintDirection, amount: number): Promise<MintQuote | null>;
+  /** Mint gUSD from USDC. Requires a connected wallet. */
+  mint(usdcAmount: number): Promise<ActionRecord>;
+  /** Redeem gUSD back to USDC. Requires a connected wallet. */
+  redeem(gusdAmount: number): Promise<ActionRecord>;
 }
 
 /**
@@ -173,6 +174,29 @@ export interface TxPort {
   clear(): void;
 }
 
+/**
+ * The action seam — one user intent end to end, however many transactions it
+ * takes (approval + call + reconciliation). The runner owns the orchestration
+ * and the desks render its records; the tx port beneath records each
+ * transaction. Records are session-local, like tx records.
+ */
+export interface ActionPort {
+  /** This session's actions, newest first (frozen references). */
+  list(): readonly ActionRecord[];
+  get(id: string): ActionRecord | null;
+  subscribe(listener: () => void): () => void;
+  /** True while a non-terminal action sits on this surface — the desks'
+   *  duplicate-submit gate. */
+  isActionActive(origin: ActionOrigin): boolean;
+  /**
+   * Drive one plan end to end. Rejects only on the duplicate guard; every
+   * product failure resolves to its record rather than throwing.
+   */
+  run(plan: ActionPlan): Promise<ActionRecord>;
+  /** Clear session records (logout). */
+  clear(): void;
+}
+
 export interface Services {
   marketData: MarketDataPort;
   trading: TradingPort;
@@ -180,4 +204,5 @@ export interface Services {
   earn: EarnPort;
   mint: MintPort;
   tx: TxPort;
+  actions: ActionPort;
 }

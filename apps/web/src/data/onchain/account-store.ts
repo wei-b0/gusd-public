@@ -1,0 +1,187 @@
+/**
+ * The interim onchain account store — this session's wallet state read
+ * straight from the contracts: balances and GPU positions.
+ *
+ * Successor, by design: the Ponder indexer (src/domain/indexer.ts) replaces
+ * these direct reads with indexed events once it ships. Until then this
+ * store is the one place that turns the chain into user state, so desks,
+ * presets, and the portfolio read one snapshot instead of each firing their
+ * own balanceOf. It is still NOT a display-price source and never a market
+ * data source — balances and positions only.
+ *
+ * useSyncExternalStore-ready: get() returns a frozen snapshot whose
+ * reference only changes when state actually changes.
+ */
+
+import { useEffect, useSyncExternalStore } from "react";
+import type { AssetId } from "@/domain/types";
+import { assetForGpuId } from "@/data/web3/gpu-id";
+import { contractReads } from "@/data/web3/reads";
+import { getActiveChain } from "@/data/web3/chains";
+
+/** One GPU position held in the connected wallet (18-dec product size). */
+export interface OnchainPosition {
+  gpuId: `0x${string}`;
+  /** The product asset this gpuId settles, when the catalog knows it. */
+  asset: AssetId | null;
+  token: string;
+  size: number;
+}
+
+export interface OnchainAccountSnapshot {
+  /** The bound signer; null means no session — reads are skipped. */
+  address: string | null;
+  /** Wall-clock the snapshot was read at; null before the first refresh. */
+  loadedAt: number | null;
+  chainId: number;
+  gUsd: number;
+  usdc: number;
+  sGusd: number;
+  positions: readonly OnchainPosition[];
+}
+
+const EMPTY: OnchainAccountSnapshot = {
+  address: null,
+  loadedAt: null,
+  chainId: 0,
+  gUsd: 0,
+  usdc: 0,
+  sGusd: 0,
+  positions: [],
+};
+
+/** Poll interval while a session is active and the tab is visible. */
+const POLL_MS = 30_000;
+
+export class OnChainAccountStore {
+  private snapshot: OnchainAccountSnapshot = EMPTY;
+  private listeners = new Set<() => void>();
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private refreshing: Promise<void> | null = null;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  get(): OnchainAccountSnapshot {
+    return this.snapshot;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Bind the session's signer. Null (logout) clears to the empty snapshot;
+   * an address triggers an immediate refresh and starts polling.
+   */
+  setAddress(address: string | null): void {
+    if (address === this.snapshot.address) return;
+    this.stopPolling();
+    if (!address) {
+      this.set(EMPTY);
+      return;
+    }
+    this.set({ ...EMPTY, address, chainId: getActiveChain().id });
+    void this.refresh();
+    this.startPolling();
+  }
+
+  /** Re-read every balance and position from the contracts. */
+  async refresh(): Promise<void> {
+    const address = this.snapshot.address;
+    if (!address || this.refreshing) return this.refreshing ?? Promise.resolve();
+    this.refreshing = (async () => {
+      try {
+        const reads = contractReads();
+        const chainId = getActiveChain().id;
+        const [balances, positions] = await Promise.all([
+          reads.balances(address as `0x${string}`),
+          reads.positions(address as `0x${string}`),
+        ]);
+        // A stale refresh (session switched mid-flight) must not land.
+        if (this.snapshot.address !== address) return;
+        this.set({
+          address,
+          chainId,
+          loadedAt: this.now(),
+          gUsd: balances.gUsd,
+          usdc: balances.usdc,
+          sGusd: balances.sGusd,
+          positions: positions.map((p) => ({
+            gpuId: p.gpuId,
+            asset: assetForGpuId(p.gpuId),
+            token: p.token,
+            size: p.size,
+          })),
+        });
+      } catch (err) {
+        // Read failure is a system problem, not a user failure: keep the
+        // last snapshot, log for the operator.
+        console.error("[account-store] refresh failed:", err);
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  /** Drop balances/positions (an action confirmed) and re-read. */
+  invalidate(): void {
+    void this.refresh();
+  }
+
+  private set(next: OnchainAccountSnapshot): void {
+    this.snapshot = next;
+    for (const listener of this.listeners) listener();
+  }
+
+  private startPolling(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        void this.refresh();
+      }
+    }, POLL_MS);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.onVisibility);
+    }
+  }
+
+  private stopPolling(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+    }
+  }
+
+  private onVisibility = (): void => {
+    if (document.visibilityState === "visible" && this.snapshot.address) void this.refresh();
+  };
+}
+
+/** The session-wide store. One wallet, one store. */
+let singleton: OnChainAccountStore | null = null;
+
+export function getOnchainAccountStore(): OnChainAccountStore {
+  singleton ??= new OnChainAccountStore();
+  return singleton;
+}
+
+/** Test seam: drop the singleton so a suite starts clean. */
+export function disposeOnchainAccountStore(): void {
+  singleton = null;
+}
+
+/** React seam: the frozen account snapshot. */
+export function useOnchainAccount(store: OnChainAccountStore): OnchainAccountSnapshot {
+  return useSyncExternalStore(
+    (listener) => store.subscribe(listener),
+    () => store.get(),
+    () => store.get(),
+  );
+}

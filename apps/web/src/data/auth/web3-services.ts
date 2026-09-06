@@ -1,15 +1,23 @@
 /**
  * The live services wiring: the base ports pass through by reference and the
- * auth + tx seams swap for the wallet-backed implementations. Market data,
- * trading, earning, and minting stay exactly what they were — protocol
- * surfaces never learn which adapter serves them, and product writes will
- * reach the chain through TxPort.run when the protocol lands.
+ * auth + tx seams swap for the wallet-backed implementations. Market data
+ * stays exactly what it was. Actions reach the chain through the shared
+ * ActionRunner over the wallet-backed tx port; the per-surface ports
+ * (trading/earn/mint) adopt it as their implementations go live.
  */
 
-import type { Services, TxPort } from "@/domain/ports";
+import type { ActionPort, Services, TxPort } from "@/domain/ports";
 import type { TxRecord, TxSpec } from "@/domain/types";
 import { getActiveChain, chainLabel } from "@/data/web3/chains";
 import { TxStore } from "@/data/web3/tx-store";
+import { ActionRunner } from "@/data/web3/action-runner";
+import { getPublicClient } from "@/data/web3/public-client";
+import { getOnchainAccountStore, OnChainAccountStore } from "@/data/onchain/account-store";
+import { makeReconciler } from "@/data/onchain/reconcile";
+import { getIndexerClient } from "@/data/indexer/indexer-client";
+import { OnChainMintPort } from "@/data/web3/gusd/onchain-mint-port";
+import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
+import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
 import { PrivyAuthPort } from "./privy-auth-port";
 
 /**
@@ -57,25 +65,67 @@ class WalletTxPort implements TxPort {
 export class Web3Services implements Services {
   readonly auth: PrivyAuthPort;
   readonly tx: WalletTxPort;
+  readonly actions: ActionPort;
+  /** The interim onchain user-state store (the Ponder successor lands later). */
+  readonly accountStore: OnChainAccountStore;
 
   constructor(private base: Services) {
     this.auth = new PrivyAuthPort();
     this.tx = new WalletTxPort(this.auth);
+    this.actions = new ActionRunner({
+      tx: this.tx,
+      // The block-based half of the stale-quote guard; the wall-clock half
+      // needs no client. Null on a client without access — the age check
+      // still applies.
+      getBlockNumber: async () => {
+        try {
+          return Number(await getPublicClient().getBlockNumber());
+        } catch {
+          return null;
+        }
+      },
+    });
+    this.accountStore = getOnchainAccountStore();
+    // Session binding: the store follows the one wallet; ending the session
+    // clears the wallet state and the session's tx + action records.
+    this.auth.subscribeSession((session) => {
+      this.accountStore.setAddress(session.status === "connected" ? session.address : null);
+      if (session.status === "idle") {
+        this.tx.clear();
+        this.actions.clear();
+      }
+    });
+    // Post-confirmation reconciliation: the store re-read (always) plus the
+    // indexed-evidence fetch once Ponder stands behind NEXT_PUBLIC_INDEXER_URL.
+    const reconcile = makeReconciler({
+      accountStore: this.accountStore,
+      earn: { refresh: () => this.earn.refresh() },
+      indexer: getIndexerClient(),
+      tx: this.tx,
+    });
+    this.mint = new OnChainMintPort({
+      getSession: () => this.auth.getSession(),
+      actions: this.actions,
+      reconcile,
+    });
+    this.earn = new OnChainEarnPort({
+      getSession: () => this.auth.getSession(),
+      actions: this.actions,
+      reconcile,
+    });
+    this.trading = new OnChainTradingPort({
+      getSession: () => this.auth.getSession(),
+      actions: this.actions,
+      accountStore: this.accountStore,
+      reconcile,
+    });
   }
+
+  readonly mint: OnChainMintPort;
+  readonly earn: OnChainEarnPort;
+  readonly trading: OnChainTradingPort;
 
   get marketData() {
     return this.base.marketData;
-  }
-
-  get trading() {
-    return this.base.trading;
-  }
-
-  get earn() {
-    return this.base.earn;
-  }
-
-  get mint() {
-    return this.base.mint;
   }
 }

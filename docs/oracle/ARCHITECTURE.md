@@ -225,6 +225,12 @@ Two targets, selected fail-closed by `PUBLISHER_TARGET`:
 - `pnpm replay:verify` — recompute each panel's latest candidate through
   `computeFromWindow` and byte-compare the receipt hash against the stored
   `calcHash`. CI runs it on a frozen database, where it is exact.
+- `pnpm --filter @gusd/oracle backfill:history` — close a panel's candidate
+  gap: panels that began publishing after their collectors started (the
+  v0.1.0 → v0.2.0 settlement expansion) get their unpriced observation
+  history recomputed through the live engine path (`EngineRunner` with a
+  pinned clock, oldest-first, one worker per GPU). Append-only; dry run by
+  default (`--apply` to write), `--from/--until/--gpu/--step-ms` to scope.
 - The e2e suite (`RUN_DB_TESTS=1 pnpm --filter @gusd/oracle test`) proves
   ingest idempotency: repeated replay passes converge to frozen row counts and
   add zero new candidates or observations.

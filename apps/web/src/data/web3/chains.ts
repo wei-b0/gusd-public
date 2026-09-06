@@ -5,9 +5,9 @@
  * Sepolia / Base exist as env-gated entries so enabling them is a config
  * change, not a code change — no other network is ever invented here.
  *
- * Contract addresses are deliberately out of scope for this module for now;
- * when the protocol ships, its per-chain address map (sourced from
- * apps/contracts/deployments/<id>.json) lands beside the registry.
+ * Contract addresses live beside this registry in ./abis/addresses.generated.ts
+ * (sourced from apps/contracts/deployments/<id>.json) and resolve through
+ * ./contracts.ts — the chain registry itself stays address-free.
  */
 
 import { defineChain, type Chain } from "viem";

@@ -118,32 +118,6 @@ export function lastKnownIndexPrice(candidates: readonly CandidateDto[]): number
   return null;
 }
 
-/**
- * Index prints → OHLC candles bucketed by time. Only prints the oracle
- * actually asserted enter a bucket; buckets with no prints do not exist (the
- * series never interpolates across a gap). The caller picks the bucket size
- * — and, with it, the honesty about range: a candle series is only derived
- * for windows the history endpoint's depth can actually cover.
- */
-export function indexPointsToCandles(points: readonly IndexPoint[], bucketMs: number): Candle[] {
-  if (points.length === 0 || bucketMs <= 0) return [];
-  const buckets = new Map<number, { open: number; high: number; low: number; close: number }>();
-  for (const p of points) {
-    const key = Math.floor(p.t / bucketMs) * bucketMs;
-    const b = buckets.get(key);
-    if (!b) {
-      buckets.set(key, { open: p.value, high: p.value, low: p.value, close: p.value });
-    } else {
-      b.high = Math.max(b.high, p.value);
-      b.low = Math.min(b.low, p.value);
-      b.close = p.value;
-    }
-  }
-  return [...buckets.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([t, b]) => ({ t, ...b }));
-}
-
 // -- canonical benchmark series (server-bucketed /candles) -------------------
 //
 // The in-memory candidate history caps at 500 rows, so client-side bucketing

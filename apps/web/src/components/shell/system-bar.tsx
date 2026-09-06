@@ -219,6 +219,7 @@ function ConnectControl() {
               {(session.address || session.chainId) && <NetworkRow session={session} />}
               <Row label={<Gusd />} value={fmtFull(account.gUsdBalance)} />
               <Row label={<SGusd />} value={fmtFull(account.sGUsdBalance)} />
+              <Row label="USDC" value={fmtFull(account.usdcBalance)} />
               <Row label="Positions" value={String(account.positions.length)} />
             </dl>
             <button

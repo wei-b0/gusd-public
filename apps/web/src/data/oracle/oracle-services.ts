@@ -1,9 +1,10 @@
 /**
- * Oracle-mode wiring: the composite market-data port over the mock universe.
+ * Oracle-mode wiring: the composite market-data port over the oracle feed.
  *
- * Trading, auth, earning, and mint have no backend — the protocol surface is
- * not integrated — so they delegate to the same MockServices instances, by
- * reference. One shared session truth; only the market-data seam changes.
+ * Auth, tx, and the walletless execution stubs (trading/earn/mint) delegate
+ * to the same MockServices instances, by reference — one session truth.
+ * With Privy configured, Web3Services swaps those seams for the real
+ * onchain ports; only the market-data seam is oracle-mode's own.
  */
 
 import type { Services } from "@/domain/ports";
@@ -18,20 +19,17 @@ export class OracleServices implements Services {
   readonly earn: MockServices["earn"];
   readonly mint: MockServices["mint"];
   readonly tx: MockServices["tx"];
+  readonly actions: MockServices["actions"];
 
   constructor() {
     const mock = new MockServices();
     const feed = getOracleFeed();
     this.marketData = new OracleMarketData(mock.marketData, feed);
-    // Prototype execution prices off the API's Index — the one real price —
-    // so quotes, fills, receipts, and position marks stay coherent with what
-    // every interface displays. No asserted price → no quote, never a
-    // simulated stand-in.
-    mock.trading.priceSource = (asset) => this.marketData.indexPriceOf(asset);
     this.trading = mock.trading;
     this.auth = mock.auth;
     this.earn = mock.earn;
     this.mint = mock.mint;
     this.tx = mock.tx;
+    this.actions = mock.actions;
   }
 }

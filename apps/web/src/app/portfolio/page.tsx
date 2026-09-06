@@ -11,7 +11,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { pairName } from "@/domain/types";
 import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, isFlatPct } from "@/domain/format";
-import { useAccount, useActivity, useEarn, useMarkets, useServices } from "@/data/services";
+import { useAccount, useActions, useEarn, useMarkets, useServices } from "@/data/services";
+import { PhaseTag } from "@/components/ui/action-status";
 import { TuiPanel } from "@/components/ui/panel";
 
 export default function PortfolioPage() {
@@ -32,8 +33,8 @@ export default function PortfolioPage() {
               Not connected
             </span>
             <p className="mt-3 max-w-prose text-[12.5px] leading-relaxed text-primary">
-              Connect to see your market positions, liquid and earning capital, and trade
-              history. Demo capital is provided once connected.
+              Connect to see your market positions, liquid and earning capital, and this
+              session's executed actions.
             </p>
             <button
               type="button"
@@ -63,7 +64,7 @@ function PortfolioBook() {
   const account = useAccount();
   const markets = useMarkets();
   const earn = useEarn();
-  const activity = useActivity();
+  const actions = useActions();
 
   // Mark to the displayed price: the venue price when a market layer exists,
   // otherwise the API's Index — never a simulated stand-in for either. The
@@ -72,23 +73,31 @@ function PortfolioBook() {
   const priceOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice ?? m.indexPrice]));
   const unitOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice !== null ? "gUSD" : "/ GPU-hour"]));
   const rows = account.positions.map((p) => {
+    // No cost-basis source pre-indexer: avgEntry is null then, and the P&L
+    // columns print "—" rather than math against an invented basis. With
+    // neither a market price nor a basis, the value itself is unmarkable.
     const last = priceOf.get(p.asset) ?? p.avgEntry;
     const unit = unitOf.get(p.asset) ?? "gUSD";
-    const value = p.size * last;
-    const cost = p.size * p.avgEntry;
-    const pnl = value - cost;
-    const pnlPct = (last / p.avgEntry - 1) * 100;
+    const basis = p.avgEntry;
+    const value = last === null ? null : p.size * last;
+    const cost = basis === null ? null : p.size * basis;
+    const pnl = value === null || cost === null ? null : value - cost;
+    const pnlPct = last === null || basis === null ? null : (last / basis - 1) * 100;
     return { p, last, unit, value, pnl, pnlPct };
   });
-  const positionsValue = rows.reduce((sum, r) => sum + r.value, 0);
-  const sGUsdValue = account.sGUsdBalance * earn.rate;
+  // The headline sums what can be marked; unmarkable positions print "—"
+  // in their row rather than a fabricated 0 in the total.
+  const positionsValue = rows.reduce((sum, r) => sum + (r.value ?? 0), 0);
+  // The share price is the vault's read; before the first read lands the
+  // earning value prints 0 rather than an invented figure.
+  const sGUsdValue = account.sGUsdBalance * (earn.rate ?? 0);
   const total = account.gUsdBalance + sGUsdValue + positionsValue;
 
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3 border-b border-rule-strong pb-3">
         <h1 className="disp text-[22px] leading-none text-primary">Portfolio</h1>
-        <p className="slug text-dim">{account.label} · demo capital</p>
+        <p className="slug text-dim">{account.label}</p>
       </div>
 
       {/* Portfolio value — exposure + liquid + earning, one read */}
@@ -134,7 +143,7 @@ function PortfolioBook() {
                 </thead>
                 <tbody>
                   {rows.map(({ p, last, unit, value, pnl, pnlPct }) => {
-                    const flat = isFlatPct(pnlPct);
+                    const flat = pnlPct === null || isFlatPct(pnlPct);
                     return (
                       <tr key={p.asset} className="border-b border-rule last:border-b-0">
                         <td className="py-2.5 pl-3.5 pr-4">
@@ -147,25 +156,29 @@ function PortfolioBook() {
                         </td>
                         <td className="num px-2.5 py-2.5 text-right text-data">{fmtUnits(p.size)}</td>
                         <td className="num px-2.5 py-2.5 text-right text-data">
-                          {fmtGusdPrecise(p.avgEntry)}
+                          {p.avgEntry === null ? "—" : fmtGusdPrecise(p.avgEntry)}
                           <span className="ml-1 text-[10px] text-dim">{unit}</span>
                         </td>
                         <td className="num px-2.5 py-2.5 text-right text-data">
-                          {fmtGusdPrecise(last)}
+                          {last === null ? "—" : fmtGusdPrecise(last)}
                           <span className="ml-1 text-[10px] text-dim">{unit}</span>
                         </td>
-                        <td className="num px-2.5 py-2.5 text-right text-bright">{fmtGusd(value)}</td>
+                        <td className="num px-2.5 py-2.5 text-right text-bright">
+                          {value === null ? "—" : fmtGusd(value)}
+                        </td>
                         <td
                           className={`num py-2.5 pr-3.5 text-right whitespace-nowrap ${
-                            flat ? "text-dim" : pnl >= 0 ? "text-up" : "text-down"
+                            flat || pnl === null ? "text-dim" : pnl >= 0 ? "text-up" : "text-down"
                           }`}
                         >
-                          {!flat && (
+                          {!flat && pnl !== null && (
                             <span aria-hidden className="mr-1 text-[8px]">
                               {pnl >= 0 ? "▲" : "▼"}
                             </span>
                           )}
-                          {fmtNotional(Math.abs(pnl))} · {fmtPctSigned(pnlPct)}
+                          {pnl === null || pnlPct === null
+                            ? "—"
+                            : `${fmtNotional(Math.abs(pnl))} · ${fmtPctSigned(pnlPct)}`}
                         </td>
                       </tr>
                     );
@@ -192,7 +205,6 @@ function PortfolioBook() {
             <dl className="border-t border-rule">
               <Line label="sGUSD balance" value={`${fmtFull(account.sGUsdBalance)} sGUSD`} />
               <Line label="Value at rate" value={fmtGusd(sGUsdValue)} />
-              <Line label="Trailing 30d APY" value={`${earn.trailingApyPct.toFixed(2)}%`} />
               <Line label="Stake and unstake" value="gUSD section ▸" href="/gusd" />
             </dl>
           </TuiPanel>
@@ -205,36 +217,27 @@ function PortfolioBook() {
           </TuiPanel>
         </div>
 
-        {/* 05 — activity */}
-        <TuiPanel no="05" title="Activity" meta={`${activity.length} fills · in gUSD · newest first`}>
-          {activity.length === 0 ? (
+        {/* 05 — activity: this session's executed actions, newest first */}
+        <TuiPanel no="05" title="Activity" meta={`${actions.length} actions · this session · newest first`}>
+          {actions.length === 0 ? (
             <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
-              No fills yet. Executed orders print here newest first.
+              Nothing has cleared yet. Orders, mints, and stakes print here as they settle;
+              full history waits for the indexer.
             </p>
           ) : (
             <div className="border-t border-rule">
-              {[...activity].reverse().map((r, i) => {
-                const buy = r.side === "buy";
-                return (
-                  <div
-                    key={`${r.t}-${i}`}
-                    className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0"
-                  >
-                    <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(r.t)}</span>
-                    <span className="num w-24 shrink-0 whitespace-nowrap text-[12.5px] font-bold text-data">{pairName(r.asset)}</span>
-                    <span className={`slug w-16 shrink-0 ${buy ? "text-up" : "text-down"}`}>
-                      <span aria-hidden className="mr-1 text-[8px]">{buy ? "▲" : "▼"}</span>
-                      {buy ? "Bought" : "Sold"}
-                    </span>
-                    <span className="num flex-1 whitespace-nowrap text-right text-[12.5px] text-data">
-                      {fmtUnits(r.size)} @ {fmtGusdPrecise(r.fillPrice)}
-                    </span>
-                    <span className="num w-24 shrink-0 text-right text-[11.5px] text-dim">
-                      {fmtNotional(r.notional)} · fee {fmtNotional(r.feeUsd)}
-                    </span>
-                  </div>
-                );
-              })}
+              {actions.map((a) => (
+                <div
+                  key={a.id}
+                  className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0"
+                >
+                  <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(a.createdAt)}</span>
+                  <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
+                    {a.label}
+                  </span>
+                  <PhaseTag phase={a.phase} />
+                </div>
+              ))}
             </div>
           )}
         </TuiPanel>

@@ -236,8 +236,8 @@ CONSUMERS
               </p>
               <p className="text-dim">
                 Exact weights, epoch cadence, and outlier handling are protocol mechanics
-                still being finalized; this page describes the prototype's behavior, not a
-                committed specification.
+                still being finalized; this page describes the feed's behavior as shipped,
+                not a committed specification.
               </p>
             </div>
           </div>
@@ -332,11 +332,10 @@ CONSUMERS
         <TuiPanel no="07" title="Access" meta="how the product consumes data">
           <div className="space-y-3 p-3.5 text-[12px] leading-relaxed text-data">
             <p>
-              The product shell reads everything through a small set of service interfaces —
+              The product reads everything through a small set of service interfaces —
               market data, trading, minting, earning, auth. Market data is the oracle's live
-              feed; the prototype adapters behind trading, minting, earning, and connection
-              provide the demo capital and fills — real backends replace them behind identical
-              seams.
+              feed; trading, minting, and earning execute against the deployed contracts
+              through the same seams — no demo capital, no simulated fills.
             </p>
             <p className="text-dim">
               Public endpoints, auth scopes, and rate limits finalize with the protocol

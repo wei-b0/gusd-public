@@ -1,39 +1,40 @@
 /**
  * Mock adapters implementing the application ports.
  *
- * One coherent prototype world: deterministic generated market data, a local
- * tick loop, simulated fills, and a prototype session. Everything here is
- * clearly labeled infrastructure for the shell phase — replacing this module
- * with real feeds (Index/oracle, market indexer, wallet + Uniswap v4 + gUSD
- * hooks, Privy) is the integration path, and it happens behind the ports in
- * src/domain/ports.
+ * One coherent prototype universe for the market-data surface: deterministic
+ * generated market data and a local tick loop. That is all that remains —
+ * execution has no mock. Trading, earning, and minting are walletless
+ * stubs that refuse honestly; the real stack (the onchain ports over the
+ * shared action runner) takes those seams over whenever a Privy app id
+ * configures the build. The seams live in src/domain/ports.
  */
 
 import type {
+  ActionPort,
   AuthPort,
   EarnPort,
   MarketDataPort,
   MintPort,
-  TxPort,
   TradingPort,
+  TxPort,
 } from "@/domain/ports";
-import type { Quote } from "@/domain/ports";
+import type { ActionRecord } from "@/domain/actions";
 import type {
   Account,
   AssetId,
   ChartRange,
   ConnectFlow,
   ConnectableWallet,
-  DepositAssetId,
-  EarnReceipt,
+  EarnDirection,
+  EarnQuote,
   EarnState,
   Market,
   MarketSnapshot,
   MarketTrade,
+  MintDirection,
   MintQuote,
-  MintReceipt,
-  SessionIdentity,
-  TradeReceipt,
+  TradeAvailability,
+  TradeQuote,
   TradeRequest,
   TxRecord,
   WalletSession,
@@ -49,11 +50,10 @@ import {
   buildStats,
 } from "./generate";
 
-/** Fee the prototype charges on simulated fills, basis points. */
-const PROTOTYPE_FEE_BPS = 6;
-const FILL_LATENCY_MS = 850;
 const TICK_MS = 1_800;
-const EARN_LATENCY_MS = 500;
+
+/** The one honest voice a build without wallet support can speak. */
+const NO_WALLET = "This build runs without wallet support — nothing can sign here.";
 
 /**
  * Frozen session snapshots for the prototype world. The prototype session
@@ -95,30 +95,6 @@ interface WorldState {
   indexPrices: Record<AssetId, number>;
   volumes: Record<AssetId, number>;
   tradesByAsset: Record<AssetId, MarketTrade[]>;
-  account: Account;
-  receipts: TradeReceipt[];
-  /** Earn layer: sGUSD→gUSD rate and session accrual. */
-  earnRate: number;
-  accruedUsd: number;
-}
-
-const SEED_POSITIONS = [
-  { asset: "H100" as const, size: 6.4, avgEntry: 2.468 },
-  { asset: "B200" as const, size: 2.0, avgEntry: 4.351 },
-  { asset: "A100" as const, size: 18.0, avgEntry: 1.435 },
-];
-
-/**
- * Seed activity consistent with the seeded positions: the session's demo
- * capital already acquired them. Prototype history, clearly simulated.
- */
-function seedReceipts(): TradeReceipt[] {
-  const t0 = SESSION_ANCHOR - 26 * 3_600_000;
-  return [
-    { asset: "H100", side: "buy", size: 6.4, fillPrice: 2.468, notional: 6.4 * 2.468 * 1.0006, feeUsd: (6.4 * 2.468 * 6) / 10_000, t: t0 },
-    { asset: "B200", side: "buy", size: 2.0, fillPrice: 4.351, notional: 2.0 * 4.351 * 1.0006, feeUsd: (2.0 * 4.351 * 6) / 10_000, t: t0 + 4 * 3_600_000 },
-    { asset: "A100", side: "buy", size: 18.0, fillPrice: 1.435, notional: 18.0 * 1.435 * 1.0006, feeUsd: (18.0 * 1.435 * 6) / 10_000, t: t0 + 9 * 3_600_000 },
-  ];
 }
 
 function initialWorld(): WorldState {
@@ -141,61 +117,7 @@ function initialWorld(): WorldState {
     indexPrices,
     volumes,
     tradesByAsset,
-    account: {
-      connected: false,
-      label: null,
-      address: null,
-      gUsdBalance: 0,
-      sGUsdBalance: 0,
-      // Seeded prototype positions so the Sell side is demonstrable.
-      positions: SEED_POSITIONS,
-    },
-    receipts: seedReceipts(),
-    earnRate: 1.00052,
-    accruedUsd: 0,
   };
-}
-
-function quoteFor(request: TradeRequest, price: number): Quote | null {
-  if (!price || request.size <= 0) return null;
-  // Prototype impact model: ~3 bps per unit up to 25, no real routing.
-  const impact = 0.0003 * Math.min(request.size, 25);
-  const fillPrice = request.side === "buy" ? price * (1 + impact) : price * (1 - impact);
-  const fee = (request.size * fillPrice * PROTOTYPE_FEE_BPS) / 10_000;
-  // A buy pays the fee; a sell receives its proceeds net of it.
-  const notional = request.side === "buy" ? request.size * fillPrice + fee : request.size * fillPrice - fee;
-  return {
-    asset: request.asset,
-    side: request.side,
-    size: request.size,
-    price: fillPrice,
-    notional,
-    feeUsd: fee,
-    priceImpactPct: impact * 100,
-  };
-}
-
-function applyFill(account: Account, receipt: TradeReceipt): Account {
-  if (receipt.side === "buy") {
-    const existing = account.positions.find((p) => p.asset === receipt.asset);
-    const positions = existing
-      ? account.positions.map((p) =>
-          p.asset === receipt.asset
-            ? {
-                asset: p.asset,
-                size: p.size + receipt.size,
-                avgEntry:
-                  (p.avgEntry * p.size + receipt.fillPrice * receipt.size) / (p.size + receipt.size),
-              }
-            : p,
-        )
-      : [...account.positions, { asset: receipt.asset, size: receipt.size, avgEntry: receipt.fillPrice }];
-    return { ...account, gUsdBalance: account.gUsdBalance - receipt.notional, positions };
-  }
-  const positions = account.positions
-    .map((p) => (p.asset === receipt.asset ? { ...p, size: p.size - receipt.size } : p))
-    .filter((p) => p.size > 1e-9);
-  return { ...account, gUsdBalance: account.gUsdBalance + receipt.notional, positions };
 }
 
 function delay(ms: number): Promise<void> {
@@ -210,21 +132,17 @@ export class MockServices {
   earn: EarnPortImpl;
   mint: MintPortImpl;
   tx: MockTxPort;
+  actions: MockActionPort;
 
   constructor() {
     const world = { state: initialWorld() };
     this.marketData = new MarketDataPortImpl(world);
-    this.trading = new TradingPortImpl(world);
-    this.auth = new AuthPortImpl(world, this.trading);
-    this.earn = new EarnPortImpl(world);
-    this.mint = new MintPortImpl(world, this.trading);
+    this.trading = new TradingPortImpl();
+    this.auth = new AuthPortImpl(this.trading);
+    this.earn = new EarnPortImpl();
+    this.mint = new MintPortImpl();
     this.tx = new MockTxPort();
-    // Live earn accrual rides the market tick loop, and the earn port
-    // re-syncs when the account connects or disconnects.
-    this.marketData.tickHooks.push(() => this.earn.accrue());
-    this.trading.subscribe(() => {
-      this.earn.syncAccount();
-    });
+    this.actions = new MockActionPort();
   }
 }
 
@@ -332,63 +250,44 @@ class MarketDataPortImpl {
   }
 
   private stopTicking(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 }
 
+/**
+ * The walletless trading port — no quotes, no availability, no fills, no
+ * positions beyond the disconnected zero. Acting refuses with the build's
+ * one honest voice; nothing here simulates an order.
+ */
 class TradingPortImpl {
   private listeners = new Set<(account: Account) => void>();
-
-  /**
-   * Optional execution-price source. When set, prototype quotes, fills,
-   * receipts, and position marks price off it exclusively — the oracle wiring
-   * points it at the API's Index so the traded price matches the displayed
-   * one. A missing price rejects the order rather than falling back to the
-   * simulated walk. Null (mock data source) → the engine's own prices.
-   */
-  priceSource: ((asset: AssetId) => number | null) | null = null;
-
-  constructor(private world: { state: WorldState }) {}
+  private account: Account = {
+    connected: false,
+    label: null,
+    address: null,
+    gUsdBalance: 0,
+    sGUsdBalance: 0,
+    usdcBalance: 0,
+    positions: [],
+  };
 
   getAccount(): Account {
-    return this.world.state.account;
+    return this.account;
   }
 
-  /** This session's simulated fills, oldest first. */
-  getActivity(): TradeReceipt[] {
-    return this.world.state.receipts;
+  async describeAsset(): Promise<TradeAvailability | null> {
+    return null;
   }
 
-  quote(request: TradeRequest): Quote | null {
-    const price = this.priceOf(request.asset);
-    return price === null ? null : quoteFor(request, price);
+  async quote(_request: TradeRequest): Promise<TradeQuote | null> {
+    return null;
   }
 
-  async execute(request: TradeRequest): Promise<TradeReceipt> {
-    await delay(FILL_LATENCY_MS);
-    const price = this.priceOf(request.asset);
-    if (price === null) {
-      throw new Error("No reference price for this asset — the feed asserts none right now.");
-    }
-    const fee = (request.size * price * PROTOTYPE_FEE_BPS) / 10_000;
-    const receipt: TradeReceipt = {
-      asset: request.asset,
-      side: request.side,
-      size: request.size,
-      fillPrice: price,
-      notional:
-        request.side === "buy" ? request.size * price + fee : request.size * price - fee,
-      feeUsd: fee,
-      t: Date.now(),
-    };
-    this.world.state = {
-      ...this.world.state,
-      account: applyFill(this.world.state.account, receipt),
-      receipts: [...this.world.state.receipts, receipt].slice(-20),
-    };
-    for (const listener of this.listeners) listener(this.world.state.account);
-    return receipt;
+  async execute(): Promise<never> {
+    throw new Error(NO_WALLET);
   }
 
   subscribe(listener: (account: Account) => void): () => void {
@@ -398,67 +297,35 @@ class TradingPortImpl {
     };
   }
 
-  /** Connect the prototype session and fund it with demo capital. */
+  /** Connect the prototype session — an identity only, never a wallet. */
   async connectDemo(): Promise<Account> {
     await delay(600);
-    this.adoptSession({ label: "demo-01", address: null });
-    return this.world.state.account;
-  }
-
-  /**
-   * Adopt an identity into the account — the auth bridge's channel for
-   * real (Privy) sessions; the demo session passes its prototype label.
-   * Capital stays prototype data either way: no chain balances are read
-   * (the chain is not a display source).
-   */
-  adoptSession(identity: SessionIdentity | null): void {
-    if (!identity) {
-      this.disconnect();
-      return;
-    }
-    const account: Account = {
-      connected: true,
-      label: identity.label,
-      address: identity.address,
-      gUsdBalance: 25_000,
-      sGUsdBalance: 8_000,
-      positions: SEED_POSITIONS,
-    };
-    this.world.state = { ...this.world.state, account };
-    for (const listener of this.listeners) listener(account);
+    this.setAccount({ ...this.account, connected: true, label: "demo-01" });
+    return this.account;
   }
 
   disconnect(): void {
-    const account: Account = {
+    this.setAccount({
       connected: false,
       label: null,
       address: null,
       gUsdBalance: 0,
       sGUsdBalance: 0,
+      usdcBalance: 0,
       positions: [],
-    };
-    this.world.state = { ...this.world.state, account };
-    for (const listener of this.listeners) listener(account);
+    });
   }
 
-  private priceOf(asset: AssetId): number | null {
-    if (this.priceSource) return this.priceSource(asset);
-    return this.world.state.prices[asset] ?? null;
-  }
-
-  /** Broadcasts an externally mutated account (the mint layer) to listeners. */
-  notifyAccount(): void {
-    for (const listener of this.listeners) listener(this.world.state.account);
+  private setAccount(next: Account): void {
+    this.account = next;
+    for (const listener of this.listeners) listener(next);
   }
 }
 
 class AuthPortImpl implements AuthPort {
   private sessionListeners = new Set<(session: WalletSession) => void>();
 
-  constructor(
-    private world: { state: WorldState },
-    private trading: TradingPortImpl,
-  ) {
+  constructor(private trading: TradingPortImpl) {
     // The prototype session's wallet state is flat: connected or not.
     this.trading.subscribe(() => {
       const session = this.getSession();
@@ -466,7 +333,7 @@ class AuthPortImpl implements AuthPort {
     });
   }
 
-  /** Prototype connect: links a demo identity with demo capital. No dialog. */
+  /** Prototype connect: links a demo identity. No dialog, no wallet. */
   async connect(): Promise<void> {
     await this.trading.connectDemo();
   }
@@ -495,7 +362,7 @@ class AuthPortImpl implements AuthPort {
   }
 
   getSession(): WalletSession {
-    return this.world.state.account.connected ? CONNECTED_SESSION : DISCONNECTED_SESSION;
+    return this.trading.getAccount().connected ? CONNECTED_SESSION : DISCONNECTED_SESSION;
   }
 
   subscribeSession(listener: (session: WalletSession) => void): () => void {
@@ -506,11 +373,11 @@ class AuthPortImpl implements AuthPort {
   }
 
   getWalletClient(): Promise<never> {
-    return Promise.reject(new Error("No wallet — the prototype session has none."));
+    return Promise.reject(new Error(NO_WALLET));
   }
 
   switchChain(): Promise<void> {
-    return Promise.reject(new Error("No wallet — the prototype session has none."));
+    return Promise.reject(new Error(NO_WALLET));
   }
 }
 
@@ -532,151 +399,58 @@ class MockTxPort implements TxPort {
   }
 
   run(): Promise<TxRecord> {
-    return Promise.reject(new Error("The prototype session has no wallet — transactions are not simulated."));
+    return Promise.reject(new Error(NO_WALLET));
   }
 
   clear(): void {}
 }
 
-/** Trailing 30d earning rate — prototype data, not a real yield claim. */
-const TRAILING_APY_PCT = 4.18;
-
-/**
- * The earning layer mock: gUSD ↔ sGUSD at a slowly accruing rate. Balances
- * live on the shared account, so trading and earning see one wallet truth.
- * State is cached so useSyncExternalStore gets a stable reference between
- * changes.
- */
-class EarnPortImpl {
-  private listeners = new Set<(state: EarnState) => void>();
-  private cached: EarnState | null = null;
-  private receipts: EarnReceipt[] = [];
-
-  constructor(private world: { state: WorldState }) {}
-
-  getEarnState(): EarnState {
-    if (!this.cached) this.cached = this.build();
-    return this.cached;
+/** No wallet means no action can run; the runner seam exists for parity. */
+class MockActionPort implements ActionPort {
+  list(): readonly ActionRecord[] {
+    return [];
   }
 
-  async deposit(gUsd: number): Promise<EarnReceipt> {
-    await delay(EARN_LATENCY_MS);
-    const account = this.world.state.account;
-    if (!account.connected || !Number.isFinite(gUsd) || gUsd <= 0 || gUsd > account.gUsdBalance) {
-      throw new Error("Deposit rejected — check the session and the amount.");
-    }
-    const rate = this.world.state.earnRate;
-    const sGUsdMoved = gUsd / rate;
-    const receipt: EarnReceipt = { kind: "deposit", gUsdMoved: gUsd, sGUsdMoved, rate, t: Date.now() };
-    this.world.state = {
-      ...this.world.state,
-      account: { ...account, gUsdBalance: account.gUsdBalance - gUsd, sGUsdBalance: account.sGUsdBalance + sGUsdMoved },
-    };
-    this.bump(receipt);
-    return receipt;
+  get(): ActionRecord | null {
+    return null;
   }
 
-  async withdraw(gUsd: number): Promise<EarnReceipt> {
-    await delay(EARN_LATENCY_MS);
-    const account = this.world.state.account;
-    const rate = this.world.state.earnRate;
-    const sGUsdMoved = gUsd / rate;
-    if (!account.connected || !Number.isFinite(gUsd) || gUsd <= 0 || sGUsdMoved > account.sGUsdBalance) {
-      throw new Error("Withdrawal rejected — check the earning balance and the amount.");
-    }
-    const receipt: EarnReceipt = { kind: "withdraw", gUsdMoved: gUsd, sGUsdMoved, rate, t: Date.now() };
-    this.world.state = {
-      ...this.world.state,
-      account: { ...account, gUsdBalance: account.gUsdBalance + gUsd, sGUsdBalance: account.sGUsdBalance - sGUsdMoved },
-    };
-    this.bump(receipt);
-    return receipt;
+  subscribe(): () => void {
+    return () => {};
   }
 
-  subscribe(listener: (state: EarnState) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+  isActionActive(): boolean {
+    return false;
   }
 
-  /** One tick of earning accrual on the session's sGUSD. */
-  accrue(): void {
-    const state = this.world.state;
-    if (!state.account.connected || state.account.sGUsdBalance <= 0) return;
-    const ticksPerYear = (365 * 24 * 3_600_000) / TICK_MS;
-    const perTick = (state.account.sGUsdBalance * state.earnRate * (TRAILING_APY_PCT / 100)) / ticksPerYear;
-    this.world.state = { ...state, accruedUsd: state.accruedUsd + perTick };
-    this.bump();
+  run(): Promise<ActionRecord> {
+    return Promise.reject(new Error(NO_WALLET));
   }
 
-  private build(): EarnState {
-    const { account, earnRate, accruedUsd, updatedAt } = this.world.state;
-    return {
-      connected: account.connected,
-      availableUsd: account.gUsdBalance,
-      sGUsd: account.sGUsdBalance,
-      sGUsdValueUsd: account.sGUsdBalance * earnRate,
-      rate: earnRate,
-      trailingApyPct: TRAILING_APY_PCT,
-      accruedUsd,
-      receipts: this.receipts,
-      updatedAt,
-    };
-  }
-
-  /** Re-sync when the account connects or disconnects. */
-  syncAccount(): void {
-    this.bump();
-  }
-
-  private bump(receipt?: EarnReceipt): void {
-    if (receipt) this.receipts = [...this.receipts, receipt].slice(-12);
-    this.cached = this.build();
-    for (const listener of this.listeners) listener(this.cached);
-  }
+  clear(): void {}
 }
 
 /**
- * Mint mock: previews the issuance flow — deposit a supported asset into the
- * protocol's issuance mechanism and receive minted gUSD. Deposit assets are
- * placeholders and the rate is a 1:1 prototype preview; the real mechanism
- * (collateral, underwriting, fees, constraints) is not finalized and is not
- * implied here.
+ * The walletless earning port: the vault's facts stay empty (the desks
+ * render "—" rather than an invented rate) and acting refuses.
  */
-class MintPortImpl {
+class EarnPortImpl {
   private listeners = new Set<() => void>();
-  private receipts: MintReceipt[] = [];
 
-  constructor(
-    private world: { state: WorldState },
-    private trading: TradingPortImpl,
-  ) {}
-
-  quote(depositAsset: DepositAssetId, amount: number): MintQuote | null {
-    if (!Number.isFinite(amount) || amount <= 0) return null;
-    return { depositAsset, amount, gUsd: amount };
+  getEarnState(): EarnState {
+    return { rate: null, seeded: null, updatedAt: null };
   }
 
-  async mint(depositAsset: DepositAssetId, amount: number): Promise<MintReceipt> {
-    await delay(EARN_LATENCY_MS);
-    const account = this.world.state.account;
-    if (!account.connected || !Number.isFinite(amount) || amount <= 0) {
-      throw new Error("Mint rejected — connect, then enter a deposit amount.");
-    }
-    this.world.state = {
-      ...this.world.state,
-      account: { ...account, gUsdBalance: account.gUsdBalance + amount },
-    };
-    this.trading.notifyAccount();
-    const receipt: MintReceipt = { depositAsset, amount, gUsdMoved: amount, t: Date.now() };
-    this.bump(receipt);
-    return receipt;
+  async quote(_direction: EarnDirection, _gUsd: number): Promise<EarnQuote | null> {
+    return null;
   }
 
-  /** This session's mint receipts, oldest first. */
-  getActivity(): MintReceipt[] {
-    return this.receipts;
+  async deposit(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async withdraw(): Promise<never> {
+    throw new Error(NO_WALLET);
   }
 
   subscribe(listener: () => void): () => void {
@@ -686,8 +460,23 @@ class MintPortImpl {
     };
   }
 
-  private bump(receipt?: MintReceipt): void {
-    if (receipt) this.receipts = [...this.receipts, receipt].slice(-12);
-    for (const listener of this.listeners) listener();
+  async refresh(): Promise<void> {}
+}
+
+/**
+ * The walletless mint port: no previews (the desk renders "—"), acting
+ * refuses.
+ */
+class MintPortImpl {
+  async quote(_direction: MintDirection, _amount: number): Promise<MintQuote | null> {
+    return null;
+  }
+
+  async mint(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async redeem(): Promise<never> {
+    throw new Error(NO_WALLET);
   }
 }

@@ -72,8 +72,12 @@ export default function ProtocolPage() {
                     <td className="px-2.5 py-2.5 text-[12px] text-data">Uniswap v4</td>
                     <td className="px-2.5 py-2.5 text-[12px] text-data">gUSD hook</td>
                     <td className="py-2.5 pr-3.5 text-right">
-                      <span className="slug border border-amber px-1.5 py-0.5 text-[8.5px] text-amber">
-                        PROTOTYPE
+                      <span
+                        className={`slug border px-1.5 py-0.5 text-[8.5px] ${
+                          id === "H100" ? "border-up text-up" : "border-rule-strong text-dim"
+                        }`}
+                      >
+                        {id === "H100" ? "LIVE" : "PLANNED"}
                       </span>
                     </td>
                   </tr>
@@ -83,8 +87,8 @@ export default function ProtocolPage() {
           </div>
           <p className="px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
             Each GPU class is its own pool against gUSD — no basket, no shared curve. The
-            prototype simulates these pools; the markets page shows the class, not chain
-            addresses.
+            pools execute onchain: H100 is deployed and trading from primary issuance
+            today, and the rest of the catalog deploys with the rollout.
           </p>
         </TuiPanel>
       </div>

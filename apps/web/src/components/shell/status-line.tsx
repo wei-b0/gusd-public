@@ -116,9 +116,11 @@ export function StatusLine() {
         )}
         <span aria-hidden className="h-px min-w-4 flex-1 bg-rule" />
         <span className="slug shrink-0 text-amber">Index ≠ market</span>
-        <span className="slug hidden shrink-0 text-amber sm:inline">
-          {oracle ? "Oracle index · trading simulated" : "Demo · all data simulated"}
-        </span>
+        {!oracle && (
+          <span className="slug hidden shrink-0 text-amber sm:inline">
+            Demo · all data simulated
+          </span>
+        )}
       </div>
     </footer>
   );

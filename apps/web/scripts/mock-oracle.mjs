@@ -132,6 +132,41 @@ function round4(n) {
   return Math.round(n * 10_000) / 10_000;
 }
 
+/** Materialize the regular interval grid over the observed series — port of
+ *  apps/oracle/src/server.ts regularCandleGrid: real buckets stay exactly as
+ *  computed; each interval with no observation becomes a flat candle at the
+ *  previous close (samples 0, flagged `carried`). Nothing is carried from
+ *  before the first real bucket — that would invent history. Keeping this
+ *  wire-identical to the real server is what lets the web's TV chart exercise
+ *  the same data path in demo/CI as in production. */
+function regularCandleGrid(rows, intervalSec, toMs) {
+  if (rows.length === 0) return rows;
+  const stepMs = intervalSec * 1000;
+  const lastBucket = Math.floor((toMs - 1) / stepMs) * stepMs;
+  const grid = [];
+  let prev = null;
+  let i = 0;
+  for (let t = rows[0].t; t <= lastBucket; t += stepMs) {
+    const row = i < rows.length && rows[i].t === t ? rows[i] : null;
+    if (row) {
+      i += 1;
+      grid.push(row);
+      prev = row;
+    } else if (prev) {
+      grid.push({
+        t,
+        open: prev.close,
+        high: prev.close,
+        low: prev.close,
+        close: prev.close,
+        samples: 0,
+        carried: true,
+      });
+    }
+  }
+  return grid;
+}
+
 // -- candidates ---------------------------------------------------------------
 
 const currentTick = () => Math.floor(Date.now() / PUBLISH_MS);
@@ -347,9 +382,11 @@ const server = http.createServer((req, res) => {
   }
 
   // Server-bucketed OHLC over the fixture's own candidate series — the same
-  // contract as the real /candles endpoint: epoch-ms or ISO from/to, an
-  // interval allowlist, a bucket cap, oldest-first candles, samples per
-  // bucket. Buckets with no observations do not exist (no interpolation).
+  // contract as the real /candles endpoint: epoch-ms or ISO from/to inside a
+  // plausible range, an interval allowlist, a bucket cap, oldest-first
+  // candles, samples per bucket, and a regular grid (silent intervals come
+  // back as carried flat candles at the previous close, flagged `carried`,
+  // nothing carried before the first real bucket).
   const candlesMatch = path.match(/^\/v1\/prices\/([^/]+)\/candles$/);
   if (candlesMatch) {
     const panelId = resolvePanel(decodeURIComponent(candlesMatch[1]));
@@ -358,24 +395,35 @@ const server = http.createServer((req, res) => {
     }
     const CANDLE_INTERVALS_SEC = [60, 300, 900, 1800, 3600, 21600, 43200, 86400, 604800];
     const CANDLE_MAX_BUCKETS = 2000;
+    const PLAUSIBLE_MIN_MS = Date.UTC(2020, 0, 1);
+    const PLAUSIBLE_MAX_MS = Date.UTC(2100, 0, 1);
     const intervalSec = Number(url.searchParams.get("intervalSec") ?? 60);
     if (!CANDLE_INTERVALS_SEC.includes(intervalSec)) {
       return sendJson(res, 400, { error: `intervalSec must be one of ${CANDLE_INTERVALS_SEC.join(", ")}` });
     }
-    // Absent → default; present but unparseable → NaN → 400 (matching the
-    // real server, which never silently substitutes for invalid input).
+    // Absent → default; present but unparseable or implausible → NaN → 400
+    // (matching the real server, which never silently substitutes).
     const parseTime = (v, dflt) => {
       if (v === null) return dflt;
       const n = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
-      return Number.isNaN(n) ? NaN : n;
+      if (!Number.isFinite(n)) return NaN;
+      return n >= PLAUSIBLE_MIN_MS && n <= PLAUSIBLE_MAX_MS ? n : NaN;
     };
     const to = parseTime(url.searchParams.get("to"), Date.now());
     const from = parseTime(url.searchParams.get("from"), to - 24 * 3_600_000);
     if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
-      return sendJson(res, 400, { error: "from must be a valid time before to" });
+      return sendJson(res, 400, {
+        error: `from must be an epoch-ms or ISO instant between 2020 and 2100, before to`,
+      });
     }
-    if ((to - from) / (intervalSec * 1000) > CANDLE_MAX_BUCKETS) {
-      return sendJson(res, 400, { error: "window exceeds the bucket cap" });
+    // Exact worst-case bucket span (the first bucket may open one step
+    // before `from`) — same formula as the real server's guard.
+    const stepMs = intervalSec * 1000;
+    const span = Math.floor((to - 1) / stepMs) - Math.floor(from / stepMs) + 1;
+    if (span > CANDLE_MAX_BUCKETS) {
+      return sendJson(res, 400, {
+        error: `window spans ${span} buckets; at most ${CANDLE_MAX_BUCKETS} per request — narrow it or raise intervalSec`,
+      });
     }
     // Candidates inside the window (historyFor is newest-first; newest last
     // here), bucketed the way the real server buckets index_candidates.
@@ -401,7 +449,11 @@ const server = http.createServer((req, res) => {
         buckets.set(bucketT, { t: bucketT, open: price, high: price, low: price, close: price, samples: 1 });
       }
     }
-    const candles = [...buckets.values()].sort((a, b) => a.t - b.t);
+    const candles = regularCandleGrid(
+      [...buckets.values()].sort((a, b) => a.t - b.t),
+      intervalSec,
+      to,
+    );
     return sendJson(res, 200, {
       gpuId: PANELS[panelId].gpuId,
       panelId,

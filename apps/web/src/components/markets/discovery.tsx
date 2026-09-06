@@ -16,7 +16,6 @@ import { fmtGusdCompact, fmtGusdPrecise, fmtPctSigned, fmtUsdPrecise, isFlatPct 
 import { Gusd } from "@/components/ui/pair";
 import { MarketsTable } from "@/components/markets/markets-table";
 import { Sparkline } from "@/components/charts/sparkline";
-import { IndexStatusChip } from "@/components/ui/index-status-chip";
 import { TuiPanel } from "@/components/ui/panel";
 
 export function MarketsDiscovery() {
@@ -157,10 +156,7 @@ export function MarketsDiscovery() {
                         </span>
                       </>
                     ) : (
-                      <>
-                        <IndexStatusChip status={m.indexStatus} />
-                        <span className="text-dim">benchmark series · 48h</span>
-                      </>
+                      <span className="text-dim">benchmark series · 48h</span>
                     )}
                   </p>
                 </Link>

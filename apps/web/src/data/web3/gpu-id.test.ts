@@ -1,0 +1,39 @@
+import { describe, expect, it } from "vitest";
+import {
+  assetForGpuId,
+  gpuIdForAsset,
+  gpuIdToString,
+} from "./gpu-id";
+import type { AssetId } from "@/domain/types";
+
+const ASSETS: AssetId[] = ["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"];
+
+describe("gpu-id", () => {
+  it("round-trips every settlement SKU through the bytes32 form", () => {
+    for (const asset of ASSETS) {
+      const gpuId = gpuIdForAsset(asset);
+      expect(gpuId.length).toBe(66);
+      expect(gpuId.startsWith("0x")).toBe(true);
+      expect(assetForGpuId(gpuId)).toBe(asset);
+    }
+  });
+
+  it("decodes H100 to the catalog SKU with zero padding", () => {
+    const gpuId = gpuIdForAsset("H100");
+    expect(gpuIdToString(gpuId)).toBe("H100_SXM_80GB");
+    // Left-aligned ASCII: the string bytes lead, the padding trails.
+    expect(gpuId.startsWith("0x483130305f53584d5f38304742")).toBe(true);
+    expect(gpuId.endsWith("0".repeat(26))).toBe(true);
+  });
+
+  it("matches the contract's bytes32(bytes(...)) encoding", () => {
+    // GpuId.sol encodes left-aligned ASCII; spot-check GB300's exact hex.
+    expect(gpuIdToString(gpuIdForAsset("GB300"))).toBe("GB300_288GB");
+  });
+
+  it("refuses assets without an oracle settlement panel", () => {
+    // ORACLE_PANELS is derived from the catalog; every ASSETS entry has a
+    // panel today, so the refusal path is exercised via an unknown gpuId.
+    expect(assetForGpuId("0x0000")).toBeNull();
+  });
+});

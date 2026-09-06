@@ -12,7 +12,6 @@ import Link from "next/link";
 import { marketMove24h, pairName, type Market } from "@/domain/types";
 import { fmtGusdCompact, fmtGusdPrecise, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
 import { TickFlash } from "@/components/ui/tick-flash";
-import { IndexStatusChip } from "@/components/ui/index-status-chip";
 
 export function MarketsTable({ markets }: { markets: Market[] }) {
   // One price per row. Where a venue prices the row (mock universe) the table
@@ -96,12 +95,9 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
             {fmtGusdPrecise(m.marketPrice)}
           </TickFlash>
         ) : m.indexPrice !== null ? (
-          <span className="inline-flex items-center justify-end gap-1.5">
-            <TickFlash value={m.indexPrice} flash="wire" className="num inline-block text-[13.5px] font-bold text-wire">
-              {fmtUsdPrecise(m.indexPrice)}
-            </TickFlash>
-            <IndexStatusChip status={m.indexStatus} />
-          </span>
+          <TickFlash value={m.indexPrice} flash="wire" className="num inline-block text-[13.5px] font-bold text-wire">
+            {fmtUsdPrecise(m.indexPrice)}
+          </TickFlash>
         ) : (
           <span className="num inline-block text-[13.5px] text-dim">—</span>
         )}

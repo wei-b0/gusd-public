@@ -108,7 +108,10 @@ export interface ProvidersResponse {
 /** One OHLC bucket over the canonical benchmark series
  *  (GET /v1/prices/:gpu/candles). `t` is the interval open, epoch ms;
  *  open/high/low/close aggregate the computed benchmarks that landed in the
- *  interval; samples is how many rows fed the bucket. */
+ *  interval; samples is how many rows fed the bucket. `carried` marks a
+ *  server-synthesized bucket: the interval was silent, so the grid carries
+ *  the previous close flat (o=h=l=c=prev.close, samples 0) to keep `t`
+ *  spacing regular — it asserts "nothing new landed", never a level. */
 export interface CandleDto {
   t: number;
   open: number;
@@ -116,6 +119,7 @@ export interface CandleDto {
   low: number;
   close: number;
   samples: number;
+  carried?: boolean;
 }
 
 export interface CandlesResponse {
