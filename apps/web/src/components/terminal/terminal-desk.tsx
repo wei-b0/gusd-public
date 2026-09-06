@@ -24,6 +24,7 @@ import {
   type MarketStats,
   type MarketTrade,
 } from "@/domain/types";
+import { Sparkline } from "@/components/charts/sparkline";
 import {
   fmtClock,
   fmtFull,
@@ -52,7 +53,7 @@ const TABS = ["Overview", "Chart", "Trade", "Activity"] as const;
 
 export function TerminalDesk({ asset }: { asset: AssetId }) {
   // The bound market comes from the route — the rail's links are the switch.
-  const [range, setRange] = useState<ChartRange>("5m");
+  const [range, setRange] = useState<ChartRange>("1h");
   const [tab, setTab] = useState<string>("Overview");
   const markets = useMarkets();
   const snapshot = useMarketSnapshot(asset, range);
@@ -319,19 +320,25 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
         {/* Right rail — the trade, then the Index feed. One task on mobile
             too: the feed is the ticket's reference leg, exactly where it
             sits on the desktop rail. */}
-        <div className={`order-2 space-y-5 lg:order-3 ${cellVis(["Trade"])}`}>
+        {/* Right rail — same tiling as the left: the Index feed frame grows
+            to the row's height, so the rail bottoms out with the plate and
+            the markets rail even when the plate is the tallest column;
+            slack lives inside the frame, beneath the feed. */}
+        <div className={`order-2 space-y-5 lg:order-3 lg:flex lg:flex-col ${cellVis(["Trade"])}`}>
           <div className={vis("Trade")}>
             <TuiPanel no="03" title="Trade" meta={<TradeMeta assetId={m.asset.id} />}>
               <OrderSlip assetId={m.asset.id} referencePrice={m.marketPrice ?? m.indexPrice} />
             </TuiPanel>
           </div>
 
-          <div className={vis("Trade")}>
+          <div className={`lg:grow ${vis("Trade")}`}>
             <TuiPanel
               title="Index feed"
+              className="lg:h-full lg:flex lg:flex-col"
+              bodyClassName="lg:flex lg:flex-1 lg:flex-col"
               meta={snapshot.quality ? `${snapshot.quality.sourcesLive}/${snapshot.quality.sourcesTotal} live` : "—"}
             >
-              <div className="space-y-1.5 p-3.5">
+              <div className="space-y-1.5 p-3.5 lg:flex-1 lg:flex lg:flex-col">
                 <div className="flex items-baseline justify-between border-b border-rule pb-2">
                   <span className="slug text-dim">
                     <Gusd /> {m.asset.id} Index
@@ -368,6 +375,21 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   value={snapshot.quality ? fmtStamp(snapshot.quality.updatedAt) : "—"}
                   tone="wire"
                 />
+                {/* The frame's slack carries the reference's own recent shape —
+                    the feed's story at board scale: wire phosphor, amber live
+                    end. Fills whatever the row height leaves, floors at its
+                    natural aspect when the rail sets the row. */}
+                <div className="border-b border-rule pb-2 lg:flex-1 lg:flex lg:flex-col">
+                  <span className="slug text-dim">Last 48h</span>
+                  <div className="mt-1.5 lg:flex-1">
+                    <Sparkline
+                      values={m.sparkline}
+                      stretch
+                      tone="wire"
+                      className="block h-10 w-full lg:h-full"
+                    />
+                  </div>
+                </div>
                 <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
                   Provider detail on the{" "}
                   <Link

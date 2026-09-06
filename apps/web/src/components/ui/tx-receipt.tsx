@@ -105,7 +105,7 @@ function TxDevPanelBody() {
   const connected = session.status === "connected";
 
   return (
-    <section className="mx-auto w-full max-w-360 px-3 pb-4 md:px-5">
+    <section className="mx-auto w-full max-w-300 px-3 pb-4 md:px-5">
       <TuiPanel
         no="99"
         title="Transactions"

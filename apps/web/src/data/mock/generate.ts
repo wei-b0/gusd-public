@@ -239,6 +239,8 @@ const RANGE_HOURS: Record<ChartRange, number> = {
   "5m": 72,
   "15m": 96,
   "30m": 120,
+  "1h": 132,
+  "4h": 156,
   "6h": 168,
   "12h": 240,
   "1d": 336,

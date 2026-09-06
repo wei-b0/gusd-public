@@ -316,7 +316,7 @@ function ReceiptRow({ p, now }: { p: PanelProviderDto; now: number | null }) {
  *  `index: []` is deliberate, and this is the surface that reads the
  *  buckets instead). */
 function ReferenceHistory({ bench, onBench }: { bench: AssetId; onBench: (id: AssetId) => void }) {
-  const [range, setRange] = useState<ChartRange>("15m");
+  const [range, setRange] = useState<ChartRange>("1h");
   const points = useOracleSeries(bench, range);
   // Real publication history can be much shallower than the selected range —
   // say so rather than let a short line imply a quiet market. The mock

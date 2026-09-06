@@ -12,6 +12,7 @@ export function Sparkline({
   width = 112,
   height = 30,
   stretch = false,
+  tone = "data",
 }: {
   values: number[];
   /** When set, the SVG scales to the box (viewBox locked to 112×30). */
@@ -21,6 +22,8 @@ export function Sparkline({
   /** Fill the whole box, distorting the aspect — for slots whose width is
    *  fluid (a rail row), where letterboxing would read as broken. */
   stretch?: boolean;
+  /** Stroke phosphor: data green, or wire cyan for benchmark traces. */
+  tone?: "data" | "wire";
 }) {
   if (values.length < 2) {
     return <svg width={width} height={height} className={className} aria-hidden />;
@@ -50,7 +53,7 @@ export function Sparkline({
       <path
         d={d}
         fill="none"
-        stroke="var(--ph-data)"
+        stroke={tone === "wire" ? "var(--color-wire)" : "var(--ph-data)"}
         strokeWidth={1.25}
         strokeLinecap="square"
         strokeLinejoin="round"

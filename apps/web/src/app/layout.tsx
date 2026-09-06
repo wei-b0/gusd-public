@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <SystemBar />
             <NetworkStrip />
             <FnKeys />
-            <main className="mx-auto w-full max-w-360 px-3 pt-5 pb-20 md:px-5">{children}</main>
+            <main className="mx-auto w-full max-w-300 px-3 pt-5 pb-20 md:px-5">{children}</main>
             <TxDevPanel />
             <StatusLine />
             <ConnectDialog />

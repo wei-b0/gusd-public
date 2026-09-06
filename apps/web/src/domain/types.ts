@@ -231,10 +231,10 @@ export interface MarketSnapshot {
 /** Chart candle intervals for the price sheet — grain selectors, the
  *  TradingView idiom. The window each grain fetches is the data layer's
  *  series plan; the label IS the candle grain (1m = one-minute candles). */
-export type ChartRange = "1m" | "5m" | "15m" | "30m" | "6h" | "12h" | "1d" | "1w";
+export type ChartRange = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "6h" | "12h" | "1d" | "1w";
 
 export const CHART_RANGES: readonly ChartRange[] = [
-  "1m", "5m", "15m", "30m", "6h", "12h", "1d", "1w",
+  "1m", "5m", "15m", "30m", "1h", "4h", "6h", "12h", "1d", "1w",
 ];
 
 /** Seconds of chart time one candle of a range aggregates. Mirrors the
@@ -244,6 +244,8 @@ export const RANGE_INTERVAL_SEC: Record<ChartRange, number> = {
   "5m": 300,
   "15m": 900,
   "30m": 1800,
+  "1h": 3_600,
+  "4h": 14_400,
   "6h": 21_600,
   "12h": 43_200,
   "1d": 86_400,
@@ -259,6 +261,8 @@ export const RANGE_WINDOW_MS: Record<ChartRange, number> = {
   "5m": 86_400_000,
   "15m": 3 * 86_400_000,
   "30m": 6 * 86_400_000,
+  "1h": 14 * 86_400_000,
+  "4h": 40 * 86_400_000,
   "6h": 60 * 86_400_000,
   "12h": 120 * 86_400_000,
   "1d": 365 * 86_400_000,

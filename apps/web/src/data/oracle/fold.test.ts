@@ -92,7 +92,7 @@ describe("foldCandidateIntoBuckets", () => {
   });
 
   it("keeps the grid ascending and regular on every supported interval", () => {
-    for (const intervalSec of [60, 300, 900, 1800, 3600, 21600, 43200, 86400, 604800]) {
+    for (const intervalSec of [60, 300, 900, 1800, 3600, 14400, 21600, 43200, 86400, 604800]) {
       const stepMs = intervalSec * 1000;
       const buckets = [bucket(0, 10, 12, 9, 11)];
       const next = foldCandidateIntoBuckets(buckets, { t: stepMs * 3 + 1, price: 12 }, intervalSec, 0);

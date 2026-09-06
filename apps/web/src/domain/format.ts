@@ -183,13 +183,13 @@ export function fmtClock(t: number): string {
 }
 
 /** Chart axis stamp, picked by candle interval: intraday minutes print
- *  clock time, 6h/12h print the day and hour, day-plus prints the date. */
+ *  clock time, 1h–12h print the day and hour, day-plus prints the date. */
 export function fmtAxisTime(t: number, range: ChartRange): string {
   const d = new Date(t);
   if (range === "1m" || range === "5m" || range === "15m" || range === "30m") {
     return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   }
-  if (range === "6h" || range === "12h") {
+  if (range === "1h" || range === "4h" || range === "6h" || range === "12h") {
     return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${pad(d.getUTCHours())}:00`;
   }
   return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]}`;

@@ -35,7 +35,7 @@ const CATALOG = [
 const PARAM_ROWS = [
   { param: ":gpu", routes: "all /v1/prices/:gpu/*", note: "panel id (H100_PANEL_V1) or gpu id (H100_SXM_80GB); anything else is a 404" },
   { param: "limit", routes: "history", note: "1–500 candidates, default 100" },
-  { param: "intervalSec", routes: "candles", note: "one of 60 · 300 · 900 · 1800 · 3600 · 21600 · 43200 · 86400 · 604800 (seconds)" },
+  { param: "intervalSec", routes: "candles", note: "one of 60 · 300 · 900 · 1800 · 3600 · 14400 · 21600 · 43200 · 86400 · 604800 (seconds)" },
   { param: "from · to", routes: "candles", note: "epoch ms or ISO instants; absent → trailing 24 h; a window may span at most 2000 buckets" },
 ] as const;
 
@@ -254,7 +254,7 @@ data: {"gpuId":"H100_SXM_80GB",
 const HISTORY_ROWS = [
   {
     label: "Intervals",
-    body: "intervalSec ∈ 60 300 900 1800 3600 21600 43200 86400 604800 — one minute to one week. Each bucket aggregates the computed benchmarks that landed within it.",
+    body: "intervalSec ∈ 60 300 900 1800 3600 14400 21600 43200 86400 604800 — one minute to one week. Each bucket aggregates the computed benchmarks that landed within it.",
   },
   {
     label: "Window · order",
