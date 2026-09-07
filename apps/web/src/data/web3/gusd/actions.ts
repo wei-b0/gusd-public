@@ -14,7 +14,7 @@ import type { Address } from "viem";
 import type { TxSpec } from "@/domain/types";
 import { applyBps, parseGusd, parseStable } from "@/domain/units";
 import { getContracts } from "../contracts";
-import { contractReads } from "../reads";
+import { contractReadsWithIndexer } from "../reads-protocol";
 import { GUSD_ABI } from "../abis/gusd";
 import { STABLE_ROUTER_ABI } from "../abis/stable_router";
 import { planApproval, type ApprovalNeed } from "../approvals";
@@ -48,7 +48,7 @@ export interface GusdFlowQuote {
 /** Mint preview: reserve asset in → gUSD out (raw). */
 export async function quoteMint(underlyingAmountRaw: bigint): Promise<GusdFlowQuote> {
   const { gusd } = getContracts();
-  const reads = contractReads();
+  const reads = contractReadsWithIndexer();
   const [gusdOutRaw, state] = await Promise.all([
     gusd.read.previewMint([underlyingAmountRaw]),
     reads.gusdState(),
@@ -64,7 +64,7 @@ export async function quoteMint(underlyingAmountRaw: bigint): Promise<GusdFlowQu
 /** Redeem preview: gUSD in → underlying out (raw). */
 export async function quoteRedeem(gusdAmountRaw: bigint): Promise<GusdFlowQuote> {
   const { gusd } = getContracts();
-  const reads = contractReads();
+  const reads = contractReadsWithIndexer();
   const [underlyingOutRaw, state] = await Promise.all([
     gusd.read.previewRedeem([gusdAmountRaw]),
     reads.gusdState(),
@@ -103,7 +103,7 @@ export async function quoteMintViaStable(
   const underlying = addresses.underlying as Address;
   const [underlyingInRaw, state] = await Promise.all([
     quoteStableSwap(stable, underlying, amountInRaw),
-    contractReads().gusdState(),
+    contractReadsWithIndexer().gusdState(),
   ]);
   if (underlyingInRaw === null) return null;
   const minUnderlyingRaw = applyBps(underlyingInRaw, toleranceBps, "down");

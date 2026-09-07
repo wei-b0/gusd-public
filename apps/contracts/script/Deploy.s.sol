@@ -281,6 +281,12 @@ contract Deploy is Script {
         vm.serializeAddress(json, "quoter", d.quoter);
         vm.serializeAddress(json, "weth", d.weth);
         string memory out = vm.serializeUint(json, "chainId", block.chainid);
+        // Indexer anchor: the simulation runs at the pre-broadcast block, so
+        // every deployment event lands AFTER this — and startBlock may
+        // overlap empty blocks harmlessly, but never skip an event.
+        // serializeUint's return is the updated serialization; the discarded
+        // return here silently dropped the key from the written file.
+        out = vm.serializeUint(json, "startBlock", block.number > 0 ? block.number - 1 : 0);
         vm.writeJson(out, string.concat("./deployments/", vm.toString(block.chainid), ".json"));
     }
 }

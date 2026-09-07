@@ -1,0 +1,21 @@
+# Build context for apps/indexer/Dockerfile (context = repo root). Keep the
+# context lean — node_modules/.git/caches are rebuilt or never needed in-image.
+node_modules
+**/node_modules
+.git
+.gitignore
+**/dist
+**/.next
+**/.turbo
+**/.ponder
+**/.env
+**/.env.local
+**/.env*.local
+coverage
+**/coverage
+docs
+apps/web/.next
+apps/contracts/broadcast
+apps/contracts/cache
+apps/contracts/out
+apps/contracts/lib

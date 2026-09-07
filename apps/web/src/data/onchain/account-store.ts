@@ -16,7 +16,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { AssetId } from "@/domain/types";
 import { assetForGpuId } from "@/data/web3/gpu-id";
-import { contractReads } from "@/data/web3/reads";
+import { contractReadsWithIndexer } from "@/data/web3/reads-protocol";
 import { getActiveChain } from "@/data/web3/chains";
 
 /** One GPU position held in the connected wallet (18-dec product size). */
@@ -94,7 +94,9 @@ export class OnChainAccountStore {
     if (!address || this.refreshing) return this.refreshing ?? Promise.resolve();
     this.refreshing = (async () => {
       try {
-        const reads = contractReads();
+        // State reads via the indexed seam (RPC fallback inside); the
+        // execution paths below keep their own direct reads.
+        const reads = contractReadsWithIndexer();
         const chainId = getActiveChain().id;
         const [balances, positions] = await Promise.all([
           reads.balances(address as `0x${string}`),

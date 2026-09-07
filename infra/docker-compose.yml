@@ -16,6 +16,54 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - gusd-internal
+
+  # Protocol indexer (Ponder). Writes ONLY its gusd_index_* schemas in the
+  # same Postgres; its HTTP surface (/health /ready /status /metrics) stays
+  # on the private network — publish nothing. Healthcheck is Ponder's
+  # /health LIVENESS (200 immediately), so a long backfill never restarts
+  # the container; readiness/alerting rides /ready + /metrics internally.
+  indexer:
+    build:
+      context: ..
+      dockerfile: apps/indexer/Dockerfile
+    image: gusd-indexer:local
+    container_name: gusd-indexer
+    restart: unless-stopped
+    environment:
+      INDEXER_DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
+      # Per-deployment + stable views schemas (gusd_index_<env>_v<n> /
+      # gusd_index_<env>). Override both together in infra/.env.
+      DATABASE_SCHEMA: ${INDEXER_DEPLOYMENT_SCHEMA:-gusd_index_docker_v1}
+      DATABASE_VIEWS_SCHEMA: ${INDEXER_VIEWS_SCHEMA:-gusd_index_docker}
+      # One chain per process. INDEXER_RPC_URL_<id> must exist for every id
+      # in this list — add lines to infra/.env when changing it.
+      INDEXER_CHAINS: ${INDEXER_CHAINS:-31337}
+      INDEXER_RPC_URL_31337: ${INDEXER_RPC_URL_31337:-http://host.docker.internal:8545}
+      INDEXER_MAX_BLOCK_RANGE_31337: ${INDEXER_MAX_BLOCK_RANGE_31337:-}
+      INDEXER_DEPLOYMENTS_DIR: /repo/apps/contracts/deployments
+      PORT: ${INDEXER_PORT:-42069}
+      PONDER_LOG_LEVEL: ${PONDER_LOG_LEVEL:-info}
+    extra_hosts:
+      # Linux parity for the host.docker.internal RPC default (Docker Desktop
+      # provides it natively on macOS).
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${PORT:-42069}/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    networks:
+      - gusd-internal
 
 volumes:
   gusd-postgres-data:
+
+networks:
+  gusd-internal:
+    driver: bridge

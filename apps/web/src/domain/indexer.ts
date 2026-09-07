@@ -18,7 +18,8 @@
  *
  * Each event must resolve to the user it concerns:
  *
- *   Minted / Redeemed   → `to` (the minter / the redeemer)
+ *   Minted              → `to` (the minter)
+ *   Redeemed            → `from` (the redeemer)
  *   Issued              → `to`
  *   Buy                 → `recipient` (the payer is the same wallet here —
  *                         one user is one wallet)
@@ -39,7 +40,9 @@ export interface IndexedEvent {
   blockNumber: number;
   logIndex: number;
   txHash: string;
-  /** Wall-clock the indexer ingested the block — not chain time. */
+  /** Chain time the event settled at (block.timestamp × 1000), mapped at
+   *  the API boundary from the stored settlement seconds — never wall
+   *  clock, so replays and re-backfills produce identical values. */
   seenAtMs: number;
   /** Decoded args; numeric fields arrive as strings (JSON has no bigint). */
   data: Record<string, unknown>;

@@ -16,7 +16,7 @@ import type { ActionPlan, ActionRecord, QuoteSnapshot } from "@/domain/actions";
 import type { EarnDirection, EarnQuote, EarnState } from "@/domain/types";
 import { fmtGusdLedger } from "@/domain/format";
 import type { ContractReads } from "../reads";
-import { contractReads } from "../reads";
+import { contractReadsWithIndexer } from "../reads-protocol";
 import { simulateWrite } from "../simulate";
 import { SGUSD_ABI } from "../abis/sgusd";
 import { getContracts } from "../contracts";
@@ -51,7 +51,7 @@ export class OnChainEarnPort implements EarnPort {
   private refreshing: Promise<void> | null = null;
 
   constructor(private readonly deps: OnChainEarnPortDeps) {
-    this.reads = deps.reads ?? contractReads();
+    this.reads = deps.reads ?? contractReadsWithIndexer();
   }
 
   getEarnState(): EarnState {

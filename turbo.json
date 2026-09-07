@@ -1,6 +1,7 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "tui",
+  "globalEnv": ["RUN_ANVIL_TESTS", "RUN_DB_TESTS"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
