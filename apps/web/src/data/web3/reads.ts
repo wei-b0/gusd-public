@@ -45,8 +45,25 @@ export interface ContractReads {
   allowance(token: Address, owner: Address, spender: Address): Promise<bigint>;
   /** gUSD / reserve-asset / sgUSD balances in one batch, product units. */
   balances(owner: Address): Promise<{ gUsd: number; stable: number; sGusd: number }>;
-  /** GPU positions across every registered gpuId (18-decimal raw + product). */
-  positions(owner: Address): Promise<Array<{ gpuId: `0x${string}`; token: Address; raw: bigint; size: number }>>;
+  /** GPU positions across every registered gpuId (18-decimal raw + product).
+   *  The basis fields arrive only from the indexed seam (cost basis is an
+   *  indexer capability): the direct-RPC implementation leaves them
+   *  undefined, which maps to null — "—" — downstream. Raw gUSD strings. */
+  positions(owner: Address): Promise<
+    Array<{
+      gpuId: `0x${string}`;
+      token: Address;
+      raw: bigint;
+      size: number;
+      /** gUSD (6-dec raw) per whole GPU — null unless basis is complete. */
+      avgEntryRaw?: string | null;
+      /** Realized PnL, gUSD 6-dec raw — null unless basis is complete. */
+      realizedPnlGusdRaw?: string | null;
+      basisState?: string | null;
+      /** The gate reason when a basis field is null, verbatim. */
+      basisReason?: string | null;
+    }>
+  >;
   /** Market registration state (token, issuance gate, pool). */
   registration(gpuId: `0x${string}`): Promise<GpuRegistration | null>;
   /** Issuance quote: base, fee, total — gUSD product units. */

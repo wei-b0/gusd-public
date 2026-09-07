@@ -19,11 +19,11 @@
  * is the connect button until one exists.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import type { ActionRecord } from "@/domain/actions";
+import { isActionTerminal, type ActionOrigin, type ActionRecord } from "@/domain/actions";
 import type { EarnDirection, EarnQuote } from "@/domain/types";
-import { fmtClock, fmtFull, fmtGusdLedger, fmtHash } from "@/domain/format";
+import { fmtClock, fmtFull, fmtGusdLedger, fmtGusdPrecise, fmtHash, fmtUnits } from "@/domain/format";
 import { formatStableRaw } from "@/domain/units";
 import { LedgerRow } from "@/components/ui/ledger";
 import { ActionStatus, PhaseTag } from "@/components/ui/action-status";
@@ -37,6 +37,8 @@ import {
   useWalletSession,
 } from "@/data/services";
 import { getOnchainAccountStore, useOnchainAccount } from "@/data/onchain/account-store";
+import { useWalletActivity, useProtocolStats } from "@/data/protocol/hooks";
+import { mergeActivity, vaultDeployedGusd, sgusdSupply, type ActivityRow } from "@/data/protocol/map";
 import { stablesFor, type StableMeta } from "@/data/web3/stables";
 import { contractReads } from "@/data/web3/reads";
 import { Gusd, SGusd } from "@/components/ui/pair";
@@ -277,7 +279,9 @@ function EarnDesk() {
     >
       <div className="p-3.5">
         {/* Public rate block — readable before any connection. The share
-            price is the yield; there is deliberately no APY figure. */}
+            price is the yield; there is deliberately no APY figure. The
+            two indexed cells print the earning layer's real size once the
+            indexer stands behind this deployment (— before that). */}
         <dl className="grid grid-cols-2 gap-x-8 md:grid-cols-3">
           <Cell
             label={<><SGusd /> rate</>}
@@ -285,6 +289,7 @@ function EarnDesk() {
             sub={<><Gusd /> per <SGusd /></>}
             tone="bright"
           />
+          <EarnVaultCells />
         </dl>
 
         <div className="mt-3.5 border-t border-rule pt-3.5">
@@ -450,23 +455,94 @@ function Cell({
 /* ------------------------------------------------------------------ */
 
 /**
- * This session's desk actions, newest first — mints and redemptions with
- * their live phases and receipt hashes. Session-local evidence, never a
- * portfolio or history source.
+ * One desk's activity ledger: the indexed rows for its verbs merged with
+ * this session's desk actions, newest first. Session cards fold away once
+ * the indexer reflects their transactions (the indexed row tells the same
+ * story with chain facts); in-flight cards always stay, and indexing lag
+ * never renders as a failure.
  */
-function MintActivity() {
+function ActivityLedger({
+  no,
+  title,
+  verbs,
+  origins,
+  emptyCopy,
+}: {
+  no: string;
+  title: string;
+  verbs: readonly string[];
+  origins: readonly ActionOrigin[];
+  emptyCopy: string;
+}) {
   const actions = useActions();
-  const rows = actions.filter((r) => r.origin === "mint" || r.origin === "redeem");
+  const activity = useWalletActivity();
+  const indexed = useMemo(
+    () =>
+      mergeActivity(activity.executions, activity.events, 100).filter((r) =>
+        verbs.includes(r.verb),
+      ),
+    [activity.executions, activity.events, verbs],
+  );
+  const indexedHashes = useMemo(
+    () => new Set(indexed.map((r) => r.txHash.toLowerCase())),
+    [indexed],
+  );
+  const session = actions.filter(
+    (r) =>
+      origins.includes(r.origin) &&
+      (!isActionTerminal(r.phase) ||
+        !r.steps
+          .flatMap((s) => (s.hash !== null ? [s.hash.toLowerCase()] : []))
+          .some((h) => indexedHashes.has(h))),
+  );
+  const entries = [
+    ...indexed.map((row) => ({ kind: "indexed" as const, key: row.id, t: row.t, row })),
+    ...session.map((record) => ({
+      kind: "session" as const,
+      key: record.id,
+      t: record.createdAt,
+      record,
+    })),
+  ].sort((a, b) => b.t - a.t);
+  const total = entries.length;
   return (
-    <TuiPanel no="02" title="Mint activity" meta={rows.length ? `${rows.length} this session` : "this session"}>
+    <TuiPanel
+      no={no}
+      title={title}
+      meta={
+        indexed.length > 0
+          ? `${total} entries · newest first`
+          : total > 0
+            ? `${total} this session`
+            : "this session"
+      }
+    >
       <div className="border-t border-rule">
-        {rows.length === 0 ? (
-          <p className="px-3.5 py-3 text-[11.5px] text-dim">Mints and redemptions print here once a wallet acts.</p>
+        {total === 0 ? (
+          <p className="px-3.5 py-3 text-[11.5px] text-dim">{emptyCopy}</p>
         ) : (
-          rows.map((r) => <ActionRow key={r.id} record={r} />)
+          entries.map((e) =>
+            e.kind === "indexed" ? (
+              <IndexedLedgerRow key={e.key} row={e.row} />
+            ) : (
+              <ActionRow key={e.key} record={e.record} />
+            ),
+          )
         )}
       </div>
     </TuiPanel>
+  );
+}
+
+function MintActivity() {
+  return (
+    <ActivityLedger
+      no="02"
+      title="Mint activity"
+      verbs={["Mint", "Redeem"]}
+      origins={["mint", "redeem"]}
+      emptyCopy="Mints and redemptions print here once a wallet acts."
+    />
   );
 }
 
@@ -474,11 +550,21 @@ function ActionRow({ record }: { record: ActionRecord }) {
   // The chain hash of the action's most recent transaction — the record
   // linkage ids are the store's own and never print.
   const lastHash = [...record.steps].reverse().find((s) => s.hash)?.hash ?? null;
+  const reflected =
+    record.indexed !== null &&
+    record.steps.some((s) => s.hash !== null && record.indexed!.includes(s.hash.toLowerCase()));
   return (
     <div aria-live="polite" className="border-b border-rule px-3.5 py-2 last:border-b-0">
       <div className="flex items-baseline justify-between gap-2">
         <span className="slug text-dim">{record.label}</span>
-        <PhaseTag phase={record.phase} />
+        <span className="flex items-baseline gap-1.5">
+          {reflected && (
+            <span className="slug border border-rule-strong px-1.5 py-0.5 text-[8.5px] text-dim">
+              indexed
+            </span>
+          )}
+          <PhaseTag phase={record.phase} />
+        </span>
       </div>
       <div className="mt-1 flex items-baseline justify-between gap-2">
         <span className="num text-[11px] text-dim">{lastHash ? fmtHash(lastHash) : "—"}</span>
@@ -489,6 +575,31 @@ function ActionRow({ record }: { record: ActionRecord }) {
           {record.error}
         </p>
       )}
+    </div>
+  );
+}
+
+/** An indexed event/execution as the ledger prints it — chain hash, chain
+ *  time, and the "indexed" provenance chip. */
+function IndexedLedgerRow({ row }: { row: ActivityRow }) {
+  const label =
+    row.size !== null && row.asset !== null
+      ? `${row.verb} ${fmtUnits(row.size)} ${row.asset}`
+      : row.notional !== null
+        ? `${row.verb} ${fmtGusdPrecise(row.notional)} gUSD`
+        : row.verb;
+  return (
+    <div className="border-b border-rule px-3.5 py-2 last:border-b-0">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="slug text-dim">{label}</span>
+        <span className="slug border border-rule-strong px-1.5 py-0.5 text-[8.5px] text-dim">
+          indexed
+        </span>
+      </div>
+      <div className="mt-1 flex items-baseline justify-between gap-2">
+        <span className="num text-[11px] text-dim">{fmtHash(row.txHash)}</span>
+        <span className="num text-[11px] text-dim">{fmtClock(row.t)} UTC</span>
+      </div>
     </div>
   );
 }
@@ -560,6 +671,9 @@ function Balances({ account }: { account: ReturnType<typeof useAccount> }) {
  */
 function FundingStableRows({ account }: { account: ReturnType<typeof useAccount> }) {
   const session = useWalletSession();
+  // The store snapshot (not the projected Account) carries loadedAt — the
+  // re-arm signal a post-tx refresh provides.
+  const onchain = useOnchainAccount(getOnchainAccountStore());
   const stables = useStableAssets();
   const reserve = stables[0] ?? null;
   const others = stables.slice(1);
@@ -590,8 +704,10 @@ function FundingStableRows({ account }: { account: ReturnType<typeof useAccount>
     return () => {
       alive = false;
     };
+    // loadedAt: a post-tx account refresh re-arms this read, so the funding
+    // rows recover from a failed read the same way the reserve row does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.connected, session.address, key]);
+  }, [account.connected, session.address, key, onchain.loadedAt]);
 
   if (!account.connected) return null;
   return (
@@ -614,24 +730,45 @@ function FundingStableRows({ account }: { account: ReturnType<typeof useAccount>
 }
 
 function EarningLedger() {
-  const actions = useActions();
-  const rows = actions.filter((r) => r.origin === "earn" || r.origin === "unearn");
   return (
-    <TuiPanel no="02" title="Earning ledger" meta={rows.length ? `${rows.length} this session` : "this session"}>
-      <div className="border-t border-rule">
-        {rows.length === 0 ? (
-          <p className="px-3.5 py-3 text-[11.5px] text-dim">Stakes and unstakes print here once a wallet acts.</p>
-        ) : (
-          rows.map((r) => <ActionRow key={r.id} record={r} />)
-        )}
-      </div>
-    </TuiPanel>
+    <ActivityLedger
+      no="02"
+      title="Earning ledger"
+      verbs={["Stake", "Unstake"]}
+      origins={["earn", "unearn"]}
+      emptyCopy="Stakes and unstakes print here once a wallet acts."
+    />
   );
 }
 
 /* ------------------------------------------------------------------ */
 /* Shared bits                                                         */
 /* ------------------------------------------------------------------ */
+
+/** The indexed vault-size cells for the Earn desk's public block — gUSD
+ *  deployed by the vault and the sGUSD supply. Inert without the indexer:
+ *  both print "—" and take no space in mock mode. */
+function EarnVaultCells() {
+  const stats = useProtocolStats();
+  const vault = stats?.vault ?? null;
+  if (vault === null) return null;
+  const deployed = vaultDeployedGusd(vault);
+  const supply = sgusdSupply(vault);
+  return (
+    <>
+      <Cell
+        label={<>Vault deployed</>}
+        value={deployed === null ? "—" : fmtGusdLedger(deployed)}
+        sub="gUSD in the earning layer"
+      />
+      <Cell
+        label={<><SGusd /> supply</>}
+        value={supply === null ? "—" : `${fmtFull(supply)} sGUSD`}
+        sub="minted − burned shares"
+      />
+    </>
+  );
+}
 
 function Row({ label, value }: { label: ReactNode; value: string }) {
   return (

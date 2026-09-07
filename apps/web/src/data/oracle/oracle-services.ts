@@ -11,6 +11,8 @@ import type { Services } from "@/domain/ports";
 import { MockServices } from "../mock/mock-services";
 import { getOracleFeed } from "./feed";
 import { OracleMarketData } from "./oracle-market-data";
+import { protocolMarketEnabled } from "@/data/protocol/enabled";
+import { getProtocolMarketStore } from "@/data/protocol/market-store";
 
 export class OracleServices implements Services {
   readonly marketData: OracleMarketData;
@@ -25,7 +27,10 @@ export class OracleServices implements Services {
   constructor() {
     const mock = new MockServices();
     const feed = getOracleFeed();
-    this.marketData = new OracleMarketData(mock.marketData, feed);
+    // The indexed protocol store rides the market seam only when the
+    // indexer is configured; mock market mode never gets one.
+    const protocol = protocolMarketEnabled() ? getProtocolMarketStore() : null;
+    this.marketData = new OracleMarketData(mock.marketData, feed, protocol);
     this.trading = mock.trading;
     this.auth = mock.auth;
     this.earn = mock.earn;

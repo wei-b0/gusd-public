@@ -57,6 +57,7 @@ import {
   sparklineFromPoints,
 } from "./map";
 import { ORACLE_PANELS, isOracleBacked, type OracleAssetId } from "./panel-map";
+import type { ProtocolMarketStore } from "@/data/protocol/market-store";
 
 const DAY_MS = 86_400_000;
 const THIRTY_DAY_MS = 30 * DAY_MS;
@@ -98,6 +99,7 @@ export class OracleMarketData implements MarketDataPort {
   private listeners = new Set<(markets: Market[]) => void>();
   private innerUnsubscribe: (() => void) | null = null;
   private feedUnsubscribe: (() => void) | null = null;
+  private protocolUnsubscribe: (() => void) | null = null;
   private dirty = true;
   private cachedMarkets: Market[] | null = null;
   private cachedSnapshots = new Map<string, MarketSnapshot | null>();
@@ -108,16 +110,25 @@ export class OracleMarketData implements MarketDataPort {
      *  prototypes; its market numbers never surface in oracle mode. */
     private inner: MarketDataPort,
     private feed: OracleFeedStore,
+    /** The indexed protocol store, when the indexer is configured. Adds the
+     *  AMM tape and protocol liquidity/volume to the enrichment fields —
+     *  and NOTHING else: prices stay benchmark-only (null protocol ⇒ the
+     *  exact pre-indexer behavior). */
+    private protocol: ProtocolMarketStore | null = null,
   ) {}
 
   subscribe(listener: (markets: Market[]) => void): () => void {
     this.listeners.add(listener);
     if (!this.innerUnsubscribe) {
-      // One inner + one feed subscription for the whole tree: the mock tick
-      // loop (and the earn accrual riding it) stays alive exactly once, and
-      // the feed opens exactly one connection.
+      // One inner + one feed (+ one protocol) subscription for the whole
+      // tree: the mock tick loop (and the earn accrual riding it) stays
+      // alive exactly once, the feed opens exactly one connection, and the
+      // protocol store polls exactly once.
       this.innerUnsubscribe = this.inner.subscribe(() => this.notify());
       this.feedUnsubscribe = this.feed.subscribe(() => this.notify());
+      if (this.protocol) {
+        this.protocolUnsubscribe = this.protocol.subscribe(() => this.notify());
+      }
     }
     return () => {
       this.listeners.delete(listener);
@@ -126,6 +137,8 @@ export class OracleMarketData implements MarketDataPort {
         this.innerUnsubscribe = null;
         this.feedUnsubscribe?.();
         this.feedUnsubscribe = null;
+        this.protocolUnsubscribe?.();
+        this.protocolUnsubscribe = null;
       }
     };
   }
@@ -154,8 +167,10 @@ export class OracleMarketData implements MarketDataPort {
 
   getRecentTrades(asset: AssetId) {
     if (!isOracleBacked(asset)) return this.inner.getRecentTrades(asset);
-    // No market tape exists — no trades, no invented prints.
-    return NO_TRADES;
+    // The tape is the indexer's AMM swap history for the canonical pool
+    // (oldest-first, per the port contract) — or the stable empty ref while
+    // the store is absent or hasn't landed rows.
+    return this.protocol?.tradesFor(asset) ?? NO_TRADES;
   }
 
   /** The API's current Index price for one asset — the one real price, and
@@ -193,6 +208,11 @@ export class OracleMarketData implements MarketDataPort {
     if (!isOracleBacked(m.asset.id)) return m;
     const gpuId = ORACLE_PANELS[m.asset.id].gpuId;
     const candidates = this.candidatesFor(m.asset.id);
+    // Enrichment fields come from the indexed protocol store when one is
+    // wired (nulls without it — the pre-indexer shape). They are market
+    // facts only: volume, count, depth. No field here feeds a price.
+    const volume24hUsd = this.protocol?.volume24hOf(m.asset.id) ?? null;
+    const liquidityUsd = this.protocol?.liquidityUsdOf(m.asset.id) ?? null;
     if (candidates.length === 0) {
       return {
         ...m,
@@ -204,8 +224,8 @@ export class OracleMarketData implements MarketDataPort {
         basisPct: null,
         indexStatus: "unavailable",
         indexTelemetry: null,
-        volume24hUsd: null,
-        liquidityUsd: null,
+        volume24hUsd,
+        liquidityUsd,
         sparkline: [],
       };
     }
@@ -227,8 +247,8 @@ export class OracleMarketData implements MarketDataPort {
       basisPct: null,
       indexStatus: mapIndexStatus(latest, now),
       indexTelemetry: mapIndexTelemetry(candidates, now),
-      volume24hUsd: null,
-      liquidityUsd: null,
+      volume24hUsd,
+      liquidityUsd,
       sparkline:
         hourly && hourly.buckets.length > 1
           ? sparklineFromBuckets(hourly.buckets)
@@ -251,6 +271,12 @@ export class OracleMarketData implements MarketDataPort {
     const gpuId = ORACLE_PANELS[asset].gpuId;
     const candidates = this.candidatesFor(asset);
     const market = this.overlayMarket(base.market, now);
+    // The tape and the 24h trade count are the indexer's; nothing else in
+    // the stats block changes (avgTradeSize stays null — hourly buckets
+    // carry no GPU-unit volume, and fabricating a gUSD figure into a units
+    // cell would be dishonest).
+    const recentTrades = this.protocol?.tradesFor(asset) ?? NO_TRADES;
+    const trades24h = this.protocol?.trades24hOf(asset) ?? null;
     if (candidates.length === 0) {
       return {
         ...base,
@@ -258,8 +284,8 @@ export class OracleMarketData implements MarketDataPort {
         candles: [],
         index: [],
         providers: [],
-        recentTrades: NO_TRADES,
-        stats: NO_STATS,
+        recentTrades,
+        stats: trades24h === null ? NO_STATS : { ...NO_STATS, trades24h },
         quality: null,
       };
     }
@@ -316,14 +342,14 @@ export class OracleMarketData implements MarketDataPort {
       // arrives with the market layer.)
       index: [],
       providers,
-      recentTrades: NO_TRADES,
+      recentTrades,
       stats: {
         open24h: day.open,
         high24h: day.high,
         low24h: day.low,
         high30d: month.high,
         low30d: month.low,
-        trades24h: null,
+        trades24h,
         avgTradeSize: null,
       },
       quality: mapQuality(latest),

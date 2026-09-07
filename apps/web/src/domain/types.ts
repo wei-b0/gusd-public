@@ -278,6 +278,16 @@ export interface Position {
    * figure every P&L row leans on. UI renders "—".
    */
   avgEntry: number | null;
+  /**
+   * Realized PnL from the indexer's protocol-attributable basis (gUSD).
+   * Null unless the basis is complete — same gate as avgEntry.
+   */
+  realizedPnl: number | null;
+  /**
+   * Why the basis is gated (the indexer's `reason`, verbatim), when
+   * realizedPnl/avgEntry are null. Feeds the "—" tooltip; null otherwise.
+   */
+  basisReason: string | null;
 }
 
 export interface Account {

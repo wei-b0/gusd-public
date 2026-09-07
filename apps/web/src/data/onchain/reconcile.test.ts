@@ -170,4 +170,46 @@ describe("makeReconciler", () => {
     expect(result.indexed).toBe(null);
     expect(h.getUserEvents).not.toHaveBeenCalled();
   });
+
+  it("re-pulls the indexed stores and fires onSettled after them", async () => {
+    const h = makeHarness({ indexer: true });
+    const order: string[] = [];
+    h.deps.activity = {
+      refresh: vi.fn(async () => {
+        order.push("activity");
+      }),
+    };
+    h.deps.protocol = {
+      refresh: vi.fn(async () => {
+        order.push("protocol");
+      }),
+    };
+    h.deps.onSettled = vi.fn(() => {
+      order.push("onSettled");
+    });
+    const reconcile = makeReconciler(h.deps);
+
+    await reconcile(["t1"]);
+
+    expect(h.deps.activity!.refresh).toHaveBeenCalledTimes(1);
+    expect(h.deps.protocol!.refresh).toHaveBeenCalledTimes(1);
+    expect(h.deps.onSettled).toHaveBeenCalledTimes(1);
+    // The settled seam fires only after the stores have re-pulled.
+    expect(order).toEqual(["activity", "protocol", "onSettled"]);
+  });
+
+  it("best-effort: a failing indexed store never fails the reconcile", async () => {
+    const h = makeHarness({ indexer: true });
+    h.deps.activity = { refresh: vi.fn(() => Promise.reject(new Error("indexer down"))) };
+    h.deps.protocol = { refresh: vi.fn(() => Promise.reject(new Error("indexer down"))) };
+    h.deps.onSettled = vi.fn(() => {
+      throw new Error("cache seam");
+    });
+    const reconcile = makeReconciler(h.deps);
+
+    const result = await reconcile(["t1"]);
+
+    expect(result.balances).toBe(true);
+    expect(h.deps.onSettled).toHaveBeenCalledTimes(1); // still fires
+  });
 });

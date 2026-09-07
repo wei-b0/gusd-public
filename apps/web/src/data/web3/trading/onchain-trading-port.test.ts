@@ -112,6 +112,7 @@ class FakeActions implements ActionPort {
       quote: plan.quote,
       error: null,
       txIds: [],
+      indexed: null,
       createdAt: 1,
       updatedAt: 1,
     };
@@ -138,7 +139,15 @@ class FakeStore {
     address: null as string | null,
     gUsd: 0,
     sGusd: 0,
-    positions: [] as readonly { gpuId: `0x${string}`; asset: string | null; token: Address; size: number }[],
+    positions: [] as readonly {
+      gpuId: `0x${string}`;
+      asset: string | null;
+      token: Address;
+      size: number;
+      avgEntry?: number | null;
+      realizedPnl?: number | null;
+      basisReason?: string | null;
+    }[],
   };
   get() {
     return this.snap;
@@ -359,7 +368,43 @@ describe("account projection", () => {
     expect(account.address).toBe(OWNER);
     expect(account.gUsdBalance).toBe(10);
     expect(account.sGUsdBalance).toBe(5);
-    expect(account.positions).toEqual([{ asset: "H100", size: 2, avgEntry: null }]);
+    // A basis-less source (direct RPC) normalizes to null, never undefined.
+    expect(account.positions).toEqual([
+      { asset: "H100", size: 2, avgEntry: null, realizedPnl: null, basisReason: null },
+    ]);
+  });
+
+  it("carries indexed cost basis through the projection", async () => {
+    const { port, store } = makePort();
+    store.set({
+      address: OWNER,
+      gUsd: 10,
+      sGusd: 5,
+      positions: [
+        {
+          gpuId: GPU_ID,
+          asset: "H100",
+          token: GPU_TOKEN,
+          size: 2,
+          avgEntry: 2.5,
+          realizedPnl: 0.4,
+          basisReason: null,
+        },
+        {
+          gpuId: "0x03",
+          asset: "A100",
+          token: GPU_TOKEN,
+          size: 1,
+          avgEntry: null,
+          realizedPnl: null,
+          basisReason: "transfers_missing",
+        },
+      ],
+    });
+    expect(port.getAccount().positions).toEqual([
+      { asset: "H100", size: 2, avgEntry: 2.5, realizedPnl: 0.4, basisReason: null },
+      { asset: "A100", size: 1, avgEntry: null, realizedPnl: null, basisReason: "transfers_missing" },
+    ]);
   });
 
   it("notifies subscribers when the store moves", async () => {

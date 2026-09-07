@@ -23,6 +23,7 @@ import type {
   ActionPlan,
   ActionRecord,
   ActionStep,
+  ReconcileOutcome,
 } from "@/domain/actions";
 import { isActionTerminal } from "@/domain/actions";
 import type { TxPort } from "@/domain/ports";
@@ -35,6 +36,15 @@ export const MAX_QUOTE_AGE_MS = 30_000;
 export const MAX_QUOTE_AGE_BLOCKS = 2;
 
 const STALE_QUOTE_VOICE = "Quote expired — review the new quote and try again.";
+
+/** Extract the ReconcileOutcome-shaped fields from any reconcile result —
+ *  the reconciler returns a richer record; the contract is duck-typed so
+ *  ports may keep plain `Promise<unknown>` signatures. */
+function indexedFromOutcome(outcome: unknown): readonly string[] | null {
+  if (outcome === null || typeof outcome !== "object" || !("indexed" in outcome)) return null;
+  const indexed = (outcome as ReconcileOutcome).indexed;
+  return indexed ?? null;
+}
 
 /** The stale-quote guard reads the head block; injectable for tests. */
 export type BlockNumberReader = () => Promise<number | null>;
@@ -123,6 +133,7 @@ export class ActionRunner {
       quote: plan.quote,
       error: null,
       txIds: [],
+      indexed: null,
       createdAt: t0,
       updatedAt: t0,
     };
@@ -170,11 +181,14 @@ export class ActionRunner {
     if (typeof outcome !== "string") return this.settle(id, outcome.txPhase, outcome.voice);
     txIds.push(outcome);
 
-    // Confirmed on-chain — reconcile derived state, then complete.
+    // Confirmed on-chain — reconcile derived state, then complete. Whatever
+    // the outcome reports about indexed evidence lands on the record: it is
+    // what draws the confirmed-vs-indexed distinction in the ledgers.
     this.patch(id, { phase: "reconciling" });
     if (plan.reconcile) {
       try {
-        await plan.reconcile(txIds);
+        const outcome = await plan.reconcile(txIds);
+        this.patch(id, { indexed: indexedFromOutcome(outcome) });
       } catch (err) {
         // The transaction confirmed; a view that failed to refresh is a
         // console problem, not a user failure.

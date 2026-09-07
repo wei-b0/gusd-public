@@ -234,7 +234,14 @@ function projectAccount(snap: {
   gUsd: number;
   sGusd: number;
   stable: number;
-  positions: readonly { gpuId: `0x${string}`; asset: AssetId | null; size: number }[];
+  positions: readonly {
+    gpuId: `0x${string}`;
+    asset: AssetId | null;
+    size: number;
+    avgEntry: number | null;
+    realizedPnl: number | null;
+    basisReason: string | null;
+  }[];
 }): Account {
   return {
     connected: snap.address !== null,
@@ -243,10 +250,22 @@ function projectAccount(snap: {
     gUsdBalance: snap.gUsd,
     sGUsdBalance: snap.sGusd,
     stableBalance: snap.stable,
-    // Pre-indexer there is no cost-basis source: avgEntry stays null and
-    // the UI prints "—" rather than a fabricated 0.
+    // Cost basis arrives from the indexed seam (avgEntry/realizedPnl null
+    // until complete, `basisReason` naming the gate): the UI prints the
+    // figure or "—" with the reason, never a fabricated 0. Snapshots from
+    // a basis-less source normalize to null, never undefined.
     positions: snap.positions.flatMap((p) =>
-      p.asset ? [{ asset: p.asset, size: p.size, avgEntry: null }] : [],
+      p.asset
+        ? [
+            {
+              asset: p.asset,
+              size: p.size,
+              avgEntry: p.avgEntry ?? null,
+              realizedPnl: p.realizedPnl ?? null,
+              basisReason: p.basisReason ?? null,
+            },
+          ]
+        : [],
     ),
   };
 }

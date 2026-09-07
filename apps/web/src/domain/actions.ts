@@ -129,6 +129,26 @@ export interface ActionRecord {
   error: string | null;
   /** Every transaction hash-bearing record id this action drove. */
   txIds: readonly string[];
+  /**
+   * Tx hashes the indexer already reflected after this action confirmed —
+   * what drew the "indexed" provenance chip in the ledgers. Null when the
+   * indexer is absent or hasn't caught up yet: the ledger keeps "this
+   * session" provenance. Indexing lag is not a failure and never renders
+   * as one.
+   */
+  indexed: readonly string[] | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * What reconciliation learned after the action confirmed. `reconcile` may
+ * return this (or any richer result carrying these fields); the runner
+ * copies what it finds onto the record.
+ */
+export interface ReconcileOutcome {
+  /** Tx hashes the indexer already reflects — null when there is no
+   *  indexer or it hasn't caught up: ledgers keep "this session"
+   *  provenance. */
+  indexed?: readonly string[] | null;
 }

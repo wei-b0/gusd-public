@@ -99,6 +99,7 @@ class FakeActions implements ActionPort {
         quote: null,
         error: null,
         txIds: [],
+        indexed: null,
         createdAt: 1,
         updatedAt: 1,
       }

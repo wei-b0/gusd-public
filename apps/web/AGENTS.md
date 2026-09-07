@@ -21,10 +21,14 @@ All vars are documented in `.env.example`. The modes that matter:
   active chain; remote chains also require their `NEXT_PUBLIC_RPC_URL_<id>`.
 - **`NEXT_PUBLIC_ENABLE_TX_DEV=1`** — mounts the dev-only Transactions panel
   (panel 99) for driving the full tx lifecycle against Anvil.
-- **`NEXT_PUBLIC_INDEXER_URL`** — the Ponder indexer's base URL. ABSENT (the
-  default) ⇒ the indexer client is inert: zero network calls, user state comes
-  from direct contract reads, and session ledgers keep "this session"
-  provenance. The wire contract lives in `src/domain/indexer.ts`.
+- **`NEXT_PUBLIC_INDEXER_URL`** — the Ponder indexer's base URL (the oracle
+  API's `/v1/protocol` proxy). ABSENT (the default) ⇒ the indexer client is
+  inert: zero network calls, user state comes from direct contract reads, and
+  session ledgers keep "this session" provenance. When set it also feeds the
+  protocol-market layer (`src/data/protocol/`) — the terminal AMM tape, cost
+  basis, the merged wallet activity ledger, and 24h volume / in-range depth
+  enrichment — which is equally inert without it. Canonical benchmark prices
+  never come from this URL. The wire contract lives in `src/domain/indexer.ts`.
 
 Gated test suites: `RUN_DB_TESTS=1` (needs the `gusd-postgres` container) runs
 the route-handler and identity integration tests; `RUN_ANVIL_TESTS=1` (needs a

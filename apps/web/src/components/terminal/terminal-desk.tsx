@@ -25,7 +25,9 @@ import {
   type MarketTrade,
 } from "@/domain/types";
 import { Sparkline } from "@/components/charts/sparkline";
+import { useNowTick } from "@/components/oracle/use-oracle-feed";
 import {
+  fmtAge,
   fmtClock,
   fmtFull,
   fmtGusd,
@@ -39,6 +41,8 @@ import {
   isFlatPct,
 } from "@/domain/format";
 import { useAccount, useMarketSnapshot, useMarkets, useServices } from "@/data/services";
+import { useOraclePublication } from "@/data/protocol/hooks";
+import { oraclePublicationRow } from "@/data/protocol/map";
 import { TvPriceChart } from "@/components/charts/tv-price-chart";
 import { OrderSlip } from "@/components/markets/order-slip";
 import { AllTape } from "@/components/markets/all-tape";
@@ -294,9 +298,12 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                     {basis === null ? "Basis —" : `${premium ? "Premium" : "Discount"} ${fmtPctSigned(basis)}`}
                   </span>
                 )}
-                {hasMarket && (
+                {/* Market facts arrive once the indexer lands the pool — they
+                    show with or without a venue leg. Depth is the in-range
+                    gUSD-side figure, a depth number, never a price. */}
+                {(hasMarket || m.volume24hUsd !== null || m.liquidityUsd !== null) && (
                   <span className="num text-[11.5px] text-dim">
-                    Volume {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)} gUSD · Liquidity{" "}
+                    Volume {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)} gUSD · In-range depth{" "}
                     {m.liquidityUsd === null ? "—" : fmtGusdCompact(m.liquidityUsd)} gUSD
                   </span>
                 )}
@@ -375,6 +382,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   value={snapshot.quality ? fmtStamp(snapshot.quality.updatedAt) : "—"}
                   tone="wire"
                 />
+                <OnchainPublication asset={m.asset.id} />
                 {/* The frame's slack carries the reference's own recent shape —
                     the feed's story at board scale: wire phosphor, amber live
                     end. Fills whatever the row height leaves, floors at its
@@ -588,6 +596,26 @@ function Reference({ asset }: { asset: AssetSpec }) {
       </div>
     </TuiPanel>
   );
+}
+
+/**
+ * The indexed onchain publication behind this asset's Index — health and
+ * provenance only (staleness, live age, the publishing block). The published
+ * value itself never renders here or anywhere: the display price is the
+ * benchmark, full stop. Renders nothing without the indexer.
+ */
+function OnchainPublication({ asset }: { asset: AssetId }) {
+  const state = useOraclePublication(asset);
+  const now = useNowTick(30_000);
+  if (state === null) return null;
+  const row = oraclePublicationRow(state, now === null ? null : Math.floor(now / 1000));
+  const parts: string[] = [row.staleness];
+  if (row.updatedAtSec !== null && now !== null) parts.push(fmtAge(row.updatedAtSec * 1000, now));
+  if (row.lastPublishedBlockNumber !== null) {
+    parts.push(`block ${row.lastPublishedBlockNumber.toLocaleString("en-US")}`);
+  }
+  if (row.overridden) parts.push("overridden");
+  return <Row label="Onchain publication" value={parts.join(" · ")} tone="wire" />;
 }
 
 function Row({

@@ -3,9 +3,11 @@
  *
  * Two distinct things happen when an action confirms, in order:
  *
- *   1. balances — the account store re-reads every balance and position
- *      from the contracts. That is the interim user-state source and it
- *      always runs.
+ *   1. stores — the account store re-reads every balance and position from
+ *      the contracts (always); then the indexed wallet-activity and market
+ *      stores re-pull in parallel (when wired), and the settled seam
+ *      (onSettled) drops quote caches so the next quote reads post-tx
+ *      state.
  *   2. indexed — when an indexer stands behind this deployment, the
  *      confirmed transactions' events are fetched from it. The result is
  *      what draws the confirmed-vs-indexed distinction in the ledgers;
@@ -36,6 +38,16 @@ export interface ReconcilerDeps {
   indexer?: IndexerPort | null;
   /** Tx lookup, to resolve the settled blocks the events must follow. */
   tx?: Pick<TxPort, "get">;
+  /** The indexed wallet-activity store — re-pulls the wallet's indexed
+   *  rows so ledgers flip to "indexed" without a reload. */
+  activity?: { refresh(): Promise<void> };
+  /** The indexed market store — re-polls pool/tape state the terminal
+   *  shows (enrichment figures move when an action settles). */
+  protocol?: { refresh(): Promise<void> };
+  /** Called after the stores have been re-pulled, before indexed evidence
+   *  is fetched — the seam for dropping quote caches so the next quote
+   *  reads post-tx state. */
+  onSettled?: () => void;
 }
 
 /**
@@ -64,6 +76,24 @@ export function makeReconciler(
         await deps.earn.refresh();
       } catch {
         // Derived view; its own refresh logs failures.
+      }
+    }
+
+    // 1b. The indexed stores — activity (wallet rows) and protocol (pool /
+    //     tape state) re-pull in parallel, then the settled seam fires so
+    //     quote caches rebuild from post-tx state. Best-effort like
+    //     everything above: a failed re-pull is a stale view for a moment,
+    //     never a failed action.
+    await Promise.allSettled(
+      [deps.activity?.refresh(), deps.protocol?.refresh()].filter(
+        (p): p is Promise<void> => p !== undefined,
+      ),
+    );
+    if (deps.onSettled) {
+      try {
+        deps.onSettled();
+      } catch {
+        // A cache teardown that throws is a console problem.
       }
     }
 

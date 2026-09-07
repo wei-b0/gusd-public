@@ -7,11 +7,21 @@
  * and actions are the only gated things in the product.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { pairName } from "@/domain/types";
 import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, isFlatPct } from "@/domain/format";
+import { isActionTerminal, type ActionRecord } from "@/domain/actions";
 import { useAccount, useActions, useEarn, useMarkets, useServices } from "@/data/services";
+import { useWalletActivity, useProtocolStats } from "@/data/protocol/hooks";
+import {
+  basisFromVault,
+  gusdNumber,
+  mergeActivity,
+  sgusdSupply,
+  vaultDeployedGusd,
+  type ActivityRow,
+} from "@/data/protocol/map";
 import { PhaseTag } from "@/components/ui/action-status";
 import { TuiPanel } from "@/components/ui/panel";
 
@@ -65,6 +75,42 @@ function PortfolioBook() {
   const markets = useMarkets();
   const earn = useEarn();
   const actions = useActions();
+  const activity = useWalletActivity();
+
+  // The indexed ledger: the wallet's routed executions + raw protocol
+  // events, merged and deduped (a Buy event inside an execution's tx
+  // yields to the execution row, which carries the legs).
+  const indexedRows = useMemo(
+    () => mergeActivity(activity.executions, activity.events, 100),
+    [activity.executions, activity.events],
+  );
+  // Session cards fold away once the indexer reflects their transactions —
+  // the indexed row then tells the same story with chain facts. In-flight
+  // cards always stay. A terminal card whose tx hasn't been indexed yet
+  // keeps "this session" provenance (indexing lag is not a failure).
+  const indexedHashes = useMemo(
+    () => new Set(indexedRows.map((r) => r.txHash.toLowerCase())),
+    [indexedRows],
+  );
+  const recordHashes = (a: ActionRecord): string[] =>
+    a.steps.flatMap((s) => (s.hash !== null ? [s.hash.toLowerCase()] : []));
+  const sessionCards = actions.filter((a) => {
+    if (!isActionTerminal(a.phase)) return true;
+    const hashes = recordHashes(a);
+    return hashes.length > 0
+      ? !hashes.some((h) => indexedHashes.has(h))
+      : true;
+  });
+  const hasIndexed = indexedRows.length > 0;
+  // The earning layer's cost basis (panel 03) and its aggregate size
+  // (panel 04) — null fields print "—" until the indexer lands them.
+  const vaultBasis =
+    activity.vaultPosition === null ? null : basisFromVault(activity.vaultPosition);
+  const stats = useProtocolStats();
+  const vault = stats?.vault ?? null;
+  const vaultDeployed = vault === null ? null : vaultDeployedGusd(vault);
+  const vaultSupply = vault === null ? null : sgusdSupply(vault);
+  const vaultRevenue = vault === null ? null : gusdNumber(vault.revenueGusd);
 
   // Mark to the displayed price: the venue price when a market layer exists,
   // otherwise the API's Index — never a simulated stand-in for either. The
@@ -156,7 +202,11 @@ function PortfolioBook() {
                         </td>
                         <td className="num px-2.5 py-2.5 text-right text-data">{fmtUnits(p.size)}</td>
                         <td className="num px-2.5 py-2.5 text-right text-data">
-                          {p.avgEntry === null ? "—" : fmtGusdPrecise(p.avgEntry)}
+                          {p.avgEntry === null ? (
+                            <span title={p.basisReason ?? undefined}>—</span>
+                          ) : (
+                            fmtGusdPrecise(p.avgEntry)
+                          )}
                           <span className="ml-1 text-[10px] text-dim">{unit}</span>
                         </td>
                         <td className="num px-2.5 py-2.5 text-right text-data">
@@ -177,6 +227,12 @@ function PortfolioBook() {
                           {!flat && pnl !== null && (
                             <span aria-hidden className="ml-1 text-[8px]">
                               {pnl >= 0 ? "▲" : "▼"}
+                            </span>
+                          )}
+                          {p.realizedPnl !== null && (
+                            <span className="block text-[10px] font-normal text-dim">
+                              realized {p.realizedPnl < 0 ? "−" : "+"}
+                              {fmtNotional(Math.abs(p.realizedPnl))}
                             </span>
                           )}
                         </td>
@@ -205,39 +261,89 @@ function PortfolioBook() {
             <dl className="border-t border-rule">
               <Line label="sGUSD balance" value={`${fmtFull(account.sGUsdBalance)} sGUSD`} />
               <Line label="Value at rate" value={fmtGusd(sGUsdValue)} />
+              {vaultBasis === null || vaultBasis.avgEntry === null ? (
+                <Line
+                  label="Avg entry"
+                  value="—"
+                  title={vaultBasis?.basisReason ?? undefined}
+                />
+              ) : (
+                <Line label="Avg entry" value={`${fmtGusdPrecise(vaultBasis.avgEntry)} gUSD / sGUSD`} />
+              )}
+              {vaultBasis?.realizedPnl !== null && vaultBasis !== null && (
+                <Line
+                  label="Realized"
+                  value={`${vaultBasis.realizedPnl < 0 ? "−" : "+"}${fmtNotional(Math.abs(vaultBasis.realizedPnl))} gUSD`}
+                />
+              )}
               <Line label="Stake and unstake" value="gUSD section ▸" href="/gusd" />
             </dl>
           </TuiPanel>
 
-          <TuiPanel no="04" title="Protocol positions" meta="lp · borrowing · staking">
-            <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
-              No protocol positions yet. Liquidity provision, borrowed exposure, and other
-              protocol roles appear here as they launch.
-            </p>
+          <TuiPanel
+            no="04"
+            title="Protocol positions"
+            meta={vault !== null ? "earning layer" : "lp · borrowing · staking"}
+          >
+            {vault === null ? (
+              <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
+                No protocol positions yet. Liquidity provision, borrowed exposure, and other
+                protocol roles appear here as they launch.
+              </p>
+            ) : (
+              <dl className="border-t border-rule">
+                <Line
+                  label="Vault · gUSD deployed"
+                  value={vaultDeployed === null ? "—" : fmtGusd(vaultDeployed)}
+                />
+                <Line
+                  label="sGUSD supply"
+                  value={vaultSupply === null ? "—" : `${fmtFull(vaultSupply)} sGUSD`}
+                />
+                <Line
+                  label="Revenue to vault"
+                  value={vaultRevenue === null ? "—" : fmtGusd(vaultRevenue)}
+                />
+              </dl>
+            )}
           </TuiPanel>
         </div>
 
-        {/* 05 — activity: this session's executed actions, newest first */}
-        <TuiPanel no="05" title="Activity" meta={`${actions.length} actions · this session · newest first`}>
-          {actions.length === 0 ? (
+        {/* 05 — activity: the indexed ledger merged with this session's
+            in-flight / not-yet-indexed actions, newest first */}
+        <TuiPanel
+          no="05"
+          title="Activity"
+          meta={
+            hasIndexed
+              ? `${indexedRows.length + sessionCards.length} entries · newest first`
+              : `${sessionCards.length} actions · this session · newest first`
+          }
+        >
+          {indexedRows.length === 0 && sessionCards.length === 0 ? (
             <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
-              Nothing has cleared yet. Orders, mints, and stakes print here as they settle;
-              full history waits for the indexer.
+              Nothing has cleared yet. Orders, mints, and stakes print here as they settle.
             </p>
           ) : (
             <div className="border-t border-rule">
-              {actions.map((a) => (
-                <div
-                  key={a.id}
-                  className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0"
-                >
-                  <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(a.createdAt)}</span>
-                  <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
-                    {a.label}
-                  </span>
-                  <PhaseTag phase={a.phase} />
+              {mergeFeed(indexedRows, sessionCards).map((entry) =>
+                entry.kind === "indexed" ? (
+                  <IndexedRow key={entry.key} row={entry.row} />
+                ) : (
+                  <SessionRow key={entry.key} record={entry.record} />
+                ),
+              )}
+              {(activity.hasMoreExecutions || activity.hasMoreEvents) && (
+                <div className="px-3.5 py-2.5">
+                  <button
+                    type="button"
+                    onClick={activity.loadEarlier}
+                    className="slug border border-rule-strong px-2 py-1 text-[9px] text-dim transition-colors hover:text-amber"
+                  >
+                    Load earlier
+                  </button>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </TuiPanel>
@@ -246,7 +352,17 @@ function PortfolioBook() {
   );
 }
 
-function Line({ label, value, href }: { label: string; value: string; href?: string }) {
+function Line({
+  label,
+  value,
+  href,
+  title,
+}: {
+  label: string;
+  value: string;
+  href?: string;
+  title?: string;
+}) {
   return (
     <div className="flex items-baseline justify-between gap-2 border-b border-rule px-3.5 py-2.5 last:border-b-0">
       <dt className="slug text-dim">
@@ -258,7 +374,72 @@ function Line({ label, value, href }: { label: string; value: string; href?: str
           label
         )}
       </dt>
-      <dd className="num whitespace-nowrap text-[12.5px] text-data">{value}</dd>
+      <dd className="num whitespace-nowrap text-[12.5px] text-data" title={title}>
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+// --- activity feed ----------------------------------------------------------------
+
+type FeedEntry =
+  | { kind: "indexed"; key: string; t: number; row: ActivityRow }
+  | { kind: "session"; key: string; t: number; record: ActionRecord };
+
+/** One merged feed: indexed ledger rows interleaved with the session's
+ *  in-flight / not-yet-indexed action cards, newest first. */
+function mergeFeed(rows: readonly ActivityRow[], cards: readonly ActionRecord[]): FeedEntry[] {
+  const entries: FeedEntry[] = [
+    ...rows.map((row): FeedEntry => ({ kind: "indexed", key: row.id, t: row.t, row })),
+    ...cards.map((record): FeedEntry => ({
+      kind: "session",
+      key: record.id,
+      t: record.createdAt,
+      record,
+    })),
+  ];
+  return entries.sort((a, b) => b.t - a.t);
+}
+
+/** The row's product label: "Buy 2.000 H100", or the verb with its gUSD
+ *  figure when the event carries no GPU side ("Mint 10.0000 gUSD"). */
+function rowLabel(r: ActivityRow): string {
+  if (r.size !== null && r.asset !== null) return `${r.verb} ${fmtUnits(r.size)} ${r.asset}`;
+  if (r.notional !== null) return `${r.verb} ${fmtGusdPrecise(r.notional)} gUSD`;
+  return r.verb;
+}
+
+function IndexedRow({ row }: { row: ActivityRow }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0">
+      <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(row.t)}</span>
+      <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
+        {rowLabel(row)}
+      </span>
+      <span className="slug border border-rule-strong px-1.5 py-0.5 text-[8.5px] text-dim">
+        indexed
+      </span>
+    </div>
+  );
+}
+
+function SessionRow({ record }: { record: ActionRecord }) {
+  const hashes = record.steps.flatMap((s) => (s.hash !== null ? [s.hash.toLowerCase()] : []));
+  const reflected =
+    record.indexed !== null && hashes.some((h) => record.indexed!.includes(h));
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0">
+      <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(record.createdAt)}</span>
+      <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
+        {record.label}
+      </span>
+      {reflected && (
+        <span className="slug border border-rule-strong px-1.5 py-0.5 text-[8.5px] text-dim">
+          indexed
+        </span>
+      )}
+      <PhaseTag phase={record.phase} />
     </div>
   );
 }

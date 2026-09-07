@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { TuiPanel } from "@/components/ui/panel";
+import { ProtocolPoolsTable } from "@/components/protocol/protocol-pools-table";
 
 export const metadata: Metadata = {
   title: "Protocol — gUSD",
@@ -48,43 +48,7 @@ export default function ProtocolPage() {
       {/* 02 — markets & pools */}
       <div className="mt-5">
         <TuiPanel no="02" title="Markets & pools" meta="one pool per GPU class">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-[12px]">
-              <thead>
-                <tr className="border-b border-rule-strong text-left">
-                  <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Pair</th>
-                  <th scope="col" className="slug px-2.5 py-2 text-dim">Venue</th>
-                  <th scope="col" className="slug px-2.5 py-2 text-dim">Hook</th>
-                  <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const).map((id) => (
-                  <tr key={id} className="border-b border-rule last:border-b-0">
-                    <td className="py-2.5 pl-3.5 pr-4">
-                      <Link
-                        href={`/terminal/${id}`}
-                        className="num text-[13px] font-bold text-data transition-colors hover:text-bright"
-                      >
-                        {id} / gUSD
-                      </Link>
-                    </td>
-                    <td className="px-2.5 py-2.5 text-[12px] text-data">Uniswap v4</td>
-                    <td className="px-2.5 py-2.5 text-[12px] text-data">gUSD hook</td>
-                    <td className="py-2.5 pr-3.5 text-right">
-                      <span
-                        className={`slug border px-1.5 py-0.5 text-[8.5px] ${
-                          id === "H100" ? "border-up text-up" : "border-rule-strong text-dim"
-                        }`}
-                      >
-                        {id === "H100" ? "LIVE" : "PLANNED"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ProtocolPoolsTable />
           <p className="px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
             Each GPU class is its own pool against gUSD — no basket, no shared curve. The
             pools execute onchain: H100 is deployed and trading from primary issuance

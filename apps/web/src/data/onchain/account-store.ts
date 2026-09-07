@@ -18,6 +18,7 @@ import type { AssetId } from "@/domain/types";
 import { assetForGpuId } from "@/data/web3/gpu-id";
 import { contractReadsWithIndexer } from "@/data/web3/reads-protocol";
 import { getActiveChain } from "@/data/web3/chains";
+import { basisNumber } from "@/data/protocol/map";
 
 /** One GPU position held in the connected wallet (18-dec product size). */
 export interface OnchainPosition {
@@ -26,6 +27,12 @@ export interface OnchainPosition {
   asset: AssetId | null;
   token: string;
   size: number;
+  /** gUSD per whole GPU from the indexed basis — null unless complete. */
+  avgEntry: number | null;
+  /** Realized PnL (gUSD) from the indexed basis — null unless complete. */
+  realizedPnl: number | null;
+  /** The indexer's gate reason when the basis fields are null. */
+  basisReason: string | null;
 }
 
 export interface OnchainAccountSnapshot {
@@ -116,6 +123,9 @@ export class OnChainAccountStore {
             asset: assetForGpuId(p.gpuId),
             token: p.token,
             size: p.size,
+            avgEntry: basisNumber(p.avgEntryRaw),
+            realizedPnl: basisNumber(p.realizedPnlGusdRaw),
+            basisReason: p.basisReason ?? null,
           })),
         });
       } catch (err) {

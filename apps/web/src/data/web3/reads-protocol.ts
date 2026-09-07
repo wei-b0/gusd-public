@@ -20,6 +20,7 @@ import { getContracts } from "./contracts";
 import { getActiveChain } from "./chains";
 import { contractReads, type ContractReads, type GpuRegistration, type SGusdState } from "./reads";
 import { formatGpuUnits, formatGusdRaw } from "@/domain/units";
+import type { WalletPositionDto, WalletPositionsBody } from "../protocol/dto";
 
 /** Read lazily so tests can stub the env without import juggling. */
 export function indexerUrl(): string | null {
@@ -137,20 +138,37 @@ export function contractReadsWithIndexer(): ContractReads {
 
     async positions(owner) {
       try {
-        const [gpuList, rows] = await Promise.all([
+        // Existence + size stay balance-derived (the balance join below is
+        // the truth of what the wallet holds); the basis endpoint only
+        // attaches avgEntry/realizedPnl by gpuId. A basis fetch that fails
+        // degrades to null basis ("—"), never to a wrong figure.
+        const [gpuList, rows, basisBody] = await Promise.all([
           fetchJson<{ gpus: GpuAssetBody[] }>("/gpus"),
           indexedBalances(owner),
+          fetchJson<WalletPositionsBody>(`/wallets/${owner.toLowerCase()}/positions`),
         ]);
         if (gpuList === null) return rpc.positions(owner);
+        const chainId = getActiveChain().id;
+        const basisByGpu = new Map<string, WalletPositionDto>();
+        if (basisBody !== null) {
+          for (const p of basisBody.positions) {
+            if (p.chainId === chainId) basisByGpu.set(p.gpuId.toLowerCase(), p);
+          }
+        }
         const entries = gpuList.gpus
           .filter((g) => (rows.get(g.token.toLowerCase()) ?? 0n) > 0n)
           .map((g) => {
             const raw = rows.get(g.token.toLowerCase())!;
+            const basis = basisByGpu.get(g.gpuId.toLowerCase());
             return {
               gpuId: g.gpuId as `0x${string}`,
               token: g.token as Address,
               raw,
               size: formatGpuUnits(raw),
+              avgEntryRaw: basis?.avgEntryGusd ?? null,
+              realizedPnlGusdRaw: basis?.realizedPnlGusd ?? null,
+              basisState: basis?.basisState ?? null,
+              basisReason: basis?.reason ?? null,
             };
           });
         return entries;

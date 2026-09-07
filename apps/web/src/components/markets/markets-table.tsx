@@ -16,13 +16,12 @@ import { TickFlash } from "@/components/ui/tick-flash";
 import { Sparkline } from "@/components/charts/sparkline";
 
 /**
- * Venue-flow figures (Volume / Liquidity) are dormant while traction is
- * early: with no venue layer they printed an unbroken column of "—" and
- * priced nothing. The columns stay built — flip to restore them — and the
- * figures they will carry come from actual swap volume and pool depth,
- * never approximation.
+ * Venue-flow figures (Volume / Liquidity). The Volume column carries real
+ * 24h swap volume and Liquidity the in-range gUSD-side depth of the
+ * canonical pool — both from the Ponder indexer via the market seam. Rows
+ * with no indexed pool print "—" (mock mode never invents them).
  */
-const SHOW_MARKET_FLOWS = false;
+const SHOW_MARKET_FLOWS = true;
 
 export function MarketsTable({ markets }: { markets: Market[] }) {
   // One price per row. Where a venue prices the row (mock universe) the table

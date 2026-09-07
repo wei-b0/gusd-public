@@ -17,13 +17,12 @@ import { MarketsTable } from "@/components/markets/markets-table";
 import { TuiPanel } from "@/components/ui/panel";
 
 /**
- * Class-overview extras (total volume, total liquidity, median premium) are
- * dormant while traction is early — the strip leads with the two figures a
- * young class actually has, its leader and its laggard. The cells stay
- * built; flip to restore them (and widen the ledger back to its five-track
- * grid) when the class has flow to report.
+ * Class-overview extras (total volume, total liquidity, median premium).
+ * Volume and liquidity are real indexed figures now (Ponder via the market
+ * seam); median premium still needs a venue leg, so its cell prints "—"
+ * until one exists.
  */
-const SHOW_CLASS_EXTRAS = false;
+const SHOW_CLASS_EXTRAS = true;
 
 export function MarketsDiscovery() {
   const markets = useMarkets();
@@ -90,7 +89,7 @@ export function MarketsDiscovery() {
                 value={totalVolume === null ? "—" : fmtGusdCompact(totalVolume)}
               />
               <Cell
-                label={<>Total liquidity / <span className="normal-case">gUSD</span></>}
+                label={<>Total in-range depth / <span className="normal-case">gUSD</span></>}
                 value={totalLiquidity === null ? "—" : fmtGusdCompact(totalLiquidity)}
               />
               <Cell

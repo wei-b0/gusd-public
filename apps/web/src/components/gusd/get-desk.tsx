@@ -272,8 +272,10 @@ export function GetDesk() {
     return () => {
       alive = false;
     };
+    // onchain.loadedAt: a post-tx account refresh re-arms this read, so the
+    // funding row recovers from a failed read like the desk's own balance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asset?.address, isReserve, walletBound, session.address]);
+  }, [asset?.address, isReserve, walletBound, session.address, onchain.loadedAt]);
 
   async function onConnect() {
     setError(null);

@@ -193,12 +193,15 @@ describe("positions", () => {
           ],
         });
       }
-      if (url.includes("/wallets/")) {
+      if (url.endsWith(`/wallets/${OWNER.toLowerCase()}/balances`)) {
         return json(200, {
           balances: [
             { chainId: 31337, token: GPU_TOKEN.toLowerCase(), balance: "2000000000000000000", transferCount: 1, lastTransferAtSec: 1, lastTransferBlockNumber: 1 },
           ],
         });
+      }
+      if (url.endsWith(`/wallets/${OWNER.toLowerCase()}/positions`)) {
+        return json(200, { positions: [], vault: null });
       }
       throw new Error(`unexpected ${url}`);
     };
@@ -206,6 +209,95 @@ describe("positions", () => {
     const out = await r.positions(OWNER);
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({ gpuId: H100_GPU_ID, token: GPU_TOKEN, raw: 2_000_000_000_000_000_000n, size: 2 });
+  });
+
+  it("attaches the indexed basis by gpuId (case-insensitive, chain-filtered)", async () => {
+    h.fetchResponder = (url) => {
+      if (url.endsWith("/gpus")) {
+        return json(200, {
+          gpus: [
+            { gpuId: H100_GPU_ID, token: GPU_TOKEN, canonicalPoolId: CANONICAL_POOL, issuanceEnabled: true, poolFee: 3000, tickSpacing: 60, issuanceFeeBps: 50 },
+          ],
+        });
+      }
+      if (url.endsWith(`/wallets/${OWNER.toLowerCase()}/balances`)) {
+        return json(200, {
+          balances: [
+            { chainId: 31337, token: GPU_TOKEN.toLowerCase(), balance: "2000000000000000000", transferCount: 1, lastTransferAtSec: 1, lastTransferBlockNumber: 1 },
+          ],
+        });
+      }
+      if (url.endsWith(`/wallets/${OWNER.toLowerCase()}/positions`)) {
+        return json(200, {
+          positions: [
+            {
+              chainId: 31337,
+              gpuId: H100_GPU_ID.toUpperCase(), // joins case-insensitively
+              qtyGpu: "2000000000000000000",
+              costGusd: "5000000",
+              basisState: "complete",
+              avgEntryGusd: "2500000",
+              realizedPnlGusd: "150000",
+              reason: null,
+              acquisitions: 2,
+              disposals: 0,
+              firstActivityAtSec: 1,
+              lastActivityAtSec: 2,
+            },
+            {
+              chainId: 999, // another chain — must not leak in
+              gpuId: H100_GPU_ID,
+              qtyGpu: "1",
+              costGusd: "1",
+              basisState: "complete",
+              avgEntryGusd: "1",
+              realizedPnlGusd: "1",
+              reason: null,
+              acquisitions: 1,
+              disposals: 0,
+              firstActivityAtSec: 1,
+              lastActivityAtSec: 1,
+            },
+          ],
+          vault: null,
+        });
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    const r = reads.contractReadsWithIndexer();
+    const out = await r.positions(OWNER);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      avgEntryRaw: "2500000",
+      realizedPnlGusdRaw: "150000",
+      basisState: "complete",
+      basisReason: null,
+    });
+  });
+
+  it("degrades to balance-derived with null basis when /positions answers 404", async () => {
+    h.fetchResponder = (url) => {
+      if (url.endsWith("/gpus")) {
+        return json(200, {
+          gpus: [
+            { gpuId: H100_GPU_ID, token: GPU_TOKEN, canonicalPoolId: CANONICAL_POOL, issuanceEnabled: true, poolFee: 3000, tickSpacing: 60, issuanceFeeBps: 50 },
+          ],
+        });
+      }
+      if (url.endsWith(`/wallets/${OWNER.toLowerCase()}/balances`)) {
+        return json(200, {
+          balances: [
+            { chainId: 31337, token: GPU_TOKEN.toLowerCase(), balance: "1000000000000000000", transferCount: 1, lastTransferAtSec: 1, lastTransferBlockNumber: 1 },
+          ],
+        });
+      }
+      return json(404, { error: "not indexed yet" });
+    };
+    const r = reads.contractReadsWithIndexer();
+    const out = await r.positions(OWNER);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ size: 1, avgEntryRaw: null, realizedPnlGusdRaw: null, basisReason: null });
+    expect(h.rpcCalls).not.toContain(`rpc.positions:${OWNER}`);
   });
 
   it("falls back to RPC when /gpus fails", async () => {

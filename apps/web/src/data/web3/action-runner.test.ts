@@ -288,4 +288,27 @@ describe("ActionRunner", () => {
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it("lands the reconciler's indexed evidence on the record", async () => {
+    const { tx, runner } = makeRunner();
+    tx.push(() => txRecord({ kind: "mint" }));
+    const record = await runner.run(
+      plan({
+        reconcile: async () => ({ balances: true, indexed: ["0xhash1"] }),
+      }),
+    );
+    expect(record.phase).toBe("complete");
+    expect(record.indexed).toEqual(["0xhash1"]);
+  });
+
+  it("keeps indexed null when the reconcile outcome carries no evidence", async () => {
+    const { tx, runner } = makeRunner();
+    tx.push(() => txRecord({ kind: "mint" }));
+    const record = await runner.run(
+      plan({
+        reconcile: async () => ({ balances: true, indexed: null }),
+      }),
+    );
+    expect(record.indexed).toBeNull();
+  });
 });

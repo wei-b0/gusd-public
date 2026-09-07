@@ -13,6 +13,11 @@ import { TxStore } from "@/data/web3/tx-store";
 import { ActionRunner } from "@/data/web3/action-runner";
 import { getPublicClient } from "@/data/web3/public-client";
 import { getOnchainAccountStore, OnChainAccountStore } from "@/data/onchain/account-store";
+import {
+  getIndexedActivityStore,
+  IndexedActivityStore,
+} from "@/data/protocol/activity-store";
+import { getProtocolMarketStore, ProtocolMarketStore } from "@/data/protocol/market-store";
 import { makeReconciler } from "@/data/onchain/reconcile";
 import { getIndexerClient } from "@/data/indexer/indexer-client";
 import { OnChainMintPort } from "@/data/web3/gusd/onchain-mint-port";
@@ -20,6 +25,7 @@ import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
 import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
 import { AcrossBridgePort } from "@/data/web3/bridge/across";
 import { PrivyAuthPort } from "./privy-auth-port";
+import { disposeAvailabilityCache, disposeProbeCache } from "@/data/web3/trading/quotes";
 
 /**
  * The transaction port over the lifecycle engine: pre-flight session and
@@ -69,6 +75,10 @@ export class Web3Services implements Services {
   readonly actions: ActionPort;
   /** The interim onchain user-state store (the Ponder successor lands later). */
   readonly accountStore: OnChainAccountStore;
+  /** The indexed wallet-activity store (rows for the ledgers). */
+  readonly activityStore: IndexedActivityStore;
+  /** The indexed protocol market store, when one stands behind this deployment. */
+  readonly protocolStore: ProtocolMarketStore | null;
 
   constructor(private base: Services) {
     this.auth = new PrivyAuthPort();
@@ -87,22 +97,34 @@ export class Web3Services implements Services {
       },
     });
     this.accountStore = getOnchainAccountStore();
-    // Session binding: the store follows the one wallet; ending the session
+    this.activityStore = getIndexedActivityStore();
+    this.protocolStore = getProtocolMarketStore();
+    // Session binding: the stores follow the one wallet; ending the session
     // clears the wallet state and the session's tx + action records.
     this.auth.subscribeSession((session) => {
-      this.accountStore.setAddress(session.status === "connected" ? session.address : null);
+      const address = session.status === "connected" ? session.address : null;
+      this.accountStore.setAddress(address);
+      this.activityStore.setAddress(address);
       if (session.status === "idle") {
         this.tx.clear();
         this.actions.clear();
       }
     });
-    // Post-confirmation reconciliation: the store re-read (always) plus the
-    // indexed-evidence fetch once Ponder stands behind NEXT_PUBLIC_INDEXER_URL.
+    // Post-confirmation reconciliation: the store re-read (always), the
+    // indexed stores re-pull (activity rows + market state), the settled
+    // seam drops quote caches, and the indexed-evidence fetch once Ponder
+    // stands behind NEXT_PUBLIC_INDEXER_URL.
     const reconcile = makeReconciler({
       accountStore: this.accountStore,
       earn: { refresh: () => this.earn.refresh() },
       indexer: getIndexerClient(),
       tx: this.tx,
+      activity: this.activityStore,
+      protocol: this.protocolStore ?? undefined,
+      onSettled: () => {
+        disposeAvailabilityCache();
+        disposeProbeCache();
+      },
     });
     this.mint = new OnChainMintPort({
       getSession: () => this.auth.getSession(),
