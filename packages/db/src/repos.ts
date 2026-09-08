@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import type {
   FailureKind,
+  IndexStatus,
   PricingTier,
   ProviderPriceResult,
   RunStatus,
@@ -712,7 +713,7 @@ export interface PublicationRowInput {
   price: number;
   confidenceLow: number | null;
   confidenceHigh: number | null;
-  status: "healthy" | "degraded";
+  status: IndexStatus;
   publisherVersion: string;
   target: string;
   txRef: string;

@@ -1,16 +1,24 @@
 import type { Logger } from "@gusd/types";
 import type { MethodologyConfig } from "@gusd/pricing-engine";
 import type { BreakerMap, PublisherConfig, PublisherTarget } from "./types.js";
-import { validateCandidate } from "./validate.js";
+import { assessCandidate } from "./validate.js";
 import { resolvePanelThresholds } from "./thresholds.js";
 import type { PublisherStore } from "./store.js";
 
 /**
- * The publisher's loop: poll the oracle's index_candidates, validate each
- * latest candidate independently, publish or record the refusal. Publishing
- * is idempotent end to end — the (candidateId, target) unique key means a
- * crash between target acknowledgement and ledger write is resolved by the
- * retry being a no-op insert.
+ * The publisher's loop: poll the oracle's index_candidates, audit each latest
+ * candidate independently, and keep the on-chain price current per
+ * PROTOCOL.md §11 — publish when the candidate deviates from the last
+ * published value by ≥ minDeviationPct, or after heartbeatMs without a
+ * publish, whichever first. Between triggers the on-chain figure is already
+ * current and the tx is suppressed (the gas saver). Gate verdicts never
+ * block: swaps need a current price, and an imperfect published figure beats
+ * a stale or absent one. They are recorded to publish_violations for audit
+ * at publication time (and for no-price refusals), so the audit ledger stays
+ * 1:1 with what shipped. Publishing is idempotent end to end — the
+ * (candidateId, target) unique key means a crash between target
+ * acknowledgement and ledger write is resolved by the retry being a no-op
+ * insert.
  */
 export class PublisherPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -47,8 +55,8 @@ export class PublisherPoller {
   }
 
   /** One evaluation pass over every watched gpu. */
-  async tick(): Promise<{ published: number; rejected: number; skipped: number }> {
-    if (this.inFlight !== null) return { published: 0, rejected: 0, skipped: 0 };
+  async tick(): Promise<{ published: number; flagged: number; skipped: number }> {
+    if (this.inFlight !== null) return { published: 0, flagged: 0, skipped: 0 };
     const work = this.tickInner();
     this.inFlight = work;
     try {
@@ -58,10 +66,10 @@ export class PublisherPoller {
     }
   }
 
-  private async tickInner(): Promise<{ published: number; rejected: number; skipped: number }> {
+  private async tickInner(): Promise<{ published: number; flagged: number; skipped: number }> {
     const { store, target, config, logger } = this.opts;
     const now = this.opts.now?.() ?? new Date();
-    const counters = { published: 0, rejected: 0, skipped: 0 };
+    const counters = { published: 0, flagged: 0, skipped: 0 };
 
     let breakers: BreakerMap | undefined;
     if (this.opts.fetchBreakers !== undefined) {
@@ -69,12 +77,12 @@ export class PublisherPoller {
         breakers = await this.opts.fetchBreakers();
       } catch (err: unknown) {
         // The oracle's health endpoint is unreachable. Source health is part
-        // of the gate; with it unknown we refuse — withheld is safer than
-        // fabricated, and the next tick retries.
+        // of the audit; with it unknown we refuse — skipped is safer than
+        // unannotated, and the next tick retries.
         logger.warn("source health unavailable — skipping cycle", {
           err: err instanceof Error ? err.message : String(err),
         });
-        return { published: 0, rejected: 0, skipped: 0 };
+        return { published: 0, flagged: 0, skipped: 0 };
       }
     }
 
@@ -85,13 +93,13 @@ export class PublisherPoller {
       logger.error("publisher could not read candidates", {
         err: err instanceof Error ? err.message : String(err),
       });
-      return { published: 0, rejected: 0, skipped: 0 };
+      return { published: 0, flagged: 0, skipped: 0 };
     }
 
-    // The publication thresholds come from the stored methodology row for the
+    // The audit thresholds come from the stored methodology row for the
     // pinned version — per-panel quorums and dispersion caps included. A
     // missing row is fail-closed: without a methodology there is nothing to
-    // validate against, and guessing one would defeat the pin.
+    // audit against, and guessing one would defeat the pin.
     let methodology: MethodologyConfig | null;
     try {
       methodology = await store.methodologyConfig(config.pinnedMethodologyVersion);
@@ -99,13 +107,13 @@ export class PublisherPoller {
       logger.error("publisher could not read the methodology row", {
         err: err instanceof Error ? err.message : String(err),
       });
-      return { published: 0, rejected: 0, skipped: 0 };
+      return { published: 0, flagged: 0, skipped: 0 };
     }
     if (methodology === null) {
       logger.warn("pinned methodology version missing from the database — refusing to publish", {
         pinnedMethodologyVersion: config.pinnedMethodologyVersion,
       });
-      return { published: 0, rejected: 0, skipped: 0 };
+      return { published: 0, flagged: 0, skipped: 0 };
     }
 
     for (const candidate of candidates) {
@@ -115,40 +123,84 @@ export class PublisherPoller {
           continue;
         }
 
-        const previousPublishedPrice = await store.latestPublishedPrice(
-          candidate.gpuId,
-          target.name,
-        );
-        const verdict = validateCandidate(candidate, {
+        const previous = await store.latestPublication(candidate.gpuId, target.name);
+        const assessment = assessCandidate(candidate, {
           config: resolvePanelThresholds(config, methodology, candidate.panelId),
           now,
-          previousPublishedPrice,
+          previousPublishedPrice: previous?.price ?? null,
           breakers,
         });
 
-        if (!verdict.ok) {
+        if (assessment.value === null) {
+          // A genuine refusal: nothing exists to publish. Recorded once per
+          // (candidateId, target) so the audit sees why this candidate died.
           const { inserted } = await store.recordViolations(
             candidate.id,
             candidate.gpuId,
             target.name,
-            verdict.violations,
+            assessment.violations,
+            config.pinnedMethodologyVersion,
+            now,
+          );
+          counters.skipped += 1;
+          logger.warn("candidate not publishable — no price", {
+            gpuId: candidate.gpuId,
+            candidateId: candidate.id,
+            violations: assessment.violations,
+            recorded: inserted,
+          });
+          continue;
+        }
+
+        // §11 trigger: deviation from the last published value, else the
+        // heartbeat. A first publish (no baseline) always goes out.
+        const value = assessment.value;
+        if (previous !== null) {
+          // Percent, matching minDeviationPct's units (0.5 = 0.5% = 50 bps).
+          const deviationPct =
+            previous.price > 0
+              ? (Math.abs(value.price - previous.price) / previous.price) * 100
+              : Number.POSITIVE_INFINITY;
+          const heartbeatDue =
+            now.getTime() - previous.publishedAt.getTime() >= config.heartbeatMs;
+          if (deviationPct < config.minDeviationPct && !heartbeatDue) {
+            counters.skipped += 1;
+            logger.debug("publish suppressed — on-chain figure already current", {
+              gpuId: candidate.gpuId,
+              candidateId: candidate.id,
+              price: value.price,
+              lastPublished: previous.price,
+              deviationPct,
+            });
+            continue;
+          }
+        }
+
+        // Audit annotations ride publications: one publish_violations row
+        // per published value (joined by candidate_id), never one per polled
+        // candidate — suppressed wobbles would otherwise flood the ledger.
+        if (assessment.violations.length > 0) {
+          const { inserted } = await store.recordViolations(
+            candidate.id,
+            candidate.gpuId,
+            target.name,
+            assessment.violations,
             config.pinnedMethodologyVersion,
             now,
           );
           if (inserted) {
-            counters.rejected += 1;
-            logger.warn("candidate rejected", {
+            counters.flagged += 1;
+            logger.warn("candidate flagged — publishing regardless (heartbeat policy)", {
               gpuId: candidate.gpuId,
               candidateId: candidate.id,
-              violations: verdict.violations,
+              violations: assessment.violations,
             });
           }
-          continue;
         }
 
-        const { txRef } = await target.publish(verdict.value);
+        const { txRef } = await target.publish(value);
         const { inserted } = await store.recordPublication(
-          verdict.value,
+          value,
           txRef,
           target.name,
           config.pinnedMethodologyVersion,
@@ -157,8 +209,9 @@ export class PublisherPoller {
         if (inserted) {
           counters.published += 1;
           logger.info("candidate published", {
-            gpuId: verdict.value.gpuId,
-            candidateId: verdict.value.candidateId,
+            gpuId: value.gpuId,
+            candidateId: value.candidateId,
+            price: value.price,
             txRef,
           });
         }

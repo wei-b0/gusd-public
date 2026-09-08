@@ -19,6 +19,8 @@ const CONFIG = {
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: null,
+  minDeviationPct: 0.5,
+  heartbeatMs: 86_400_000,
 };
 
 function silence(): Logger {
@@ -51,6 +53,7 @@ class FakeStore implements PublisherStore {
   methodology: MethodologyConfig | null = DEFAULT_METHODOLOGY_CONFIG;
   private publicationKeys = new Set<string>();
   private violationKeys = new Set<string>();
+  private lastPublishedAt: Date = NOW;
 
   constructor(public candidates: CandidateLike[]) {}
 
@@ -62,8 +65,9 @@ class FakeStore implements PublisherStore {
     return this.methodology;
   }
 
-  async latestPublishedPrice(): Promise<number | null> {
-    return this.published.length > 0 ? (this.published.at(-1)?.value.price ?? null) : null;
+  async latestPublication(): Promise<{ price: number; publishedAt: Date } | null> {
+    const last = this.published.at(-1);
+    return last ? { price: last.value.price, publishedAt: this.lastPublishedAt } : null;
   }
 
   async alreadyPublished(candidateId: string, target: string): Promise<boolean> {
@@ -74,11 +78,14 @@ class FakeStore implements PublisherStore {
     value: PublishableIndexValue,
     txRef: string,
     target: string,
+    _publisherVersion?: string,
+    publishedAt?: Date,
   ): Promise<{ inserted: boolean }> {
     const key = `${value.candidateId}:${target}`;
     if (this.publicationKeys.has(key)) return { inserted: false };
     this.publicationKeys.add(key);
     this.published.push({ value, txRef });
+    this.lastPublishedAt = publishedAt ?? NOW;
     return { inserted: true };
   }
 
@@ -130,7 +137,7 @@ describe("PublisherPoller", () => {
     const { target, poller } = makePoller([healthyCandidate()]);
     const first = await poller.tick();
     expect(first.published).toBe(1);
-    expect(first.rejected).toBe(0);
+    expect(first.flagged).toBe(0);
     expect(target.calls).toHaveLength(1);
     expect(target.calls[0]?.price).toBe(2.94);
 
@@ -140,24 +147,56 @@ describe("PublisherPoller", () => {
     expect(target.calls).toHaveLength(1);
   });
 
-  it("records a rejection with stable codes and never calls the target", async () => {
+  it("does not publish a priceless candidate and records the audit row", async () => {
     const { target, store, poller } = makePoller([
-      healthyCandidate({ status: "withheld", price: null }),
+      healthyCandidate({ status: "withheld", price: null, confidenceLow: null, confidenceHigh: null }),
     ]);
     const result = await poller.tick();
-    expect(result.rejected).toBe(1);
+    expect(result.published).toBe(0);
+    expect(result.flagged).toBe(0);
     expect(target.calls).toHaveLength(0);
+    // The refusal is still audited.
     const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
     expect(codes).toContain("not_publishable_status");
     expect(codes).toContain("missing_price");
   });
 
-  it("does not re-record a rejection for the same candidate on the next tick", async () => {
+  it("publishes a flagged candidate anyway and keeps the audit row", async () => {
+    // Thin quorum + withheld status: annotated, and the price still ships.
+    const { store, target, poller } = makePoller([
+      healthyCandidate({ status: "withheld", providersContributing: 2 }),
+    ]);
+    const result = await poller.tick();
+    expect(result.published).toBe(1);
+    expect(result.flagged).toBe(1);
+    expect(target.calls).toHaveLength(1);
+    const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
+    expect(codes).toContain("not_publishable_status");
+    expect(codes).toContain("insufficient_contributors");
+  });
+
+  it("does not re-record annotations for the same candidate on the next tick", async () => {
     const { store, poller } = makePoller([healthyCandidate({ status: "stale" })]);
     await poller.tick();
     const second = await poller.tick();
-    expect(second.rejected).toBe(0);
+    expect(second.flagged).toBe(0);
     expect(store.violations).toHaveLength(1);
+  });
+
+  it("records no annotations for suppressed candidates — the audit ledger rides publications", async () => {
+    // A withheld candidate inside the deviation band never publishes, so it
+    // never writes a publish_violations row either; suppressed wobbles must
+    // not flood the append-only ledger.
+    const { store, target, poller } = makePoller([healthyCandidate()]);
+    await poller.tick();
+    store.candidates = [
+      healthyCandidate({ id: "c2", status: "withheld", price: 2.941, calcHash: "def" }),
+    ];
+    const second = await poller.tick();
+    expect(second.published).toBe(0);
+    expect(second.flagged).toBe(0);
+    expect(store.violations).toHaveLength(0);
+    expect(target.calls).toHaveLength(1);
   });
 
   it("skips the whole cycle when the source health fetch fails", async () => {
@@ -165,7 +204,7 @@ describe("PublisherPoller", () => {
       breakers: () => Promise.reject(new Error("oracle down")),
     });
     const result = await poller.tick();
-    expect(result).toEqual({ published: 0, rejected: 0, skipped: 0 });
+    expect(result).toEqual({ published: 0, flagged: 0, skipped: 0 });
     expect(target.calls).toHaveLength(0);
     expect(store.violations).toHaveLength(0);
     expect(store.published).toHaveLength(0);
@@ -175,14 +214,14 @@ describe("PublisherPoller", () => {
     const { target, store, poller } = makePoller([healthyCandidate()]);
     store.methodology = null;
     const result = await poller.tick();
-    expect(result).toEqual({ published: 0, rejected: 0, skipped: 0 });
+    expect(result).toEqual({ published: 0, flagged: 0, skipped: 0 });
     expect(target.calls).toHaveLength(0);
     expect(store.violations).toHaveLength(0);
   });
 
   it("publishes a thin panel on its per-panel quorum from the methodology", async () => {
-    // GB200's override settles on a single rate-card source; the publisher
-    // must accept 1 contributor because the methodology row says quorum 1.
+    // GB200's override settles on a single rate-card source; the methodology
+    // row says quorum 1, so one contributor is not even an annotation.
     const { target, poller } = makePoller([
       healthyCandidate({
         gpuId: "GB200_192GB",
@@ -197,10 +236,11 @@ describe("PublisherPoller", () => {
     ]);
     const result = await poller.tick();
     expect(result.published).toBe(1);
+    expect(result.flagged).toBe(0);
     expect(target.calls[0]?.price).toBe(16);
   });
 
-  it("an explicit env contributor floor still tightens the per-panel quorum", async () => {
+  it("an explicit env contributor floor tightens the annotation, not the publication", async () => {
     const store = new FakeStore([
       healthyCandidate({
         gpuId: "GB200_192GB",
@@ -222,21 +262,22 @@ describe("PublisherPoller", () => {
       now: () => NOW,
     });
     const result = await poller.tick();
-    expect(result.published).toBe(0);
-    expect(result.rejected).toBe(1);
+    expect(result.published).toBe(1);
+    expect(result.flagged).toBe(1);
     const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
     expect(codes).toContain("insufficient_contributors");
   });
 
-  it("passes the breaker map through to validation", async () => {
-    // 1 of 2 contributors open is a minority → publishable.
+  it("passes the breaker map through to the audit", async () => {
+    // 1 of 2 contributors open is a minority → no annotation.
     const minority = makePoller([healthyCandidate()], {
       breakers: () => Promise.resolve(new Map([["vast", true]])),
     });
     const a = await minority.poller.tick();
     expect(a.published).toBe(1);
+    expect(a.flagged).toBe(0);
 
-    // 2 of 2 open is a majority → rejected.
+    // 2 of 2 open is a majority → annotated, published anyway.
     const majority = makePoller([healthyCandidate()], {
       breakers: () =>
         Promise.resolve(
@@ -247,25 +288,65 @@ describe("PublisherPoller", () => {
         ),
     });
     const b = await majority.poller.tick();
-    expect(b.published).toBe(0);
-    expect(b.rejected).toBe(1);
+    expect(b.published).toBe(1);
+    expect(b.flagged).toBe(1);
   });
 
-  it("uses the previous published price of the same target as the jump baseline", async () => {
+  it("annotates a jump against the last published price but still publishes it", async () => {
     const { store, target, poller } = makePoller([healthyCandidate()]);
     await poller.tick();
     expect(target.calls).toHaveLength(1);
 
-    // A newer candidate that doubles the price must be rejected against the
-    // baseline recorded from the first publish.
-    store.candidates = [
-      healthyCandidate({ id: "c2", price: 5.0, calcHash: "def" }),
-    ];
+    // A newer candidate that doubles the price: annotated for manual review,
+    // and shipped — a 2× market move is exactly when swaps need the new price.
+    store.candidates = [healthyCandidate({ id: "c2", price: 5.0, calcHash: "def" })];
     const second = await poller.tick();
-    expect(second.published).toBe(0);
-    expect(second.rejected).toBe(1);
+    expect(second.published).toBe(1);
+    expect(second.flagged).toBe(1);
     const codes = store.violations.at(-1)?.violations.map((v) => v.code) ?? [];
     expect(codes).toContain("jump_requires_manual");
+    expect(target.calls[1]?.price).toBe(5.0);
+  });
+
+  it("suppresses the tx while the candidate stays within the deviation band", async () => {
+    const { store, target, poller } = makePoller([healthyCandidate()]);
+    await poller.tick();
+    expect(target.calls).toHaveLength(1);
+
+    // +0.034% — inside the §11 0.5% band. The on-chain figure is already
+    // current; burning gas would change nothing.
+    store.candidates = [healthyCandidate({ id: "c2", price: 2.941, calcHash: "def" })];
+    const second = await poller.tick();
+    expect(second.published).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(target.calls).toHaveLength(1);
+  });
+
+  it("publishes once the candidate diverges past the deviation band", async () => {
+    const { store, target, poller } = makePoller([healthyCandidate()]);
+    await poller.tick();
+
+    // +0.68% — beyond 0.5%.
+    store.candidates = [healthyCandidate({ id: "c2", price: 2.96, calcHash: "def" })];
+    const second = await poller.tick();
+    expect(second.published).toBe(1);
+    expect(target.calls[1]?.price).toBe(2.96);
+  });
+
+  it("republishes at the heartbeat even without deviation", async () => {
+    let nowMs = NOW.getTime();
+    const { store, target, poller } = makePoller([healthyCandidate()], {
+      now: () => new Date(nowMs),
+    });
+    await poller.tick();
+    expect(target.calls).toHaveLength(1);
+
+    // 25h later, same price: the heartbeat keeps on-chain updatedAt fresh.
+    nowMs += 25 * 3_600_000;
+    store.candidates = [healthyCandidate({ id: "c2", price: 2.94, calcHash: "def" })];
+    const second = await poller.tick();
+    expect(second.published).toBe(1);
+    expect(target.calls).toHaveLength(2);
   });
 
   it("survives a store error on one candidate and continues", async () => {
@@ -278,7 +359,7 @@ describe("PublisherPoller", () => {
       logger: silence(),
       now: () => NOW,
     });
-    store.latestPublishedPrice = () => Promise.reject(new Error("db down"));
+    store.latestPublication = () => Promise.reject(new Error("db down"));
     const result = await poller.tick();
     expect(result.published).toBe(0);
   });

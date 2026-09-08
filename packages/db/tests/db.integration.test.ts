@@ -24,7 +24,7 @@ import { indexCandidates } from "../src/schema/index.js";
 import type { ProviderPriceResult } from "@gusd/types";
 
 // DB integration tests are opt-in: RUN_DB_TESTS=1 pnpm --filter @gusd/db test
-// (requires `pnpm db:up` + `pnpm db:migrate`).
+// (requires `pnpm stack:up` + `pnpm db:migrate`).
 const run = process.env.RUN_DB_TESTS === "1";
 const d = run ? describe : describe.skip;
 

@@ -183,6 +183,8 @@ const CONFIG = {
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: 0.1,
+  minDeviationPct: 0.5,
+  heartbeatMs: 86_400_000,
 };
 
 function healthyCandidate(overrides: Partial<CandidateLike> = {}): CandidateLike {
@@ -221,8 +223,9 @@ class FakeStore implements PublisherStore {
     return DEFAULT_METHODOLOGY_CONFIG;
   }
 
-  async latestPublishedPrice(): Promise<number | null> {
-    return this.published.at(-1)?.value.price ?? null;
+  async latestPublication(): Promise<{ price: number; publishedAt: Date } | null> {
+    const last = this.published.at(-1);
+    return last ? { price: last.value.price, publishedAt: new Date(0) } : null;
   }
 
   async alreadyPublished(candidateId: string, target: string): Promise<boolean> {
@@ -292,7 +295,7 @@ describe("chain target through the poller", () => {
     });
     await poller.tick();
     const counters = await poller.tick();
-    expect(counters).toEqual({ published: 0, rejected: 0, skipped: 1 });
+    expect(counters).toEqual({ published: 0, flagged: 0, skipped: 1 });
     expect(client.calls).toHaveLength(1);
   });
 

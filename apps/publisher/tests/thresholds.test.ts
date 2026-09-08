@@ -10,6 +10,8 @@ const BASE: PublisherConfig = {
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: null,
+  minDeviationPct: 0.5,
+  heartbeatMs: 86_400_000,
 };
 
 describe("resolvePanelThresholds", () => {

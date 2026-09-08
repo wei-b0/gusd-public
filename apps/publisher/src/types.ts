@@ -1,9 +1,10 @@
 import type { IndexStatus } from "@gusd/types";
 
 /**
- * The value handed to a PublisherTarget: fully validated, exactly what lands
- * on-chain. The publisher holds no key material — a real target would sign
- * inside its implementation.
+ * The value handed to a PublisherTarget: the audited candidate, exactly what
+ * lands in the ledger. Only (gpuId, price, updatedAt) reach the chain —
+ * status and band ride the DB ledger for audit. The publisher holds no key
+ * material — a real target would sign inside its implementation.
  */
 export interface PublishableIndexValue {
   candidateId: string;
@@ -12,7 +13,7 @@ export interface PublishableIndexValue {
   price: number;
   confidenceLow: number | null;
   confidenceHigh: number | null;
-  status: "healthy" | "degraded";
+  status: IndexStatus;
   methodologyVersion: string;
   calcHash: string;
   computedAt: string;
@@ -47,30 +48,45 @@ export interface PublishViolation {
 }
 
 export interface PublisherConfig {
-  /** Candidates under any other methodology version are refused — no silent drift. */
+  /** Candidates naming another methodology version are annotated — the pin keys the audit to one methodology. */
   readonly pinnedMethodologyVersion: string;
   /**
    * Absolute contributor floor across all panels, or null to use the pinned
    * methodology's per-panel quorum alone. When set, it can only tighten
    * (max with the panel quorum) — never relax below the methodology.
+   * Annotation threshold — flagged candidates still publish.
    */
   readonly minContributors: number | null;
   /**
    * Absolute dispersion ceiling, or null to use the methodology's per-panel
    * cap alone. When set, it can only tighten (min against the panel cap).
+   * Annotation threshold — flagged candidates still publish.
    */
   readonly maxDispersion: number | null;
-  /** Candidate age limit — a stale candidate is re-derivable, never publishable. */
+  /** Candidate age beyond this is annotated as stale (publication still proceeds). */
   readonly maxFreshnessMs: number;
-  /** |Δ|/previous-published above this needs a human, not an auto-publish. */
+  /** |Δ|/previous-published above this is annotated for manual review (publication still proceeds — §11). */
   readonly maxJumpPct: number;
   /**
    * Confidence band width as a fraction of price, or null to use the panel's
    * dispersion cap. When set, it can only tighten. The band is a second
    * measure of the same spread the methodology's dispersion gate bounds, so
    * absent an explicit operator floor the methodology's own tolerance applies.
+   * Annotation threshold — flagged candidates still publish.
    */
   readonly maxBandWidthPct: number | null;
+  /**
+   * PROTOCOL.md §11 deviation publication: |candidate − last published| as a
+   * fraction of the last published price. Below it (and before the heartbeat)
+   * the on-chain figure is already current and the tx is suppressed — that is
+   * the gas saver. 0 publishes every fresh candidate.
+   */
+  readonly minDeviationPct: number;
+  /**
+   * PROTOCOL.md §11 heartbeat: republish even without deviation after this
+   * long, so on-chain updatedAt never goes stale while the price plateaus.
+   */
+  readonly heartbeatMs: number;
 }
 
 /** PublisherConfig with the per-panel methodology values merged in — what the
@@ -84,9 +100,18 @@ export type ResolvedPublisherConfig = PublisherConfig & {
 /** slug → breakerOpen, as reported by the oracle's /v1/health. */
 export type BreakerMap = ReadonlyMap<string, boolean>;
 
-export type ValidationResult =
-  | { ok: true; value: PublishableIndexValue }
-  | { ok: false; violations: PublishViolation[] };
+/**
+ * The audit verdict for one candidate. Violations are annotations — recorded
+ * to publish_violations, never publication blockers (the §11 posture: swaps
+ * need a current price; an imperfect published figure beats a stale or
+ * absent one, and the violation rows join publications on candidate_id so
+ * the audit sees exactly what shipped despite a flag). `value` is null only
+ * when the candidate carries no price at all — there is nothing to publish.
+ */
+export interface Assessment {
+  violations: PublishViolation[];
+  value: PublishableIndexValue | null;
+}
 
 /** Violation codes — stable identifiers, safe to alarm on. */
 export const VIOLATION = {

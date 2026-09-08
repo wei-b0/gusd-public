@@ -17,7 +17,7 @@ import type { PublisherConfig } from "../src/types.js";
 
 /**
  * Publisher against the real schema (opt-in): RUN_DB_TESTS=1 pnpm --filter @gusd/publisher test
- * (requires `pnpm db:up`). Verifies the Drizzle store reads, the append-only
+ * (requires `pnpm stack:up`). Verifies the Drizzle store reads, the append-only
  * publication ledger, and violation idempotency on the real tables.
  */
 const run = process.env.RUN_DB_TESTS === "1";
@@ -35,6 +35,8 @@ const CONFIG: PublisherConfig = {
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: null,
+  minDeviationPct: 0.5,
+  heartbeatMs: 86_400_000,
 };
 
 function silence(): Logger {

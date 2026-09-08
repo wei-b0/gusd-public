@@ -1,5 +1,5 @@
 export * from "./types.js";
-export { validateCandidate } from "./validate.js";
+export { assessCandidate } from "./validate.js";
 export { MockPublisherTarget } from "./target.js";
 export {
   ChainPublisherTarget,

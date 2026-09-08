@@ -45,6 +45,13 @@ services:
       INDEXER_DEPLOYMENTS_DIR: /repo/apps/contracts/deployments
       PORT: ${INDEXER_PORT:-42069}
       PONDER_LOG_LEVEL: ${PONDER_LOG_LEVEL:-info}
+    volumes:
+      # The deployment record is baked into the image as a build-time
+      # fallback, but redeploys rewrite it on the host — mount it read-only
+      # so `docker compose restart indexer` picks up fresh addresses without
+      # an image rebuild (addressed at boot from this file; see
+      # apps/indexer/src/addresses.ts).
+      - ../apps/contracts/deployments:/repo/apps/contracts/deployments:ro
     extra_hosts:
       # Linux parity for the host.docker.internal RPC default (Docker Desktop
       # provides it natively on macOS).
@@ -58,6 +65,125 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 5
+    networks:
+      - gusd-internal
+
+  # One-shot drizzle migration runner (packages/db), reusing the oracle
+  # image — it already ships @gusd/db built with its drizzle/ journal.
+  # Drizzle migrations are journaled, so re-running on every `up` is a no-op
+  # once current; a fresh volume gets public.* before anything reads it.
+  # Also covers the host `pnpm db:migrate` path — same DB, same journal.
+  db-migrate:
+    build:
+      context: ..
+      dockerfile: apps/oracle/Dockerfile
+    image: gusd-oracle:local
+    container_name: gusd-db-migrate
+    command: ["node", "/repo/packages/db/dist/cli.js", "migrate"]
+    environment:
+      DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - gusd-internal
+
+  # Oracle — the price API (Fastify) the web dev server consumes on
+  # ${ORACLE_PORT:-8080} (the web default base is http://127.0.0.1:8080 —
+  # stop a host-run `pnpm dev:oracle` or remap if they collide). Collectors
+  # scrape provider APIs outbound; the indexer wiring mirrors host dev:
+  # INDEXER_SCHEMA is the stable views schema (same value as the indexer's
+  # DATABASE_VIEWS_SCHEMA — override both together in infra/.env) and
+  # INDEXER_INTERNAL_URL reaches Ponder's PRIVATE surface, reachable only
+  # inside this network. /v1/health stays 200 while Ponder backfills (the
+  # indexer subsection degrades, never flips unhealthy), so this healthcheck
+  # never fights a long backfill.
+  # Env pass-through is intentionally minimal: only `||`-tolerant vars are
+  # forwarded (empty → code default). The `??`-defaulted knobs (LOG_LEVEL,
+  # ORACLE_* regions, replay) must stay unset to keep their defaults from
+  # apps/oracle/src/env.ts — an empty string would defeat `??`.
+  oracle:
+    build:
+      context: ..
+      dockerfile: apps/oracle/Dockerfile
+    image: gusd-oracle:local
+    container_name: gusd-oracle
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
+      # The code default binds 127.0.0.1 — loopback inside the container
+      # only. The published port and healthcheck need all interfaces.
+      HOST: 0.0.0.0
+      PORT: 8080
+      HYPERBOLIC_API_KEY: ${HYPERBOLIC_API_KEY:-}
+      PRIMEINTELLECT_API_KEY: ${PRIMEINTELLECT_API_KEY:-}
+      INDEXER_SCHEMA: ${INDEXER_VIEWS_SCHEMA:-gusd_index_docker}
+      INDEXER_INTERNAL_URL: http://indexer:${INDEXER_PORT:-42069}
+    ports:
+      - "${ORACLE_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      # started, NOT healthy: Ponder exits when the chain RPC is unreachable
+      # (e.g. no local Anvil), and the oracle's indexer wiring degrades by
+      # design (unreachable Ponder → "degraded", never unhealthy). Gating on
+      # liveness would hold the whole oracle hostage to a chain that may not
+      # be running.
+      indexer:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/v1/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    networks:
+      - gusd-internal
+
+  # Publisher — oracle→GPUPriceOracle publish loop, a default stack member.
+  # Default target is CHAIN on the local Anvil posture — the same coupling
+  # the indexer already has: both bounce until the chain is up. The defaults
+  # mirror Deploy.s.sol's local posture (PUBLISHER env unset at deploy ⇒ the
+  # publisher IS the deployer): anvil account #0's key — a PUBLIC dev key,
+  # the record's oraclePublisher — and chain id 31337. The oracle address is
+  # NOT defaulted here: pnpm stack:up injects it from
+  # apps/contracts/deployments/<id>.json at `up` time, so a redeploy plus a
+  # plain `pnpm stack:up` re-syncs it (never bake a stale address into the
+  # file). For a remote chain, override the chain block in infra/.env —
+  # verify() also aborts boot loudly on any chain-id / PRICE_SCALE /
+  # publisher mismatch. No healthcheck: the poller has no HTTP surface —
+  # restart: unless-stopped covers crash-restart, and publish outcomes are
+  # visible in the DB and on-chain.
+  publisher:
+    build:
+      context: ..
+      dockerfile: apps/publisher/Dockerfile
+    image: gusd-publisher:local
+    container_name: gusd-publisher
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
+      PUBLISHER_ORACLE_URL: http://oracle:8080
+      PUBLISHER_TARGET: ${PUBLISHER_TARGET:-chain}
+      PUBLISHER_RPC_URL: ${PUBLISHER_RPC_URL:-http://host.docker.internal:8545}
+      # Anvil account #0 — a public dev key, valid ONLY on the local test
+      # posture. Never a live-chain publisher key.
+      PUBLISHER_PRIVATE_KEY: ${PUBLISHER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+      # Injected by pnpm stack:up from apps/contracts/deployments/<id>.json.
+      # Empty (no record yet) is a loud boot error, never a silent skip.
+      PUBLISHER_ORACLE_ADDRESS: ${PUBLISHER_ORACLE_ADDRESS:-}
+      PUBLISHER_CHAIN_ID: ${PUBLISHER_CHAIN_ID:-31337}
+    extra_hosts:
+      # Linux parity for the host.docker.internal Anvil RPC default.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      oracle:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     networks:
       - gusd-internal
 

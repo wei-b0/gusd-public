@@ -1,159 +1,143 @@
-# Turborepo starter
+# gUSD
 
-This Turborepo starter is maintained by the Turborepo core team.
+A GPU-hour-backed stablecoin protocol. An offchain benchmark oracle computes
+GPU-hour prices from live provider data, a publisher writes them to the
+on-chain `GPUPriceOracle`, an indexer turns protocol events into queryable
+Postgres views, and a trading desk web app (issuance, pools, staking) runs on
+top. pnpm + Turborepo monorepo; Foundry for the contracts.
 
-## Using this example
-
-Run the following command:
-
-```sh
-npx create-turbo@latest
+```
+apps/contracts   Foundry: GUSD, GPUIssuance, GPUPriceOracle, routers, hook,
+                 deployments/<chainId>.json (the shared address record)
+apps/oracle      Fastify price API — collectors → benchmark → /v1/prices*
+apps/publisher   oracle → GPUPriceOracle publish loop (methodology-gated)
+apps/indexer     Ponder — chain events → gusd_index_* Postgres schemas
+apps/web         Next.js trading desk (the only component NOT containerized)
+packages/        db (drizzle), pricing-engine, collectors, normalize, types …
+infra/           docker-compose stack + env files
 ```
 
-## What's inside?
+## The stack
 
-This Turborepo includes the following packages/apps:
+`infra/docker-compose.yml` is the whole backend. One Postgres serves both the
+oracle's `public.*` market data and Ponder's `gusd_index_*` schemas; Ponder's
+HTTP surface stays private to the compose network and is reachable only
+through the oracle's `/v1/protocol` proxy.
 
-### Apps and Packages
+| service     | what it is                                                    | host port |
+| ----------- | ------------------------------------------------------------- | --------- |
+| postgres    | the one Postgres                                              | 54329     |
+| db-migrate  | one-shot drizzle migrations (runs on every `up`, journaled)    | —         |
+| indexer     | Ponder; reads `deployments/<id>.json` at boot (mounted ro)     | — private |
+| oracle      | `/v1/prices*`, `/v1/protocol` proxy, `/v1/health`              | 8080      |
+| publisher   | publishes the benchmark to `GPUPriceOracle` (chain by default) | —         |
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+## Prerequisites
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+- Docker Desktop
+- Node ≥ 24 + pnpm (`corepack enable`; `packageManager` pins pnpm 11.25.0)
+- Foundry (`anvil`, `forge`) for the local chain
 
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+## From scratch
 
 ```sh
-cd my-turborepo
-turbo build
+pnpm install
 ```
 
-Without global `turbo`, use your package manager:
+Start the chain and deploy the full catalogue (seeds all 7 SKUs, mock USDT,
+pool liquidity, and demo activity — the web app has data the moment it opens).
+Use anvil account #0: Deploy defaults the on-chain publisher to the deployer,
+and that is the key the stack's publisher container uses.
 
 ```sh
-cd my-turborepo
-npx turbo build
-pnpm exec turbo build
-pnpm exec turbo build
+anvil   # terminal 1
 ```
-
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
 
 ```sh
-turbo build --filter=docs
+# terminal 2
+cd apps/contracts
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 \
+  --broadcast --sig "runFull()"
 ```
 
-Without global `turbo`:
+Bring up the backend (first run builds the images — slow, once). This also
+injects the deployed oracle address from the deployment record into the
+publisher; a redeploy plus a plain re-run re-syncs it.
 
 ```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+pnpm stack:up
 ```
 
-### Develop
-
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+Point the web app at the stack (gitignored, once per clone) and run it:
 
 ```sh
-cd my-turborepo
-turbo dev
+cat >> apps/web/.env.local <<'EOF'
+NEXT_PUBLIC_ORACLE_URL=http://127.0.0.1:8080
+NEXT_PUBLIC_INDEXER_URL=http://127.0.0.1:8080/v1/protocol
+EOF
+
+node apps/web/scripts/abi-sync.mjs   # regenerate addresses from the record
+pnpm --filter @gusd/web dev          # → http://localhost:3000
 ```
 
-Without global `turbo`, use your package manager:
+> Run the web app with its filter — a root `pnpm dev` starts host-run
+> oracle/publisher/indexer too, which collides with the containers.
+
+Verify:
 
 ```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
+docker compose -f infra/docker-compose.yml ps
+curl -s http://127.0.0.1:8080/v1/health | head -c 200
+# the indexer subsection flips "degraded" → "healthy" once backfill
+# reaches realtime; indexed surfaces in the app come alive then
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## Redeploy ritual (fresh / reset chain)
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+The chain was reset under an existing index? Drop Ponder's state first —
+it cannot resume across a chain reset:
 
 ```sh
-turbo dev --filter=web
+docker exec gusd-postgres psql -U gusd -d gusd \
+  -c "DROP SCHEMA gusd_index_docker_v1, gusd_index_docker, ponder_sync CASCADE;"
 ```
 
-Without global `turbo`:
+Then: redeploy (step above) → `pnpm stack:up` → `docker compose restart
+indexer` (the mounted record is re-read) → `node apps/web/scripts/
+abi-sync.mjs`.
 
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
+## Day-2 knobs
 
-### Remote Caching
+- `pnpm stack:down` / `pnpm stack:up` — stop / start the backend
+- `docker compose restart <service>` — e.g. pick up a new deployment record
+- `docker logs <container>` — e.g. `gusd-publisher` shows publishes, flags
+  and gas-saving suppressions
+- Overrides live in `infra/.env` (gitignored; shape in `infra/.env.example`):
+  ports, schemas, chains, collector API keys, publisher posture. The
+  publisher defaults to CHAIN on the local Anvil posture (account #0 key — a
+  public dev key); remote chains override the whole block, and
+  `PUBLISHER_TARGET=mock` runs the pipeline without any chain. The §11
+  trigger is tunable via `PUBLISHER_MIN_DEVIATION_PCT` (default 0.5) and
+  `PUBLISHER_HEARTBEAT_MS` (default 24h).
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+## What to expect
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
+- The oracle serves **live benchmark data** scraped from real provider APIs —
+  not the deployment seed prices. The publisher keeps the on-chain price
+  current per PROTOCOL.md §11: it publishes when a candidate deviates ≥0.5%
+  from the last published figure, or every ~24h heartbeat. Quality verdicts
+  (quorum, dispersion, band, staleness…) are recorded non-blocking to
+  `publish_violations` for audit — `candidate flagged` in `docker logs
+  gusd-publisher` means "published anyway, here's why a human should look".
+- Deployment addresses live in ONE file —
+  `apps/contracts/deployments/<chainId>.json`. The indexer reads it at boot,
+  the web regenerates from it via `abi-sync`, and the publisher gets its
+  oracle address injected from it by `pnpm stack:up`.
 
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
+## Docs
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+- `apps/contracts/PROTOCOL.md` — the protocol specification
+- `docs/oracle/` — benchmark methodology, providers, architecture
+- `docs/indexer/ARCHITECTURE.md` — indexing design
+- `apps/indexer/README.md` — indexer ops

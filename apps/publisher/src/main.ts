@@ -8,11 +8,34 @@ import { ChainPublisherTarget } from "./chain-target.js";
 import { createViemChainClient } from "./viem-chain-client.js";
 import { PublisherPoller } from "./poller.js";
 import { fetchBreakerMap } from "./health.js";
+import type { Logger } from "@gusd/types";
 import type { PublisherTarget } from "./types.js";
+
+/**
+ * The repo's Logger contract (@gusd/types) is message-first — (msg, fields?) —
+ * while pino's runtime is fields-first. Raw pino structurally satisfies the
+ * interface, but it treats a message-first fields object as interpolation data
+ * and drops it, so every module log arrives bare. Adapt at this boundary: the
+ * composition root owns pino; modules only ever see the contract.
+ */
+function asLogger(pinoLogger: pino.Logger): Logger {
+  const fields = (obj: unknown): object => {
+    if (obj === undefined) return {};
+    if (obj instanceof Error) return { err: obj }; // pino's default err serializer
+    if (typeof obj === "object" && obj !== null) return obj;
+    return { value: obj };
+  };
+  return {
+    debug: (msg, obj) => pinoLogger.debug(fields(obj), msg),
+    info: (msg, obj) => pinoLogger.info(fields(obj), msg),
+    warn: (msg, obj) => pinoLogger.warn(fields(obj), msg),
+    error: (msg, obj) => pinoLogger.error(fields(obj), msg),
+  };
+}
 
 async function main(): Promise<void> {
   const env = parsePublisherEnv();
-  const logger = pino({ level: env.logLevel });
+  const logger = asLogger(pino({ level: env.logLevel }));
 
   const handle = createDb(env.databaseUrl);
   const store = new DrizzlePublisherStore(
@@ -51,7 +74,7 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     if (stopping) return;
     stopping = true;
-    logger.info({ signal }, "publisher shutting down");
+    logger.info("publisher shutting down", { signal });
     void (async () => {
       await poller.stop();
       await handle.close();
@@ -62,10 +85,11 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 
   poller.start(env.pollMs);
-  logger.info(
-    { pollMs: env.pollMs, oracleUrl: env.oracleUrl, target: target.name },
-    "publisher polling",
-  );
+  logger.info("publisher polling", {
+    pollMs: env.pollMs,
+    oracleUrl: env.oracleUrl,
+    target: target.name,
+  });
 }
 
 main().catch((err: unknown) => {

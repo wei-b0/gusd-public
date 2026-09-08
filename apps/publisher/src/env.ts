@@ -1,3 +1,4 @@
+import { DEFAULT_METHODOLOGY_CONFIG } from "@gusd/pricing-engine";
 import type { PublisherConfig } from "./types.js";
 
 /** Where publishes land. `chain` signs and submits to GPUPriceOracle. */
@@ -83,8 +84,13 @@ export function parsePublisherEnv(env: NodeJS.ProcessEnv = process.env): Publish
       env.DATABASE_URL ?? "postgres://gusd:gusd@localhost:54329/gusd",
     oracleUrl: env.PUBLISHER_ORACLE_URL ?? "http://127.0.0.1:8080",
     pollMs: intEnv("PUBLISHER_POLL_MS", env.PUBLISHER_POLL_MS, 5_000),
+    // Default: the methodology the shipped pricing engine computes with — one
+    // source of truth, so the pin cannot drift from what the oracle stamps on
+    // candidates (a stale hand-copied string fails closed: every candidate
+    // rejects on methodology_mismatch, forever). Override with
+    // PUBLISHER_METHODOLOGY_VERSION to pin a different stored row.
     pinnedMethodologyVersion:
-      env.PUBLISHER_METHODOLOGY_VERSION ?? "0.2.0",
+      env.PUBLISHER_METHODOLOGY_VERSION ?? DEFAULT_METHODOLOGY_CONFIG.version,
     // Contributor/dispersion/band limits default to the pinned methodology's
     // per-panel values (panelOverrides included); an explicit env var is a
     // tighten-only override, never a relaxation of the methodology.
@@ -102,6 +108,15 @@ export function parsePublisherEnv(env: NodeJS.ProcessEnv = process.env): Publish
       env.PUBLISHER_MAX_BAND_WIDTH_PCT === undefined || env.PUBLISHER_MAX_BAND_WIDTH_PCT === ""
         ? null
         : numEnv("PUBLISHER_MAX_BAND_WIDTH_PCT", env.PUBLISHER_MAX_BAND_WIDTH_PCT, 0),
+    // PROTOCOL.md §11 publication trigger: publish when the candidate
+    // deviates from the last published value by at least this fraction
+    // (50 bps), or at the heartbeat below — whichever first. Between
+    // triggers the on-chain figure is already current and the tx is
+    // suppressed (gas). Quality thresholds above only annotate.
+    minDeviationPct: numEnv("PUBLISHER_MIN_DEVIATION_PCT", env.PUBLISHER_MIN_DEVIATION_PCT, 0.5),
+    // §11 heartbeat: even without deviation, republish after this long so
+    // on-chain updatedAt never goes stale while the price plateaus (~24h).
+    heartbeatMs: intEnv("PUBLISHER_HEARTBEAT_MS", env.PUBLISHER_HEARTBEAT_MS, 86_400_000),
     target,
     logLevel: env.LOG_LEVEL ?? "info",
     ...chainEnv(target, env),

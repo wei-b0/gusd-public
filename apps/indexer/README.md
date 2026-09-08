@@ -39,7 +39,7 @@ and delta-based counters converge.
 ## Development
 
 ```sh
-pnpm db:up                       # postgres on :54329
+pnpm stack:up                       # postgres on :54329
 cd apps/contracts && anvil       # chain on :8545
 forge script Deploy && forge script Demo   # or via the repo's usual flow
 pnpm dev:indexer                 # ponder dev (hot reload; drops tables on schema edits)

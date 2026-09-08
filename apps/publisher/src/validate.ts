@@ -4,11 +4,11 @@ import type {
   PublishableIndexValue,
   PublishViolation,
   ResolvedPublisherConfig,
-  ValidationResult,
+  Assessment,
 } from "./types.js";
 import { VIOLATION } from "./types.js";
 
-export interface ValidateOptions {
+export interface AssessOptions {
   /** Per-panel resolved thresholds — see resolvePanelThresholds. */
   config: ResolvedPublisherConfig;
   now: Date;
@@ -19,28 +19,26 @@ export interface ValidateOptions {
 }
 
 /**
- * The publisher's independent gate. The oracle already applies publication
+ * The publisher's independent audit. The oracle already applies publication
  * gates, but the publisher re-derives its own verdict from the candidate's
- * face: a bug or a compromise in the oracle must not flow through to the
- * chain unchallenged. All violations are collected — the rejection record is
- * the diagnosis.
+ * face: a bug or a compromise in the oracle must be visible here. Since the
+ * §11 heartbeat policy the verdict does NOT gate publication — every
+ * violation is recorded to publish_violations and the value publishes
+ * regardless (a current imperfect price beats a stale or absent one for
+ * swaps). The only hard stops live in the poller: a null price (nothing
+ * exists to publish) and the divergence/heartbeat trigger (gas).
  */
-export function validateCandidate(
+export function assessCandidate(
   candidate: CandidateLike,
-  opts: {
-    config: ResolvedPublisherConfig;
-    now: Date;
-    previousPublishedPrice: number | null;
-    breakers?: BreakerMap;
-  },
-): ValidationResult {
+  opts: AssessOptions,
+): Assessment {
   const { config, now } = opts;
   const violations: PublishViolation[] = [];
 
   if (candidate.status !== "healthy" && candidate.status !== "degraded") {
     violations.push({
       code: VIOLATION.status,
-      detail: `status "${candidate.status}" is not publishable`,
+      detail: `status "${candidate.status}" is not settlement-grade`,
     });
   }
 
@@ -126,21 +124,19 @@ export function validateCandidate(
     }
   }
 
-  if (violations.length > 0) return { ok: false, violations };
+  if (candidate.price === null) return { violations, value: null };
 
   const value: PublishableIndexValue = {
     candidateId: candidate.id,
     gpuId: candidate.gpuId,
     panelId: candidate.panelId,
-    price: candidate.price as number,
+    price: candidate.price,
     confidenceLow: candidate.confidenceLow,
     confidenceHigh: candidate.confidenceHigh,
-    // Narrowed by the status violation above; TS can't see through the
-    // accumulator.
-    status: candidate.status as "healthy" | "degraded",
+    status: candidate.status,
     methodologyVersion: candidate.methodologyVersion,
     calcHash: candidate.calcHash,
     computedAt: candidate.computedAt.toISOString(),
   };
-  return { ok: true, value };
+  return { violations, value };
 }

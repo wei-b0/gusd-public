@@ -20,7 +20,11 @@ export interface PublisherStore {
   latestCandidates(): Promise<CandidateLike[]>;
   /** The stored methodology config for an exact version — null when absent. */
   methodologyConfig(version: string): Promise<MethodologyConfig | null>;
-  latestPublishedPrice(gpuId: string, target: string): Promise<number | null>;
+  /** The last published value for this gpu on this target — null on a first publish. */
+  latestPublication(
+    gpuId: string,
+    target: string,
+  ): Promise<{ price: number; publishedAt: Date } | null>;
   alreadyPublished(candidateId: string, target: string): Promise<boolean>;
   recordPublication(
     value: PublishableIndexValue,
@@ -82,9 +86,12 @@ export class DrizzlePublisherStore implements PublisherStore {
     return (row?.config as MethodologyConfig | undefined) ?? null;
   }
 
-  async latestPublishedPrice(gpuId: string, target: string): Promise<number | null> {
+  async latestPublication(
+    gpuId: string,
+    target: string,
+  ): Promise<{ price: number; publishedAt: Date } | null> {
     const row = await getLatestPublication(this.db, gpuId, target);
-    return row?.price ?? null;
+    return row ? { price: row.price, publishedAt: row.publishedAt } : null;
   }
 
   async alreadyPublished(candidateId: string, target: string): Promise<boolean> {

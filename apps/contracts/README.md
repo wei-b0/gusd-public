@@ -121,6 +121,69 @@ The swap path (USDT→USDG style routing) cannot be exercised on testnet
 until a funded USDG/stable pool exists; the Across funding panel degrades
 to guidance on 46630 by registry capability — Across serves mainnets only.
 
+### Full-catalogue dev/testnet deploy
+
+`Deploy.s.sol` is the production posture: every contract, but only H100
+registered, no pool liquidity, and the reserve as the sole stable. That is
+enough for the test suite, not for exercising the app end to end.
+`script/Deploy.full.s.sol` layers the full dev/test posture on top of an
+unchanged production deploy:
+
+```shell
+$ anvil
+$ PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 --broadcast --sig "runFull()"
+```
+
+Works on Anvil or any testnet with a funded deployer key (same env
+passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
+— the inner production deploy reads them). What it adds beyond
+`Deploy.run()`:
+
+- **All 7 SKUs** (A100/H100/H200/B200/B300/GB200/GB300) created, oracle-seeded
+  (\$1.80–\$10.00/GPU-hour), issuance enabled, canonical pool initialized from
+  the seed price.
+- **Genesis inventory**: 10,000 GPU per SKU issued to the deployer via
+  100%-issuance buys paid in gUSD.
+- **A mock second stable** (`Mock Tether USD`, 6 decimals) deployed through
+  the CREATE2 proxy with the fixed salt `gusd.mock.usdt.v1` — the address is
+  deterministic per chain (Anvil: `0xAd8F7921738819152FFA371c984D736842ed8AFE`)
+  — whitelisted on the StableRouter, and paired with the reserve in a
+  hook-free fee-100/tickSpacing-1 pool at 1:1, exactly the key the web's
+  funding panel quotes.
+- **Liquidity** on every pool via PositionManager (Permit2 double-approvals):
+  full-range on all 7 GPU pools, ~10M units per side on the stable pool.
+- **Compact activity pass** (anvil keys #2/#3): buys, sells, a USDT→gUSD
+  mint plus redeem, an oracle reprice with an issuance-only buy, fee
+  harvest, revenue distribution, and a stake — so the tape, ledgers, cost
+  basis, and sgUSD accrual are populated immediately.
+- **End asserts**: every pool liquid and quoter-routable, router/hook dust
+  drained, both stables whitelisted, stable-pool 1:1 within tolerance,
+  sgUSD accreting. The record is re-persisted with `stables = [reserve,
+  USDT]` and the original `startBlock` preserved (indexer anchor).
+
+After deploying, run `pnpm --filter @gusd/web abi:sync` and pin the mock
+USDT in `apps/web/src/data/web3/stables.ts` (already pinned for
+31337/84532/46630 — the deterministic address means redeploys need nothing).
+
+Division of labor: **`Deploy` + `Demo`** replays the minimal H100 flow on a
+*virgin* Anvil and stays the CI/contract-test recipe. **`Deploy.full`** is
+the everything posture for web E2E on Anvil or testnet — its result is not
+virgin, so `Demo` will not run after it. Two corollaries:
+
+- Run plain `Deploy` (no `Demo`) and the funding panel intentionally fails
+  closed: `stables.ts` pins the mock USDT the minimal record's StableRouter
+  does not whitelist. Re-run `Deploy.full` (or remove the pin deliberately)
+  to restore the multi-stable surface.
+- The web anvil suite's trading tests (`trading.anvil.test.ts`) assert the
+  *genesis* posture — an empty canonical pool, buys = 100% issuance, sells
+  unquotable. They hold only against a plain `Deploy` chain; after
+  `Deploy.full` they fail by design (the pool has depth).
+- The indexer derives canonical GPU pools on-chain at boot, so start it
+  fresh after this deploy. An indexer already running against the same
+  chain/schema misses pools created after it started — follow the
+  fresh-schema redeploy in `docs/indexer/ARCHITECTURE.md`.
+
 ### Cast
 
 ```shell
