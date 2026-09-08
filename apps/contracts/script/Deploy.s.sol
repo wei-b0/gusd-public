@@ -22,12 +22,14 @@ import {GUSD} from "../src/GUSD.sol";
 import {sgUSD} from "../src/sgUSD.sol";
 import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
 import {StableRouter} from "../src/StableRouter.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../src/oracle/IGPUPriceOracle.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
+import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 
@@ -57,6 +59,7 @@ contract Deploy is Script {
         address gusd;
         address sgusd;
         address ledger;
+        address marketLiquidity;
         address issuance;
         address oracle;
         address hook;
@@ -142,11 +145,17 @@ contract Deploy is Script {
                 )
             );
 
-        // 3) protocol primitives
+        // 3) protocol primitives. Deploy order breaks the POL <-> issuance
+        //    construction cycle: PoolManager -> gusd/ledger -> POL -> issuance
+        //    -> hook -> POL.setRefs (one-shot, owner-gated).
         d.gusd = address(new GUSD(IERC20(d.underlying), deployer));
         d.sgusd = address(new sgUSD(IERC20(d.gusd), deployer));
         d.ledger = address(new RevenueLedger(IERC20(d.gusd), deployer));
-        d.issuance = address(new GPUIssuance(IERC20(d.gusd), IGPUPriceOracle(d.oracle), d.ledger, deployer));
+        d.marketLiquidity =
+            address(new GPUMarketLiquidity(IPoolManager(d.poolManager), GUSD(d.gusd), d.ledger, deployer));
+        d.issuance = address(
+            new GPUIssuance(IERC20(d.gusd), IGPUPriceOracle(d.oracle), d.ledger, d.marketLiquidity, deployer)
+        );
 
         // 4) mine + deploy the 0x10CC hook against the CREATE2 proxy
         bytes memory ctorArgs = abi.encode(IPoolManager(d.poolManager), d.gusd, d.issuance, d.ledger, deployer);
@@ -156,6 +165,7 @@ contract Deploy is Script {
             new GPUHook{salt: salt}(IPoolManager(d.poolManager), d.gusd, GPUIssuance(d.issuance), d.ledger, deployer)
         );
         require(d.hook == hookAddr, "hook address mismatch");
+        GPUMarketLiquidity(d.marketLiquidity).setRefs(d.issuance, d.hook);
 
         // 5) product router
         d.router = address(
@@ -202,7 +212,7 @@ contract Deploy is Script {
         //    live at deploy time; genesis BUYs are 100% issuance until LPs add
         //    depth through the PositionManager.
         bytes32 h100Id = bytes32(bytes("H100_SXM_80GB"));
-        GPUIssuance(d.issuance).createGpu(h100Id, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
+        GPUIssuance(d.issuance).createGpu(h100Id, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
         GPUIssuance(d.issuance).setIssuanceEnabled(h100Id, true);
         if (oracleDeployed) {
             // genesis seed via the owner hatch: works for any PUBLISHER value,
@@ -242,12 +252,8 @@ contract Deploy is Script {
     function _initializeCanonicalPool(Deployment memory d, bytes32 gpuId) internal {
         address gpuToken = GPUIssuance(d.issuance).tokenOf(gpuId);
         IGPUIssuance.PoolParams memory pp = GPUIssuance(d.issuance).poolParamsOf(gpuId);
-        (Currency c0, Currency c1) = d.gusd < gpuToken
-            ? (Currency.wrap(d.gusd), Currency.wrap(gpuToken))
-            : (Currency.wrap(gpuToken), Currency.wrap(d.gusd));
-        PoolKey memory key =
-            PoolKey({currency0: c0, currency1: c1, fee: pp.fee, tickSpacing: pp.tickSpacing, hooks: GPUHook(d.hook)});
-        bool gIsC0 = Currency.unwrap(c0) == d.gusd;
+        PoolKey memory key = GpuPoolKey.canonical(d.gusd, gpuToken, pp, GPUHook(d.hook));
+        bool gIsC0 = GpuPoolKey.gusdIsCurrency0(key, d.gusd);
         // sqrtRatio = sqrt(gUSD-wei per GPU-wei) * 2^96 from the live oracle;
         // when the ordering flips, invert: 2^192 / sqrtRatio == sqrt(1/ratio) * 2^96
         uint256 sqrtRatio = GPUIssuance(d.issuance).oracleSqrtPriceX96(gpuId);
@@ -267,6 +273,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "gusd", d.gusd);
         vm.serializeAddress(json, "sgusd", d.sgusd);
         vm.serializeAddress(json, "ledger", d.ledger);
+        vm.serializeAddress(json, "marketLiquidity", d.marketLiquidity);
         vm.serializeAddress(json, "issuance", d.issuance);
         vm.serializeAddress(json, "oracle", d.oracle);
         if (oracleDeployed) {

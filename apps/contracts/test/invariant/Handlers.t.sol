@@ -34,9 +34,11 @@ interface IWorld {
     function hookT() external view returns (address);
     function actors(uint256) external view returns (address);
     function swapRouterT() external view returns (address);
+    function marketLiquidityT() external view returns (address);
     function poolKey() external view returns (PoolKey memory);
     function recordIssuance(uint256 base, uint256 fee, uint256 minted) external;
     function recordHarvest(uint256 amount) external;
+    function recordPolCollect(uint256 amount) external;
 }
 
 error NotWorld();
@@ -123,6 +125,37 @@ contract HandlerIssuance is HandlerBase {
         (uint256 base, uint256 fee) = iss.issue(H100Id.id(), amount, actor);
         // ghosts live on the world; the fuzzer never targets it
         w.recordIssuance(base, fee, amount);
+    }
+}
+
+/// @notice Drives the POL's permissionless surface: deploy pending principal,
+///         recenter stale bands, collect fees. Every path is best-effort —
+///         the honest no-op outcomes (defer, NothingToRecenter, stale
+///         reference) revert or return false and the handler moves on.
+contract HandlerLiquidity is HandlerBase {
+    constructor(IWorld world) HandlerBase(world) {}
+
+    function deployPending() external {
+        try MarketLiquidityLike(w.marketLiquidityT()).deployPending(H100Id.id()) {} catch {}
+    }
+
+    function recenter(uint256 maxBands) external {
+        try MarketLiquidityLike(w.marketLiquidityT()).recenter(H100Id.id(), bound(maxBands, 1, 10)) {} catch {}
+    }
+
+    /// @notice Sweep LP fees: gUSD -> revenue ledger, GPU -> ask inventory.
+    ///         The world's revenue-conservation invariant tracks the ledger
+    ///         delta (exact even for fees swept inside the call).
+    function collect() external {
+        uint256 before = _ledgerReceived();
+        try MarketLiquidityLike(w.marketLiquidityT()).collect(H100Id.id()) {} catch {}
+        uint256 delta = _ledgerReceived() - before;
+        if (delta > 0) w.recordPolCollect(delta);
+    }
+
+    function _ledgerReceived() internal view returns (uint256) {
+        address l = w.ledger();
+        return GusdLike(w.gusd()).balanceOf(l) + RevenueLedgerLike(l).totalToVault() + RevenueLedgerLike(l).totalToTreasury();
     }
 }
 
@@ -218,6 +251,14 @@ interface RevenueLedgerLike {
     function setSplit(uint16) external;
     function pendingRevenue() external view returns (uint256);
     function distribute() external;
+    function totalToVault() external view returns (uint256);
+    function totalToTreasury() external view returns (uint256);
+}
+
+interface MarketLiquidityLike {
+    function deployPending(bytes32) external returns (bool);
+    function recenter(bytes32, uint256) external returns (uint256);
+    function collect(bytes32) external;
 }
 
 interface OracleLike {

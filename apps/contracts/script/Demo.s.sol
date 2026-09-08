@@ -20,11 +20,13 @@ import {Actions} from "@uniswap/v4-periphery/libraries/Actions.sol";
 import {Planner, Plan} from "v4-periphery-test/shared/Planner.sol";
 import {GUSD} from "../src/GUSD.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../src/GPUToken.sol";
 import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {sgUSD} from "../src/sgUSD.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
+import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {MockGPUPriceOracle} from "../src/oracle/MockGPUPriceOracle.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
@@ -62,9 +64,11 @@ contract Demo is Script {
         address posmAddr = vm.parseJsonAddress(json, ".positionManager");
         address quoterAddr = vm.parseJsonAddress(json, ".quoter");
         address oracleAddr = vm.parseJsonAddress(json, ".oracle");
+        address polAddr = vm.parseJsonAddress(json, ".marketLiquidity");
 
         GUSD gusd = GUSD(gusdAddr);
         GPUIssuance issuance = GPUIssuance(issuanceAddr);
+        GPUMarketLiquidity pol = GPUMarketLiquidity(polAddr);
         GPUHook hook = GPUHook(hookAddr);
         RevenueLedger ledger = RevenueLedger(ledgerAddr);
         sgUSD sg = sgUSD(sgusdAddr);
@@ -82,20 +86,18 @@ contract Demo is Script {
 
         // canonical pool (initialized + registered at deploy time)
         bool gIsC0 = gusdAddr < address(h100);
-        PoolKey memory key;
-        key.currency0 = gIsC0 ? Currency.wrap(gusdAddr) : Currency.wrap(address(h100));
-        key.currency1 = gIsC0 ? Currency.wrap(address(h100)) : Currency.wrap(gusdAddr);
-        IGPUIssuance.PoolParams memory pp = issuance.poolParamsOf(H100);
-        key.fee = pp.fee;
-        key.tickSpacing = pp.tickSpacing;
-        key.hooks = hook;
+        PoolKey memory key = GpuPoolKey.canonical(
+            gusdAddr, address(h100), issuance.poolParamsOf(H100), hook
+        );
         PoolId poolId = key.toId();
         require(hook.poolGpuId(poolId) == H100, "pool not registered");
 
         // ---------------------------------------------------- 1) GENESIS BUY
         // alice funds herself with gUSD, then buys 100 H100 from a market with
         // zero circulating supply and zero pool liquidity: 100% primary
-        // issuance at the oracle price + 0.5% issuance fee, no pool leg.
+        // issuance at the oracle price + 0.5% issuance fee, no pool leg. The
+        // principal is forwarded to the POL and the router's best-effort
+        // deployPending places it as the market's first bid band.
         vm.startBroadcast(pk);
         MockERC20(usdcAddr).mint(alice, 1_000_000e6);
         vm.stopBroadcast();
@@ -119,7 +121,10 @@ contract Demo is Script {
         vm.stopBroadcast();
         require(paid1 == 251_250_000, "step1 genesis cost (100 x 2.5 x 1.005)");
         require(h100.balanceOf(alice) == 100e18, "step1 tokens");
-        require(issuance.gpuReserve(H100) == 250_000_000, "step1 reserve");
+        require(pol.principalContributed(H100) == 250_000_000, "step1 principal capitalized");
+        require(pol.pendingPrincipal(H100) == 0, "step1 router deployed pending");
+        require(gusd.balanceOf(issuanceAddr) == 0, "step1 issuance holds no gUSD");
+        require(pol.bidDepth(H100) >= 250_000_000 - 100, "step1 bid depth placed");
         require(hook.totalTradingFeesAccrued() == hookFees0, "step1 no hook fee on genesis");
         require(gusd.balanceOf(ledgerAddr) - ledgerGusd0 == 1_250_000, "step1 issuance fee");
         require(gusd.balanceOf(routerAddr) == 0 && h100.balanceOf(routerAddr) == 0, "step1 router empty");
@@ -186,7 +191,7 @@ contract Demo is Script {
         // 5 H100: 3 from the pool + 2 minted via issuance; the pool leg keeps
         // the market deep while issuance tops it up at the oracle ceiling.
         vm.startBroadcast(BOB_PK);
-        uint256 reserve4 = issuance.gpuReserve(H100);
+        uint256 principal4 = pol.principalContributed(H100);
         uint256 ledgerGusd4 = gusd.balanceOf(ledgerAddr);
         GpuRouter.BuyParams memory b4 = GpuRouter.BuyParams({
             gpuId: H100,
@@ -201,7 +206,7 @@ contract Demo is Script {
         router.buy(b4);
         vm.stopBroadcast();
         require(h100.balanceOf(bob) == 7e18, "step4 tokens");
-        require(issuance.gpuReserve(H100) - reserve4 == 5_000_000, "step4 issuance reserve (2 x 2.5)");
+        require(pol.principalContributed(H100) - principal4 == 5_000_000, "step4 principal (2 x 2.5)");
         require(gusd.balanceOf(ledgerAddr) - ledgerGusd4 == 25_000, "step4 issuance fee (0.5% of 5)");
         require(gusd.balanceOf(routerAddr) == 0 && h100.balanceOf(routerAddr) == 0, "step4 router empty");
 
@@ -212,6 +217,7 @@ contract Demo is Script {
         h100.approve(routerAddr, type(uint256).max);
         uint256 hookFees5 = hook.totalTradingFeesAccrued();
         uint256 bobUsdcBefore = underlying.balanceOf(bob);
+        uint256 depthBefore = pol.bidDepth(H100);
         GpuRouter.SellParams memory s5 = GpuRouter.SellParams({
             gpuId: H100, gpuIn: 1e18, payout: usdcAddr, minOut: 2e6, sqrtLimitX96: 0, recipient: bob
         });
@@ -220,7 +226,8 @@ contract Demo is Script {
         require(h100.balanceOf(bob) == 6e18, "step5 tokens");
         require(underlying.balanceOf(bob) - bobUsdcBefore == out5 && out5 >= 2e6, "step5 payout");
         require(hook.totalTradingFeesAccrued() > hookFees5, "step5 hook fee accrued");
-        require(issuance.gpuReserve(H100) == 255_000_000, "step5 reserves untouched by trades");
+        require(pol.principalContributed(H100) == 255_000_000, "step5 principal untouched by trades");
+        require(pol.bidDepth(H100) <= depthBefore, "step5 bid depth never grows from a sell");
 
         // ---------------------------------------------- 6) oracle reprice
         // the pool and reserves are untouched; only the NEXT issuance reprices
@@ -266,7 +273,9 @@ contract Demo is Script {
         // ------------------------------------------- Definition-of-Success
         require(underlying.balanceOf(gusdAddr) == gusd.totalSupply(), "EOS: reserve == supply");
         require(gusd.balanceOf(routerAddr) == 0 && h100.balanceOf(routerAddr) == 0, "EOS: router empty");
-        require(issuance.gpuReserve(H100) == 258_000_000, "EOS: issuance reserve (250 + 5 + 3)");
+        require(pol.principalContributed(H100) == 258_000_000, "EOS: principal capitalized (250 + 5 + 3)");
+        require(gusd.balanceOf(issuanceAddr) == 0, "EOS: issuance holds no gUSD");
+        require(pol.bidDepth(H100) > 0, "EOS: bid depth exists");
         require(gusd.balanceOf(address(hook)) == 0, "EOS: hook drained");
         uint256 redeemable = sg.convertToAssets(1e6);
         require(redeemable > 1e6, "EOS: sgUSD share price appreciated");

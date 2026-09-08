@@ -14,6 +14,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {GUSD} from "../../src/GUSD.sol";
 import {RevenueLedger} from "../../src/RevenueLedger.sol";
 import {GPUIssuance} from "../../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
@@ -34,6 +35,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     GPUIssuance internal issuance;
     GPUHook internal hook;
     GpuRouter internal router;
+    GPUMarketLiquidity internal pol;
     StateView internal stateView;
     address internal ledger;
     GPUToken internal gpu;
@@ -55,7 +57,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
         oracle = new MockGPUPriceOracle(address(this));
-        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
+        pol = new GPUMarketLiquidity(manager, gusd, ledger, address(this));
+        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
         GPU_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_MAIN");
 
         bytes memory ctorArgs =
@@ -69,19 +72,20 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         new GPUHook{salt: salt}(IPoolManager(address(manager)), address(gusd), issuance, ledger, address(this));
 
         router = new GpuRouter(IPoolManager(address(manager)), gusd, issuance, hook);
+        pol.setRefs(address(issuance), address(hook));
 
         gusd.setRevenueSink(ledger);
         RevenueLedger(ledger).setVault(makeAddr("sgusdVault"));
         RevenueLedger(ledger).setTreasury(makeAddr("treasury"));
 
-        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING);
+        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING, 600, 120);
         issuance.setIssuanceEnabled(GPU_ID, true);
         gpu = GPUToken(issuance.tokenOf(GPU_ID));
         oracle.setPrice(GPU_ID, 25_000, block.timestamp); // 2.5000 gUSD/GPU-hour
 
         // a second GPU with NO pool: genesis + unregistered-pool tests
         GENESIS_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_GENESIS");
-        issuance.createGpu(GENESIS_ID, "Genesis GPU", "GGPU", 50, POOL_FEE, TICK_SPACING);
+        issuance.createGpu(GENESIS_ID, "Genesis GPU", "GGPU", 50, POOL_FEE, TICK_SPACING, 600, 120);
         issuance.setIssuanceEnabled(GENESIS_ID, true);
         oracle.setPrice(GENESIS_ID, 25_000, block.timestamp);
 
@@ -170,7 +174,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 gpuOut = 10e18; // 10 GPU-hours
         (uint256 base, uint256 issFee,) = issuance.quoteIssue(GENESIS_ID, gpuOut);
 
-        uint256 reserveBefore = issuance.gpuReserve(GENESIS_ID);
+        uint256 pendingBefore = pol.pendingPrincipal(GENESIS_ID);
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
@@ -190,7 +194,9 @@ abstract contract GpuRouterTestBase is Test, Deployers {
 
         assertEq(paid, base + issFee, "paid = issuance quote");
         assertEq(GPUToken(issuance.tokenOf(GENESIS_ID)).balanceOf(alice), gpuOut, "recipient minted");
-        assertEq(issuance.gpuReserve(GENESIS_ID), reserveBefore + base, "reserve grew by base");
+        assertEq(pol.principalContributed(GENESIS_ID), pendingBefore + base, "principal grew by base");
+        assertEq(pol.pendingPrincipal(GENESIS_ID), pendingBefore + base, "no pool: principal stays pending");
+        assertEq(pol.principalContributed(GENESIS_ID), pendingBefore + base, "principal counted on arrival");
         assertEq(gusd.balanceOf(ledger), ledgerBefore + issFee, "issuance fee to ledger");
         assertEq(gusd.balanceOf(alice), aliceGusdBefore - paid, "alice spent quote");
         assertEq(hook.totalTradingFeesAccrued(), 0, "no hook fee on genesis");
@@ -264,7 +270,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 issueLeg = 5e11;
         uint256 gpuOut = poolLeg + issueLeg;
         (uint256 base, uint256 issFee,) = issuance.quoteIssue(GPU_ID, issueLeg);
-        uint256 reserveBefore = issuance.gpuReserve(GPU_ID);
+        uint256 principalBefore = pol.principalContributed(GPU_ID);
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
 
@@ -283,7 +289,9 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         );
 
         assertEq(gpu.balanceOf(alice), gpuOut, "both legs delivered");
-        assertEq(issuance.gpuReserve(GPU_ID), reserveBefore + base, "issuance reserve grew");
+        assertEq(pol.principalContributed(GPU_ID), principalBefore + base, "principal grew");
+        assertEq(pol.pendingPrincipal(GPU_ID), 0, "router deployed pending into the band");
+        assertGt(pol.bidDepth(GPU_ID), 0, "bid band live");
         assertEq(gusd.balanceOf(ledger), ledgerBefore + issFee, "issuance fee to ledger");
         uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
         // paid = poolLeg + hookFee + (base + issFee); basis = poolLeg only

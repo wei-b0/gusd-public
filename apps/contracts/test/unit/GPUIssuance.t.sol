@@ -11,6 +11,9 @@ import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 
 contract GPUIssuanceTest is Test {
     MockERC20 internal underlying;
@@ -18,6 +21,8 @@ contract GPUIssuanceTest is Test {
     MockGPUPriceOracle internal oracle;
     address internal ledger = makeAddr("ledger");
     GPUIssuance internal issuance;
+    PoolManager internal poolManager;
+    GPUMarketLiquidity internal pol;
     address internal alice = makeAddr("alice");
 
     bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
@@ -28,9 +33,14 @@ contract GPUIssuanceTest is Test {
         underlying = new MockERC20("USD Coin", "USDC", 6);
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new MockGPUPriceOracle(address(this));
-        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
+        poolManager = new PoolManager(address(this));
+        pol = new GPUMarketLiquidity(IPoolManager(address(poolManager)), gusd, ledger, address(this));
+        issuance = new GPUIssuance(
+            IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this)
+        );
         gusd.setRevenueSink(ledger); // any sink ok for tests
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
+        pol.setRefs(address(issuance), address(0)); // minimal rig: no hook
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
         issuance.setIssuanceEnabled(H100, true);
         oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         // fund alice with gUSD
@@ -50,10 +60,13 @@ contract GPUIssuanceTest is Test {
         // fee = ceil(250_000_000 * 50 / 10_000) = 1_250_000 = 1.25 gUSD
         assertEq(fee, 1_250_000);
         assertEq(GPUToken(issuance.tokenOf(H100)).balanceOf(alice), 100e18);
-        assertEq(issuance.gpuReserve(H100), 250_000_000);
+        // principal -> POL custody: pending (no pool in this rig), counted
+        // as contributed on arrival; issuance holds zero gUSD at rest
+        assertEq(pol.pendingPrincipal(H100), 250_000_000);
+        assertEq(pol.principalContributed(H100), 250_000_000);
+        assertEq(gusd.balanceOf(address(pol)), 250_000_000);
         assertEq(gusd.balanceOf(ledger), 1_250_000);
-        // exact accounting: contract holds reserve, ledger holds fee
-        assertEq(gusd.balanceOf(address(issuance)), 250_000_000);
+        assertEq(gusd.balanceOf(address(issuance)), 0);
     }
 
     function test_quoteMatchesCharge() public {
@@ -75,7 +88,7 @@ contract GPUIssuanceTest is Test {
         (uint256 base,) = issuance.issue(H100, amount, alice);
         // amount*price/1e16 = 357142.857... -> ceil 357143
         assertEq(base, 357_143);
-        assertEq(issuance.gpuReserve(H100), 357_143);
+        assertEq(pol.principalContributed(H100), 357_143);
     }
 
     function test_ceilOnFee() public {
@@ -136,22 +149,22 @@ contract GPUIssuanceTest is Test {
     function test_create2Determinism() public {
         address t1 = issuance.tokenOf(H100);
         vm.expectRevert(GPUIssuance.GpuAlreadyExists.selector);
-        issuance.createGpu(H100, "x", "x", 0, 3000, 60);
+        issuance.createGpu(H100, "x", "x", 0, 3000, 60, 600, 120);
         // salt == gpuId: recreated independently it would land at same address
         GPUToken tok = GPUToken(t1);
         assertEq(tok.issuer(), address(issuance));
         assertEq(tok.gpuId(), H100);
     }
 
-    function test_reserveNeverDecreasesOnTrades() public {
+    function test_principalAccountingUntouchedByTransfers() public {
         vm.prank(alice);
         issuance.issue(H100, 100e18, alice);
-        uint256 r0 = issuance.gpuReserve(H100);
-        // alice transfers tokens around; reserve untouched
+        uint256 c0 = pol.principalContributed(H100);
+        // alice transfers tokens around; accounting is cumulative, untouched
         GPUToken tok = GPUToken(issuance.tokenOf(H100));
         vm.prank(alice);
         tok.transfer(address(0xBEEF), 1e18);
-        assertEq(issuance.gpuReserve(H100), r0);
+        assertEq(pol.principalContributed(H100), c0);
     }
 
     function test_fuzz_reserveCoversExactOracleValue(uint256 amount, uint256 price) public {
@@ -165,10 +178,15 @@ contract GPUIssuanceTest is Test {
         gusd.mint(20_000_000e6, alice); // covers base<=1e13 + fee
         gusd.approve(address(issuance), type(uint256).max);
         vm.stopPrank();
-        uint256 gusdBefore = gusd.balanceOf(address(issuance));
+        uint256 contributedBefore = pol.principalContributed(H100);
+        uint256 custodyBefore = gusd.balanceOf(address(pol));
         vm.prank(alice);
         (uint256 base,) = issuance.issue(H100, amount, alice);
-        assertEq(issuance.gpuReserve(H100), gusdBefore + base);
+        // cumulative accounting grows by exactly base; custody matches (no
+        // pool in this rig -> all principal stays pending on the POL)
+        assertEq(pol.principalContributed(H100), contributedBefore + base);
+        assertEq(gusd.balanceOf(address(pol)), custodyBefore + base);
+        assertEq(gusd.balanceOf(address(issuance)), 0);
         // reserve >= exact real-world value: amount * price / 1e16 (floor would underpay)
         uint256 exact = Math__mulDiv(amount, price, 1e16);
         assertGe(base, exact);
@@ -180,7 +198,7 @@ contract GPUIssuanceTest is Test {
     function test_constructor_rejectsMismatchedOraclePriceScale() public {
         OddScaleOracle odd = new OddScaleOracle();
         vm.expectRevert(GPUIssuance.PriceScaleMismatch.selector);
-        new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(odd)), ledger, address(this));
+        new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(odd)), ledger, address(pol), address(this));
     }
 
     function test_compositionDivisorDerivedFromOracleScale() public {
@@ -192,7 +210,7 @@ contract GPUIssuanceTest is Test {
     // ------------------------------------- quoteIssue == issue guards
 
     function test_quoteIssue_revertsOnUnpublishedGpu() public {
-        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60);
+        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60, 600, 120);
         issuance.setIssuanceEnabled(H200, true);
         // known + enabled, but the oracle never published it: price 0
         vm.expectRevert(GPUIssuance.OraclePriceZero.selector);
@@ -250,7 +268,7 @@ contract GPUIssuanceTest is Test {
     }
 
     function test_oracleSqrtPriceX96_revertsOnUnpublishedGpu() public {
-        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60);
+        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60, 600, 120);
         vm.expectRevert(GPUIssuance.OraclePriceZero.selector);
         issuance.oracleSqrtPriceX96(H200);
     }

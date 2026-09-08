@@ -5,6 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {GUSD} from "../../src/GUSD.sol";
 import {GPUIssuance} from "../../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
+import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUPriceOracle} from "../../src/oracle/GPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
@@ -19,6 +22,8 @@ contract OraclePublicationTest is Test {
     GPUPriceOracle internal oracle;
     address internal ledger = makeAddr("ledger");
     GPUIssuance internal issuance;
+    IPoolManager internal manager;
+    GPUMarketLiquidity internal pol;
     address internal publisher = makeAddr("publisher");
     address internal alice = makeAddr("alice");
 
@@ -29,9 +34,12 @@ contract OraclePublicationTest is Test {
         underlying = new MockERC20("USD Coin", "USDC", 6);
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new GPUPriceOracle(address(this), publisher, 0);
-        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
+        manager = new PoolManager(address(this));
+        pol = new GPUMarketLiquidity(manager, gusd, ledger, address(this));
+        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
+        pol.setRefs(address(issuance), address(0)); // hook-less rig: POL ops stay pending
         gusd.setRevenueSink(ledger);
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
         issuance.setIssuanceEnabled(H100, true);
         // fund alice with gUSD
         underlying.mint(alice, 1_000_000e6);
@@ -55,7 +63,7 @@ contract OraclePublicationTest is Test {
         assertEq(base, 250_000_000);
         assertEq(fee, 1_250_000); // 50 bps
         assertEq(GPUToken(issuance.tokenOf(H100)).balanceOf(alice), 100e18);
-        assertEq(issuance.gpuReserve(H100), 250_000_000);
+        assertEq(pol.principalContributed(H100), 250_000_000);
         assertEq(gusd.balanceOf(ledger), 1_250_000);
     }
 
@@ -139,7 +147,7 @@ contract OraclePublicationTest is Test {
 
     function test_unknownGpuPriceZero() public {
         bytes32 b200 = bytes32(bytes("B200_192GB"));
-        issuance.createGpu(b200, "B200 192GB GPU-hour", "B200", 50, 3000, 60);
+        issuance.createGpu(b200, "B200 192GB GPU-hour", "B200", 50, 3000, 60, 600, 120);
         issuance.setIssuanceEnabled(b200, true);
         // publisher never published B200: 0 = unknown, issuance fails closed
         vm.prank(alice);

@@ -11,6 +11,7 @@ export interface ProtocolAddresses {
   hook: Address;
   issuance: Address;
   ledger: Address;
+  marketLiquidity: Address;
   oracle: Address;
   /** The oracle publication identity — present only when this deployment
    *  also deployed the oracle (an external ORACLE keeps the field absent). */
@@ -37,18 +38,19 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
   "31337": {
     "chainId": 31337,
     "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0x60C4e0F3cFb170B5940C5e50587bF930D2e690cc",
-    "issuance": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
+    "hook": "0xB8a1836Ed461310312F5568E087a44baC70C90cc",
+    "issuance": "0x9A676e781A523b5d0C0e43731313A708CB607508",
     "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
+    "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
     "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     "oraclePublisher": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
     "permit2": "0x61c36a8d610163660E21a8b7359e1Cac0C9133e1",
     "poolManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
     "positionManager": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
     "quoter": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-    "router": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
+    "router": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
     "sgusd": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
-    "stableRouter": "0x959922bE3CAee4b8Cd9a407cc3ac1C251C2007B1",
+    "stableRouter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
     "stables": [
       "0x5FbDB2315678afecb367f032d93F642f64180aa3",
       "0xAd8F7921738819152FFA371c984D736842ed8AFE"

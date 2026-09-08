@@ -14,6 +14,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {GUSD} from "../../src/GUSD.sol";
 import {RevenueLedger} from "../../src/RevenueLedger.sol";
 import {GPUIssuance} from "../../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
@@ -36,6 +37,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
     GUSD internal gusd;
     MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
+    GPUMarketLiquidity internal pol;
     GPUHook internal hook;
     StateView internal stateView;
     address internal ledger;
@@ -56,7 +58,8 @@ abstract contract GPUHookTestBase is Test, Deployers {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
         oracle = new MockGPUPriceOracle(address(this));
-        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(this));
+        pol = new GPUMarketLiquidity(manager, gusd, ledger, address(this));
+        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
         GPU_ID = _pickGpuId(_wantGusdIsCurrency0());
 
         // mine a salt so the low 14 bits equal the v2 flag set (0x10CC)
@@ -69,11 +72,12 @@ abstract contract GPUHookTestBase is Test, Deployers {
         (address hookAddr, bytes32 salt) = HookMiner.find(address(this), flags, type(GPUHook).creationCode, ctorArgs);
         hook = GPUHook(hookAddr);
         new GPUHook{salt: salt}(IPoolManager(address(manager)), address(gusd), issuance, ledger, address(this));
+        pol.setRefs(address(issuance), address(hook));
 
         gusd.setRevenueSink(ledger);
         RevenueLedger(ledger).setVault(makeAddr("sgusdVault"));
         RevenueLedger(ledger).setTreasury(makeAddr("treasury"));
-        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING);
+        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING, 600, 120);
         issuance.setIssuanceEnabled(GPU_ID, true);
         gpu = GPUToken(issuance.tokenOf(GPU_ID));
         oracle.setPrice(GPU_ID, 25_000, block.timestamp); // 2.5000 gUSD/GPU

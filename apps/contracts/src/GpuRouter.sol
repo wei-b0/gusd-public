@@ -16,7 +16,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {GUSD} from "./GUSD.sol";
 import {GPUIssuance} from "./GPUIssuance.sol";
 import {IGPUIssuance} from "./interfaces/IGPUIssuance.sol";
+import {IMarketLiquidity} from "./interfaces/IMarketLiquidity.sol";
 import {GPUHook} from "./hooks/GPUHook.sol";
+import {GpuPoolKey} from "./libraries/GpuPoolKey.sol";
 
 /// @title GpuRouter — the product surface: BUY GPU and SELL GPU, one tx each.
 /// @notice Hides gUSD mechanics, primary issuance, Uniswap v4 routing, LP and
@@ -151,10 +153,15 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             hookFee = hook.totalTradingFeesAccrued() - accruedBefore;
         }
 
-        // 3) issuance leg: oracle-priced, mints straight to the recipient
+        // 3) issuance leg: oracle-priced, mints straight to the recipient.
+        //    Best-effort placement: the principal just contributed pends in
+        //    the POL and the router attempts deployPending so normal latency
+        //    is ~zero; a failed attempt leaves it pending (self-healing via
+        //    the next buy or a keeper — pending is state, not loss).
         uint256 issuanceFee;
         if (p.issueGpuOut > 0) {
             (, issuanceFee) = issuance.issue(p.gpuId, p.issueGpuOut, recipient);
+            try IMarketLiquidity(issuance.marketLiquidity()).deployPending(p.gpuId) {} catch {}
         }
 
         // 4) refund the unconsumed balance; the router never holds funds.
@@ -198,8 +205,9 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
     // ---------------------------------------------------------------- SELL
 
     /// @notice SELL `gpuIn` GPU tokens for at least `minOut` in `payout`
-    ///         (gUSD or USDC). Pure secondary execution — issuance reserves
-    ///         and the oracle are untouched.
+    ///         (gUSD or USDC). Pure secondary execution — proceeds come from
+    ///         pool liquidity (POL bands + external LPs); issuance and the
+    ///         oracle are untouched.
     function sell(SellParams calldata p) external nonReentrant returns (uint256 out) {
         if (p.gpuIn == 0) revert ZeroAmount();
         PoolKey memory key = _canonicalKey(p.gpuId);
@@ -374,7 +382,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
 
     /// @dev BUY = gUSD -> GPU: zeroForOne iff gUSD is currency0.
     function _buyZeroForOne(PoolKey memory key) internal view returns (bool) {
-        return Currency.unwrap(key.currency0) == address(gUSD);
+        return GpuPoolKey.gusdIsCurrency0(key, address(gUSD));
     }
 
     function _gpuCurrency(PoolKey memory key) internal view returns (Currency) {
@@ -384,9 +392,6 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
     function _canonicalKey(bytes32 gpuId) internal view returns (PoolKey memory key) {
         address gpuToken = issuance.tokenOf(gpuId);
         IGPUIssuance.PoolParams memory pp = issuance.poolParamsOf(gpuId);
-        (Currency c0, Currency c1) = address(gUSD) < gpuToken
-            ? (Currency.wrap(address(gUSD)), Currency.wrap(gpuToken))
-            : (Currency.wrap(gpuToken), Currency.wrap(address(gUSD)));
-        key = PoolKey({currency0: c0, currency1: c1, fee: pp.fee, tickSpacing: pp.tickSpacing, hooks: hook});
+        key = GpuPoolKey.canonical(address(gUSD), gpuToken, pp, hook);
     }
 }

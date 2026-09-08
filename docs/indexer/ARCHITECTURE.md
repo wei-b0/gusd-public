@@ -94,14 +94,18 @@ here, and nothing in this app touches `public.*` or the `drizzle` ledger.
 `hook_fee_accrued`, `hook_fees_harvested`, `oracle_price_published/overridden`,
 `oracle_publisher_accepted`, `pm_pool_initialized/swap/liquidity_modified`,
 `pm_donate`, `posm_position_modified`, `posm_transfer` (ERC-6909),
-`token_transfer` (GUSD/sgUSD/GPUToken `Transfer`).
+`token_transfer` (GUSD/sgUSD/GPUToken `Transfer`),
+`pol_band_placed/removed`, `pol_recentred`, `pol_fees_collected`
+(`pol_principal_pending` is deliberately unfetched — `gpu_issued.base`
+accumulates the same amount in the same block).
 
 ### Derived read models
 
 | table | purpose |
 | --- | --- |
 | `pools` | per-pool state + cumulatives; `canonical` flag persisted from `hook_pool_registered` |
-| `gpu_assets` | per-GPU issuance/trade aggregates (catalog metadata joined at the API, never from chain) |
+| `gpu_assets` | per-GPU issuance/trade aggregates + POL fee sweeps (catalog metadata joined at the API, never from chain) |
+| `liquidity_bands` | POL band placements per (pool, tick range) from `BandPlaced`/`BandRemoved` — one live row per range, history preserved |
 | `oracle_state` | indexed oracle state (transparency only) |
 | `wallet_balances` | authoritative protocol-token balances from `Transfer`s |
 | `wallet_cost_basis` | protocol-attributable WAC basis, `basisState`-gated (below) |

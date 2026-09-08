@@ -230,14 +230,16 @@ The oracle may support substantially more GPU configurations than are tokenized 
            sgUSD         GPU issuance         GPU liquidity
                                 │                  │
                                 ▼                  ▼
-                         GPU issuance         Uniswap v4
-                           reserves               │
+                        market capital        Uniswap v4
+                        (POL bid bands)           │
                                 │                  │
                                 ▼                  │
                            GPU tokens ◄────────────┘
 ```
 
-The capital represented by each branch must be accounted for separately.
+Primary principal flows into market liquidity — the two right-hand
+branches join in the pool. Capital remains distinguishable by custody
+and provenance (§20), not by segregation.
 
 ---
 
@@ -292,7 +294,7 @@ Example genesis:
 
 ```text
 H100 total supply = 0
-H100 issuance reserve = 0
+H100 market liquidity = 0
 ```
 
 Suppose:
@@ -326,14 +328,21 @@ User
  ▼
 GPU primary issuance
  │
- ├── 250 gUSD → H100 issuance reserve
+ ├── 250 gUSD → H100 pending market capital
+ │              (POL places it as a bid band
+ │               below the oracle reference)
  │
  ├── fee → protocol revenue
  │
  └── mint 100 H100 → user
 ```
 
-This is the primary mechanism through which new GPU-token supply enters circulation.
+The principal does not sit in a reserve. It becomes the corresponding
+GPU market's bid-side liquidity, placed by protocol-owned market
+liquidity around the oracle reference price.
+
+This is the primary mechanism through which new GPU-token supply enters
+circulation — and through which each GPU market's exit depth is funded.
 
 ---
 
@@ -341,11 +350,17 @@ This is the primary mechanism through which new GPU-token supply enters circulat
 
 A GPU token is gUSD-backed in the following specific sense:
 
-> New GPU-token supply cannot be created without gUSD capital entering the primary GPU issuance system.
+> New GPU-token supply cannot be created without gUSD capital entering the
+> primary GPU issuance system — and that capital becomes the corresponding
+> market's bid-side liquidity.
 
 It does **not** mean:
 
 > A GPU-token holder can redeem the token from the protocol for its current oracle value.
+
+Backing is a flow constraint on supply, not a vault claim. Once principal
+converts to GPU through legitimate trades, no equation ties it back to the
+tokens outstanding.
 
 This distinction is fundamental.
 
@@ -380,7 +395,7 @@ The holder realizes the new value by selling H100 through the secondary market.
 This avoids turning:
 
 - LPs,
-- GPU reserves,
+- protocol-owned market liquidity,
 - treasury,
 
 into synthetic GPU-price counterparties.
@@ -570,6 +585,10 @@ adds sell-side liquidity
 pushes market toward reference value
 ```
 
+The arb seller's exit is the POL bid band — depth funded by the
+principal of prior primary demand. The same flow that creates the
+arbitrage opportunity funds its execution.
+
 The exact rules controlling issuance availability remain to be finalized.
 
 ---
@@ -587,6 +606,11 @@ Market H100:
 ```
 
 The holder does not gain a guaranteed right to redeem for 2.50 gUSD.
+
+In V1 the downside absorber is the POL bid band: sells fill into depth
+funded by historical primary demand, priced at the band's spread below
+the reference. That depth is finite — when it is exhausted, sell depth
+is honestly zero. It is a market, not a floor.
 
 Potential future mechanisms may include protocol market operations such as:
 
@@ -620,6 +644,9 @@ facilitate buys and sells
 earn fees
 ```
 
+Third-party LPs are optional in V1: the protocol makes its own markets
+through POL bands funded by primary principal (§16).
+
 They are not GPU underwriters.
 
 They do not guarantee:
@@ -635,23 +662,29 @@ They retain normal AMM market-making risks.
 
 # 16. Native Uniswap Liquidity
 
-V1 should prefer native Uniswap v4 liquidity positions.
+V1's native liquidity is protocol-owned market liquidity (POL): the
+principal from primary issuance, placed as oracle-anchored bands on the
+canonical v4 pools.
 
 For example:
 
 ```text
-H100
-+
-gUSD
+primary H100 demand (gUSD)
+ ↓
+POL bid band below the oracle reference
  ↓
 H100/gUSD v4 liquidity
 ```
 
-Concentrated liquidity determines the token composition required for a position.
+A one-sided concentrated position holds a single token, so bid bands
+require zero GPU: principal is never paired against a matching deposit.
+As price crosses a band, the market itself converts it — bid gUSD
+becomes GPU inventory, ask GPU becomes gUSD.
 
-There is no protocol requirement that all LPs deposit only gUSD.
-
-A future managed GPU liquidity vault may abstract liquidity provisioning across multiple GPU markets, but it is not required for V1.
+Third-party LPs may add to the same pools, but there is no protocol
+requirement for them and no 50/50 pairing subsidy. A future managed GPU
+liquidity vault may abstract provisioning further, but it is not
+required for V1.
 
 ---
 
@@ -682,8 +715,10 @@ Possible responsibilities include:
 - oracle/market deviation monitoring,
 - protocol fee collection,
 - dynamic fee behavior,
-- primary issuance coordination,
 - market safety logic.
+
+Primary issuance is not among them: it is fully decoupled from pool
+execution (§6), so a pool-side failure can never block minting.
 
 The hook should use native v4 behavior wherever possible.
 
@@ -716,7 +751,7 @@ buyer
   ↕
 Uniswap v4
   ↕
-seller / LP inventory
+seller / LP / POL inventory
 ```
 
 Therefore:
@@ -733,7 +768,8 @@ Most trading should be ordinary secondary-market activity.
 
 # 19. Bootstrapping
 
-The protocol does not need to pre-mint a massive GPU-token inventory.
+The protocol does not need to pre-mint a massive GPU-token inventory,
+and it does not pre-seed GPU pools with paired liquidity.
 
 GPU supply can begin at zero.
 
@@ -741,22 +777,19 @@ Example:
 
 ```text
 H100 supply = 0
-H100 reserve = 0
+H100 market liquidity = 0
 ```
 
-Demand can generate primary issuance.
+Demand generates primary issuance; each issuance's principal lands as
+pending market capital. A permissionless placement (`deployPending`)
+puts it on the canonical pool as a bid band around the oracle
+reference — the router attempts it on every buy, so normal latency is
+one block. A separate permissionless `recenter` re-anchors stale bands
+when the reference moves: inventory is removed and redeployed around
+the current oracle, gUSD to the bid side, GPU to the ask side.
 
-However, secondary-market liquidity is a separate requirement.
-
-To establish a conventional H100/gUSD LP position, initial liquidity requires some combination of:
-
-```text
-H100
-+
-gUSD
-```
-
-The H100 may itself be created through primary issuance.
+Sellers thus always face depth funded by the demand that preceded
+them. Before the first issuance, sell depth is honestly zero.
 
 ---
 
@@ -772,12 +805,14 @@ chain reserve asset (USDG / USDC)
 backs gUSD
 ```
 
-## GPU Issuance Reserve
+## Market Capital (POL)
 
 ```text
 gUSD
  ↓
 enters when GPU supply is created
+ ↓
+bid-side liquidity on the canonical pool
 ```
 
 ## LP Capital
@@ -785,7 +820,7 @@ enters when GPU supply is created
 ```text
 GPU + gUSD
  ↓
-Uniswap liquidity
+Uniswap liquidity (third-party)
 ```
 
 ## sgUSD Capital
@@ -800,15 +835,15 @@ protocol revenue
 
 Protocol-owned capital and revenue.
 
-These must not be double-counted.
+The reserve pool and sgUSD capital must not be double-counted.
 
-In particular:
-
-```text
-GPU issuance reserve
-≠
-LP liquidity
-```
+Market capital is the deliberate exception to separation: primary
+principal merges into pool liquidity on purpose — that is the design.
+What is invariant is custody and provenance, not segregation. Principal
+can only become: gUSD held by POL, gUSD inside POL positions, or GPU
+acquired through those positions and fee accrual. Fees are separately
+identifiable and are the only portion that becomes protocol revenue.
+There is no withdrawal path at all.
 
 ---
 
@@ -882,7 +917,7 @@ gUSD becomes:
 - protocol money,
 - common GPU settlement currency,
 - savings-layer underlying,
-- GPU issuance capital,
+- GPU issuance capital (→ market capital),
 - fee accounting asset,
 - future financial primitive.
 
@@ -969,12 +1004,68 @@ the primary issuance system.
 
 ---
 
+## POL flow conservation
+
+```text
+every gUSD entering primary issuance
+is fully accounted: principal → market
+liquidity, fee → protocol revenue.
+The issuance contract holds zero gUSD at rest.
+```
+
+---
+
+## POL provenance
+
+```text
+protocol-owned market liquidity never mints GPU.
+Every GPU it holds originates from market swaps
+(band conversions) or LP fee accrual —
+never from paired minting.
+```
+
+---
+
+## Custody
+
+```text
+principal can only become: gUSD held by POL,
+gUSD inside POL positions, or GPU acquired
+through those positions and fee accrual.
+Fees are separately identifiable and are the
+only portion that becomes protocol revenue.
+There is no withdrawal path.
+```
+
+---
+
+## Oracle-fresh placement
+
+```text
+nothing is ever placed at a stale reference.
+Placement, recentring, and issuance itself all
+revert on a stale oracle.
+```
+
+---
+
+## Exhaustion honesty
+
+```text
+bid depth is funded only by historical primary demand.
+When a GPU market's bid bands are gone,
+sell depth is genuinely zero —
+no synthetic seller backstop exists.
+```
+
+---
+
 ## Market trading
 
 ```text
-ordinary secondary trades
-must not automatically alter
-primary GPU issuance reserve accounting.
+ordinary secondary trades move inventory
+between the bid and ask sides.
+They never mint GPU or create principal.
 ```
 
 ---
@@ -1008,12 +1099,14 @@ are distinct values.
 
 ---
 
-## Capital
+## Cumulative principal is a statistic
 
 ```text
-the same capital cannot simultaneously
-be treated as GPU issuance reserve
-and available LP liquidity.
+principal contributed is cumulative accounting,
+never a claim on present assets.
+Once gUSD has converted to GPU through trades,
+no unit-preserving gUSD equation remains.
+Depth is displayed from live pool state only.
 ```
 
 ---
@@ -1035,11 +1128,18 @@ The initial protocol does not require:
 - algorithmic gUSD stabilization,
 - automated GPU buyback systems,
 - automated multi-GPU LP vaults,
+- oracle-bounded swap filtering (the pool accepts market prices; stale
+  bands are recentred rather than blocking swaps at stale prices —
+  blocked swaps would be dead capital),
 - cross-chain gUSD fungibility / supply portability (each deployment's
   supply is chain-local; the reserve backing on one chain says nothing
   about another),
 - protocol-operated bridges (cross-chain funding is a third-party service
   at the UI layer — the protocol never custodies bridged value).
+
+Band recentring IS in scope (it is the mechanism that keeps POL honest
+around a moving reference). Contract-upgrade migration is not: the
+protocol ships as an immutable V1.
 
 These may become future products but are not foundational requirements.
 
@@ -1057,10 +1157,11 @@ gUSD
 primary H100 issuance
   ↓
 H100 in user's wallet
+  + principal → H100 bid band (POL)
   ↓
 H100/gUSD Uniswap v4 market
   ↓
-H100 buy/sell
+H100 buy/sell (sells fill into the bid band)
   ↓
 LP fees
   ↓
@@ -1111,9 +1212,15 @@ GPUHook
 GPU-specific market logic
 
 
+POL (GPUMarketLiquidity)
+=
+primary principal making markets
+around the oracle
+
+
 LPs
 =
-liquidity providers
+optional additional liquidity providers
 
 
 Primary Issuance

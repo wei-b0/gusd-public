@@ -35,7 +35,7 @@ services:
       INDEXER_DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
       # Per-deployment + stable views schemas (gusd_index_<env>_v<n> /
       # gusd_index_<env>). Override both together in infra/.env.
-      DATABASE_SCHEMA: ${INDEXER_DEPLOYMENT_SCHEMA:-gusd_index_docker_v1}
+      DATABASE_SCHEMA: ${INDEXER_DEPLOYMENT_SCHEMA:-gusd_index_docker_v2}
       DATABASE_VIEWS_SCHEMA: ${INDEXER_VIEWS_SCHEMA:-gusd_index_docker}
       # One chain per process. INDEXER_RPC_URL_<id> must exist for every id
       # in this list — add lines to infra/.env when changing it.

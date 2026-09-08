@@ -215,7 +215,7 @@ export interface GpuAssetDto {
   issuedCount: number;
   issuanceProceedsGusd: string;
   issuanceFeesGusd: string;
-  reserveGusd: string;
+  principalContributedGusd: string;
   firstIssuedAtSec: number | null;
   lastIssuedAtSec: number | null;
   buyCount: number;

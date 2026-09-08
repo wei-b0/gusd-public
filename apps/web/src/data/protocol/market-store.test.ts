@@ -27,7 +27,7 @@ function gpuBody(canonicalPoolId: string | null = POOL) {
         issuedCount: 0,
         issuanceProceedsGusd: "0",
         issuanceFeesGusd: "0",
-        reserveGusd: "0",
+        principalContributedGusd: "0",
         firstIssuedAtSec: null,
         lastIssuedAtSec: null,
         buyCount: 0,

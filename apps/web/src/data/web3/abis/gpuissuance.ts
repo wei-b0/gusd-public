@@ -19,6 +19,11 @@ export const GPUISSUANCE_ABI = [
         "internalType": "address"
       },
       {
+        "name": "marketLiquidity_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
         "name": "initialOwner",
         "type": "address",
         "internalType": "address"
@@ -58,6 +63,11 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "error",
+    "name": "InvalidBandTicks",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidGpuIdChar",
     "inputs": []
   },
@@ -69,6 +79,11 @@ export const GPUISSUANCE_ABI = [
   {
     "type": "error",
     "name": "OracleFutureTimestamp",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OraclePriceRange",
     "inputs": []
   },
   {
@@ -127,6 +142,11 @@ export const GPUISSUANCE_ABI = [
   {
     "type": "error",
     "name": "UnknownGpuId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
     "inputs": []
   },
   {
@@ -331,6 +351,19 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
+    "name": "MAX_BAND_TICKS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_ISSUANCE_FEE_BPS",
     "inputs": [],
     "outputs": [
@@ -361,6 +394,44 @@ export const GPUISSUANCE_ABI = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "bandSpreadTicksOf",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "bandWidthOf",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -408,10 +479,39 @@ export const GPUISSUANCE_ABI = [
         "name": "tickSpacing",
         "type": "int24",
         "internalType": "int24"
+      },
+      {
+        "name": "bandWidthTicks",
+        "type": "int24",
+        "internalType": "int24"
+      },
+      {
+        "name": "bandSpreadTicks",
+        "type": "int24",
+        "internalType": "int24"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "feeBpsOf",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -468,12 +568,17 @@ export const GPUISSUANCE_ABI = [
             "internalType": "int24"
           },
           {
-            "name": "totalIssued",
-            "type": "uint256",
-            "internalType": "uint256"
+            "name": "bandWidthTicks",
+            "type": "int24",
+            "internalType": "int24"
           },
           {
-            "name": "reserve",
+            "name": "bandSpreadTicks",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "totalIssued",
             "type": "uint256",
             "internalType": "uint256"
           }
@@ -510,25 +615,6 @@ export const GPUISSUANCE_ABI = [
         "name": "",
         "type": "bytes32[]",
         "internalType": "bytes32[]"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "gpuReserve",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -585,6 +671,19 @@ export const GPUISSUANCE_ABI = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "marketLiquidity",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -744,6 +843,25 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
+    "name": "referenceSqrtPriceX96",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
@@ -826,19 +944,6 @@ export const GPUISSUANCE_ABI = [
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "totalIssuanceReserve",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "sum",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"

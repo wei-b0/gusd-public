@@ -68,6 +68,18 @@ export const hookAbi = parseAbi([
   "event HookFeeBpsSet(uint16 oldFeeBps, uint16 newFeeBps)",
 ]);
 
+/** GPUMarketLiquidity (POL) — oracle-anchored bid/ask bands funded by
+ *  primary principal. RefsSet (one-shot wiring, no consumer) and
+ *  PrincipalPending (redundant with Issued.base — the issuance handler
+ *  already accumulates principalContributedGusd) are deliberately not
+ *  fetched. */
+export const marketLiquidityAbi = parseAbi([
+  "event BandPlaced(bytes32 indexed gpuId, bytes32 indexed poolId, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 gusdPlaced, uint256 gpuPlaced, bool bidSide)",
+  "event BandRemoved(bytes32 indexed gpuId, bytes32 indexed poolId, int24 tickLower, int24 tickUpper, uint256 recoveredGusd, uint256 recoveredGpu)",
+  "event Recentred(bytes32 indexed gpuId, uint256 bandsRemoved, uint256 gusdRecovered, uint256 gpuRecovered)",
+  "event FeesCollected(bytes32 indexed gpuId, uint256 gusdToLedger, uint256 gpuToInventory)",
+]);
+
 /** GPUPriceOracle — onchain publications (transparency/comparison only).
  *  PublisherTransferStarted (two-step-own intermediate step, no consumer)
  *  is deliberately not fetched. */

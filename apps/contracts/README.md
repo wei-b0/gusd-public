@@ -143,24 +143,46 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
 - **All 7 SKUs** (A100/H100/H200/B200/B300/GB200/GB300) created, oracle-seeded
   (\$1.80–\$10.00/GPU-hour), issuance enabled, canonical pool initialized from
   the seed price.
-- **Genesis inventory**: 10,000 GPU per SKU issued to the deployer via
-  100%-issuance buys paid in gUSD.
+- **Genesis inventory via the real issuance→POL path**: 10,000 GPU per SKU
+  issued to the deployer through 100%-issuance buys paid in gUSD — each
+  buy's principal capitalizes that market's POL bid band (there is no
+  treasury LP bootstrap on GPU pools; the only PositionManager position is
+  the stable pool below).
 - **A mock second stable** (`Mock Tether USD`, 6 decimals) deployed through
   the CREATE2 proxy with the fixed salt `gusd.mock.usdt.v1` — the address is
   deterministic per chain (Anvil: `0xAd8F7921738819152FFA371c984D736842ed8AFE`)
   — whitelisted on the StableRouter, and paired with the reserve in a
   hook-free fee-100/tickSpacing-1 pool at 1:1, exactly the key the web's
   funding panel quotes.
-- **Liquidity** on every pool via PositionManager (Permit2 double-approvals):
-  full-range on all 7 GPU pools, ~10M units per side on the stable pool.
+- **Stable-pool seed** via PositionManager (Permit2 double-approvals):
+  ~10M units per side at 1:1. GPU pools start with POL bands only —
+  bid-side depth from primary principal, ask-side inventory converted
+  from it by trading.
+- **Bootstrap-conversion pass**: the deployer sells 100 GPU per SKU into
+  the fresh bid band, converting ~1% of each band into ask-side inventory
+  so pool buy legs are quotable immediately.
 - **Compact activity pass** (anvil keys #2/#3): buys, sells, a USDT→gUSD
-  mint plus redeem, an oracle reprice with an issuance-only buy, fee
-  harvest, revenue distribution, and a stake — so the tape, ledgers, cost
-  basis, and sgUSD accrual are populated immediately.
-- **End asserts**: every pool liquid and quoter-routable, router/hook dust
-  drained, both stables whitelisted, stable-pool 1:1 within tolerance,
-  sgUSD accreting. The record is re-persisted with `stables = [reserve,
-  USDT]` and the original `startBlock` preserved (indexer anchor).
+  mint plus redeem, an oracle reprice with an issuance-only buy (whose
+  principal honestly DEFERS while its pool still trades at the old
+  price), fee harvest, revenue distribution, and a stake — so the tape,
+  ledgers, cost basis, and sgUSD accrual are populated immediately.
+- **Convergence pass** (H100, after the reprice): a permissionless
+  `recenter` removes the stale $2.50-anchored bands and redeploys the
+  same real inventory around $3.00 (GPU → ask band now; the recovered
+  gUSD honestly defers — the pool is still cheaper than the whole new
+  bid zone), then an arbitrage buy lifts the pool spot from ~$2.50 into
+  the fresh ask band (~$3.02, the force the design waits for), and the
+  deferred principal — bob's 3 gUSD plus the recentred band — places as
+  the new bid band at the oracle anchor. The desk ends the run showing
+  market ≈ oracle ≈ index (spot within 720 ticks of the reference,
+  asserted) instead of a 17% discount.
+- **End asserts**: every SKU's `principalContributed` equals its seeded
+  demand, `pendingPrincipal == 0` everywhere (H100's via the
+  convergence pass), `bidDepth > 0` per SKU, router/hook dust drained,
+  both stables whitelisted, stable-pool 1:1 within tolerance, sgUSD
+  accreting. The record is re-persisted with `stables = [reserve,
+  USDT]` and a `startBlock` captured before any of the run's
+  transactions (the indexer's backfill anchor).
 
 After deploying, run `pnpm --filter @gusd/web abi:sync` and pin the mock
 USDT in `apps/web/src/data/web3/stables.ts` (already pinned for
@@ -176,9 +198,11 @@ virgin, so `Demo` will not run after it. Two corollaries:
   does not whitelist. Re-run `Deploy.full` (or remove the pin deliberately)
   to restore the multi-stable surface.
 - The web anvil suite's trading tests (`trading.anvil.test.ts`) assert the
-  *genesis* posture — an empty canonical pool, buys = 100% issuance, sells
-  unquotable. They hold only against a plain `Deploy` chain; after
-  `Deploy.full` they fail by design (the pool has depth).
+  *genesis* posture — an empty canonical pool, buys = 100% issuance, and
+  sells quoting against the bid band that the same buy's principal just
+  capitalized (proceeds ≤ the issuance price). They hold only against a
+  plain `Deploy` chain; after `Deploy.full` the pool has third-party-scale
+  depth and trades no longer price 100% through issuance.
 - The indexer derives canonical GPU pools on-chain at boot, so start it
   fresh after this deploy. An indexer already running against the same
   chain/schema misses pools created after it started — follow the

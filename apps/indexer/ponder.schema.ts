@@ -593,7 +593,14 @@ export const gpuAssets = onchainTable(
     issuedCount: t.int8("issued_count", { mode: "number" }).notNull(),
     issuanceProceedsGusd: t.bigint("issuance_proceeds_gusd").notNull(),
     issuanceFeesGusd: t.bigint("issuance_fees_gusd").notNull(),
-    reserveGusd: t.bigint("reserve_gusd").notNull(),
+    // Cumulative primary principal capitalized into the POL (bid-side market
+    // liquidity) — an accounting STATISTIC, never a claim on present assets;
+    // once converted to GPU by trades it no longer corresponds to held gUSD.
+    principalContributedGusd: t.bigint("principal_contributed_gusd").notNull(),
+    // POL FeesCollected: gUSD swept to the revenue ledger + GPU swept to ask
+    // inventory (cumulative per market).
+    marketFeesGusd: t.bigint("market_fees_gusd").notNull(),
+    marketFeesGpu: t.bigint("market_fees_gpu").notNull(),
     firstIssuedAtSec: t.int8("first_issued_at_sec", { mode: "number" }),
     lastIssuedAtSec: t.int8("last_issued_at_sec", { mode: "number" }),
     // secondary market (routed executions)
@@ -603,6 +610,34 @@ export const gpuAssets = onchainTable(
     lastTradeAtSec: t.int8("last_trade_at_sec", { mode: "number" }),
   }),
   (table) => ({ pk: primaryKey({ columns: [table.chainId, table.gpuId] }) }),
+);
+
+/** POL market-liquidity bands around the oracle reference — one row per
+ *  (pool, tick range). BandPlaced upserts (placementCount++, lastPlacedAtSec,
+ *  removedAtSec cleared); BandRemoved marks the row historical. A live band
+ *  is one with removedAtSec IS NULL. */
+export const liquidityBands = onchainTable(
+  "liquidity_bands",
+  (t) => ({
+    chainId: t.integer("chain_id").notNull(),
+    gpuId: t.hex("gpu_id").notNull(),
+    poolId: t.hex("pool_id").notNull(),
+    tickLower: t.integer("tick_lower").notNull(),
+    tickUpper: t.integer("tick_upper").notNull(),
+    bidSide: t.boolean("bid_side").notNull(),
+    gusdPlaced: t.bigint("gusd_placed").notNull(),
+    gpuPlaced: t.bigint("gpu_placed").notNull(),
+    placementCount: t.int8("placement_count", { mode: "number" }).notNull(),
+    firstPlacedAtSec: t.int8("first_placed_at_sec", { mode: "number" }),
+    lastPlacedAtSec: t.int8("last_placed_at_sec", { mode: "number" }),
+    removedAtSec: t.int8("removed_at_sec", { mode: "number" }),
+  }),
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.chainId, table.poolId, table.tickLower, table.tickUpper],
+    }),
+    liquidity_bands_gpu_idx: index("liquidity_bands_gpu_idx").on(table.chainId, table.gpuId),
+  }),
 );
 
 /** Indexed oracle state — transparency/health/comparison only. */

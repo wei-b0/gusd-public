@@ -32,6 +32,7 @@ import {
   hookAbi,
   issuanceAbi,
   ledgerAbi,
+  marketLiquidityAbi,
   oracleAbi,
   poolManagerAbi,
   positionManagerAbi,
@@ -130,6 +131,13 @@ const config = createConfig({
     RevenueLedger: {
       abi: ledgerAbi,
       chain: perChain((f) => ({ address: f.addresses.ledger, startBlock: f.startBlock })),
+    },
+    GPUMarketLiquidity: {
+      abi: marketLiquidityAbi,
+      chain: perChain((f) => ({
+        address: f.addresses.marketLiquidity,
+        startBlock: f.startBlock,
+      })),
     },
     GPUHook: { abi: hookAbi, chain: perChain((f) => ({ address: f.addresses.hook, startBlock: f.startBlock })) },
     GPUPriceOracle: {

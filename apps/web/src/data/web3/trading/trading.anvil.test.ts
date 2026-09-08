@@ -17,10 +17,11 @@ import { decodeTradeResult } from "./events";
 /**
  * The trading desk verified against the deployed protocol at genesis. The
  * honest assertions: a genesis buy quotes 100% issuance (the canonical pool
- * holds no liquidity), the executed buy pays exactly the issuance total —
- * the router pulls the tolerance-padded cap and refunds the change — and
- * the confirmed receipt decodes back to the fill. Sells stay unquotable
- * until the pool holds depth, which the quote layer reports as null.
+ * holds no depth beyond the fresh bid band), the executed buy pays exactly
+ * the issuance total — the router pulls the tolerance-padded cap and refunds
+ * the change — and the confirmed receipt decodes back to the fill. That same
+ * buy capitalizes the POL bid band, so sells quote against real depth at or
+ * below the issuance price.
  *
  * Run with an anvil node up (default port 8545) and the protocol deployed:
  *   RUN_ANVIL_TESTS=1 npm test
@@ -150,7 +151,15 @@ d("trading desk against the deployed protocol", () => {
     );
   }, 30_000);
 
-  it("leaves sells unquotable while the pool holds no depth", async () => {
-    expect(await quoteSell("H100", 1)).toBeNull();
+  it("quotes sells against the primary-capitalized bid band, at or below the issuance price", async () => {
+    // The genesis buy's principal now capitalizes a POL bid band priced
+    // bandSpreadTicks under the ask — the sell fills there, so proceeds are
+    // strictly below the issuance price (2.50), never null.
+    const q = await quoteSell("H100", 1);
+    expect(q).not.toBeNull();
+    if (q === null) return;
+    expect(q.side).toBe("sell");
+    expect(q.notional).toBeGreaterThan(0);
+    expect(q.price).toBeLessThanOrEqual(2.5);
   }, 30_000);
 });

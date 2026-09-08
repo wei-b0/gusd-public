@@ -39,6 +39,7 @@ export interface IndexerAddresses {
   oracle: Address;
   router: Address;
   stableRouter: Address;
+  marketLiquidity: Address;
   poolManager: Address;
   positionManager: Address;
 }
@@ -72,6 +73,7 @@ interface RawDeployment {
   oracle: string;
   router: string;
   stableRouter: string;
+  marketLiquidity: string;
   poolManager: string;
   positionManager: string;
 }
@@ -170,6 +172,7 @@ const ADDRESS_FIELDS = [
   "oracle",
   "router",
   "stableRouter",
+  "marketLiquidity",
   "poolManager",
   "positionManager",
 ] as const satisfies readonly (keyof IndexerAddresses)[];

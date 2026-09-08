@@ -11,6 +11,7 @@ import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
 import {IV4Quoter} from "@uniswap/v4-periphery/interfaces/IV4Quoter.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
@@ -20,12 +21,14 @@ import {Actions} from "@uniswap/v4-periphery/libraries/Actions.sol";
 import {Planner, Plan} from "v4-periphery-test/shared/Planner.sol";
 import {GUSD} from "../src/GUSD.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../src/GPUToken.sol";
 import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {sgUSD} from "../src/sgUSD.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
 import {StableRouter} from "../src/StableRouter.sol";
+import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {MockGPUPriceOracle} from "../src/oracle/MockGPUPriceOracle.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
@@ -103,6 +106,14 @@ contract DeployFull is Deploy {
         address deployer = vm.addr(pk);
         address alice = vm.addr(ALICE_PK);
         address bob = vm.addr(BOB_PK);
+        // Indexer anchor: the pre-broadcast head. Deploy._persist computes
+        // block.number - 1 assuming it IS the broadcast entry (true for a
+        // standalone `forge script Deploy`), but nested inside runFull the
+        // chain has already advanced past the genesis blocks by the time it
+        // runs — so capture the anchor here, before any of this run's txs
+        // land, and pass it to _persistFull. On a virgin chain this is 0;
+        // on a live rerun, this run's redeployment events all land after it.
+        uint256 anchorBlock = block.number;
 
         // ------------------------------------------------ 0) production core
         // Deploy.run() self-scopes its own broadcast (deployer must NOT be
@@ -119,6 +130,7 @@ contract DeployFull is Deploy {
         vm.startBroadcast(pk);
         GUSD gusd = GUSD(d.gusd);
         GPUIssuance issuance = GPUIssuance(d.issuance);
+        GPUMarketLiquidity pol = GPUMarketLiquidity(d.marketLiquidity);
         GPUHook hook = GPUHook(d.hook);
         RevenueLedger ledger = RevenueLedger(d.ledger);
         sgUSD sg = sgUSD(d.sgusd);
@@ -179,6 +191,34 @@ contract DeployFull is Deploy {
             require(paid <= maxPaid, "genesis overspend");
         }
 
+        // ------------------- 3.5) bootstrap conversion: ask-side inventory
+        // Bid-only bands hold no GPU, so pool BUYs would be unquotable until
+        // sellers convert band depth. Selling ~1% of each SKU's genesis
+        // inventory converts a slice of the band into GPU (the position pays
+        // out its gUSD for the seller's GPU), which seeds the ask side and
+        // makes the activity pass's pool legs executable.
+        for (uint256 i; i < CATALOGUE.length; ++i) {
+            bytes32 gpuId = CATALOGUE[i];
+            GPUToken token = GPUToken(issuance.tokenOf(gpuId));
+            uint256 price = _priceOf(gpuId);
+            uint256 expected = 100e18 * price / 1e16; // 100 GPU in gUSD-wei
+            token.approve(d.router, type(uint256).max);
+            router.sell(
+                GpuRouter.SellParams({
+                    gpuId: gpuId,
+                    gpuIn: 100e18,
+                    payout: d.underlying,
+                    // the sell executes against the bid band, which the POL
+                    // prices bandSpreadTicks (120 ticks ≈ 1.3%) below the ask
+                    // by design; add the in-band discount + 0.5% hook fee —
+                    // proceeds land ~1.8% under the oracle, so 3% slack
+                    minOut: expected * 97 / 100,
+                    sqrtLimitX96: 0,
+                    recipient: deployer
+                })
+            );
+        }
+
         // ------------------- 4) mock USDT (deterministic) + stable pool
         bytes memory usdtInit = abi.encodePacked(
             type(MockERC20).creationCode, abi.encode("Mock Tether USD", "USDT", uint8(6))
@@ -195,17 +235,13 @@ contract DeployFull is Deploy {
         skey.hooks = IHooks(address(0));
         PoolManager(d.poolManager).initialize(skey, uint160(1) << 96); // 1:1 (both 6-dec)
 
-        // --------------------------------- 5) LP every pool via PositionManager
-        // Permit2 double-approve per token, then a full-range MINT_POSITION.
-        // Deadline is +600s: forge's pre-broadcast validation forks the chain
-        // at a later block than the simulation run (see Demo step 2).
-        gusd.approve(d.permit2, type(uint256).max);
-        IAllowanceTransfer(d.permit2).approve(d.gusd, d.positionManager, type(uint160).max, type(uint48).max);
-        for (uint256 i; i < CATALOGUE.length; ++i) {
-            address gpuToken = issuance.tokenOf(CATALOGUE[i]);
-            IERC20(gpuToken).approve(d.permit2, type(uint256).max);
-            IAllowanceTransfer(d.permit2).approve(gpuToken, d.positionManager, type(uint160).max, type(uint48).max);
-        }
+        // --------------------------------- 5) stable-pool seed only
+        // GPU pools start EMPTY of deployer liquidity — each primary issuance
+        // capitalizes its own market via the POL (bid bands), and a bootstrap
+        // conversion (below) seeds the ask side. Only the hook-free stable
+        // pool is LP'd here: the web's mint desk hardcodes it (apps/web/src/
+        // data/web3/gusd/actions.ts STABLE_POOL) and StableRouter rejects
+        // hook-bearing pools.
         MockERC20(usdt).mint(deployer, 12_000_000e6);
         IERC20(usdt).approve(d.permit2, type(uint256).max);
         IAllowanceTransfer(d.permit2).approve(usdt, d.positionManager, type(uint160).max, type(uint48).max);
@@ -214,11 +250,8 @@ contract DeployFull is Deploy {
         IERC20(d.underlying).approve(d.permit2, type(uint256).max);
         IAllowanceTransfer(d.permit2).approve(d.underlying, d.positionManager, type(uint160).max, type(uint48).max);
 
-        for (uint256 i; i < CATALOGUE.length; ++i) {
-            _mintPosition(posm, _canonicalKey(d, CATALOGUE[i]), -887220, 887220, GPU_POOL_LIQUIDITY, deployer);
-        }
         _mintPosition(posm, skey, -887272, 887272, STABLE_POOL_LIQUIDITY, deployer);
-        require(posm.balanceOf(deployer) == CATALOGUE.length + 1, "lp positions");
+        require(posm.balanceOf(deployer) == 1, "stable seed only");
 
         // --------------------------------------------- 6) fund test actors
         (bool okAlice,) = alice.call{value: 1 ether}("");
@@ -335,6 +368,70 @@ contract DeployFull is Deploy {
         );
         vm.stopBroadcast();
         require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
+        // The defer, asserted where it happens: the pool still trades at the
+        // pre-reprice price, past the new band's corridor, so bob's principal
+        // correctly waits instead of being placed at a stale anchor.
+        require(pol.pendingPrincipal(H100) == 3_000_000, "H100 deferred pending (repriced buy)");
+
+        // --------------------------------- convergence: recenter + arb buy
+        // An oracle move leaves the pool behind — and the design does NOT
+        // force it back (no oracle-bounded swaps: blocked swaps are dead
+        // capital). Two permissionless forces close the gap instead, and in
+        // production arbitrageurs/keepers call them within moments. The demo
+        // scripts both so the desk shows market ≈ index after this pass:
+        vm.startBroadcast(pk);
+        // 1) recenter: stale 2.50-anchored bands are removed and the same
+        //    real inventory redeployed around $3.00 where geometry allows —
+        //    recovered GPU to an ask band at reference + fee. The recovered
+        //    gUSD honestly DEFERS: the pool still trades at ~$2.50, cheaper
+        //    than the entire new bid zone, and nothing may place at a stale
+        //    anchor (same corridor rule that deferred bob's buy). Removal is
+        //    not a swap; nobody trades at stale prices.
+        uint256 removed = pol.recenter(H100, 10);
+        require(removed >= 1, "stale bands recentred");
+        // principal is a cumulative statistic: recentering re-prices
+        // inventory, it never re-counts it.
+        require(pol.principalContributed(H100) == 25_253_000_000, "recenter re-counted principal");
+        vm.stopBroadcast();
+
+        vm.startBroadcast(BOB_PK);
+        PoolKey memory hkey = _canonicalKey(d, H100);
+        bool hGIsC0 = d.gusd < address(GPUToken(issuance.tokenOf(H100)));
+        (uint256 convIn,) = quoter.quoteExactOutputSingle(
+            IV4Quoter.QuoteExactSingleParams({poolKey: hkey, zeroForOne: hGIsC0, exactAmount: 1e18, hookData: ""})
+        );
+        // 2) the arb buy — the convergence force the design waits for: the
+        //    pool leg jumps spot through the (empty) pre-reprice range into
+        //    the fresh ask band and fills at reference × (1 + fee) ± in-band
+        //    movement, plus the 0.8% LP+protocol fee stack the quoter
+        //    includes — the 17% discount is gone. Corridor bound ~±3%.
+        require(convIn >= 2_940_000 && convIn <= 3_100_000, "post-recenter ask within corridor of reference");
+        _buy(
+            router,
+            GpuRouter.BuyParams({
+                gpuId: H100,
+                gpuOut: 1e18,
+                poolGpuOut: 1e18,
+                issueGpuOut: 0,
+                payment: d.underlying,
+                maxPaid: convIn,
+                sqrtLimitX96: 0,
+                recipient: bob
+            })
+        );
+        vm.stopBroadcast();
+
+        // 3) the pool now trades inside the corridor, so the deferred
+        //    principal (bob's repriced 3 + the recentred gUSD) places as the
+        //    bid band at the new anchor — the router already attempted it
+        //    best-effort inside the buy; a no-op here if so. This call MUST
+        //    sit inside a broadcast: off-broadcast calls mutate only the
+        //    script's local EVM, so the require would pass while the chain
+        //    keeps the principal pending.
+        vm.startBroadcast(pk);
+        pol.deployPending(H100);
+        require(pol.pendingPrincipal(H100) == 0, "pending placed post-convergence");
+        vm.stopBroadcast();
 
         // -------------------------------- harvest revenue -> sgUSD vault
         vm.startBroadcast(pk);
@@ -358,7 +455,7 @@ contract DeployFull is Deploy {
         address[] memory stables = new address[](2);
         stables[0] = d.underlying;
         stables[1] = usdt;
-        _persistFull(d, stables);
+        _persistFull(d, stables, anchorBlock);
 
         for (uint256 i; i < CATALOGUE.length; ++i) {
             PoolId pid = _canonicalKey(d, CATALOGUE[i]).toId();
@@ -366,6 +463,35 @@ contract DeployFull is Deploy {
             require(GPUToken(issuance.tokenOf(CATALOGUE[i])).balanceOf(d.router) == 0, "router empty");
         }
         require(stableRouter.allStables().length == 2, "stables whitelisted");
+        // POL accounting: per-SKU principal capitalized == genesis (10k GPU) +
+        // alice (100) + bob's repriced 1; every unit deployed — bob's repriced
+        // buy deferred past the corridor (asserted where it happened), then
+        // the convergence pass recentred and placed it. H100's price check is
+        // excluded because its oracle seed moved mid-flow (25k at 2.50, 3 at
+        // 3.00) — pinned explicitly below.
+        for (uint256 i; i < CATALOGUE.length; ++i) {
+            if (CATALOGUE[i] != H100) {
+                require(pol.principalContributed(CATALOGUE[i]) == _priceOf(CATALOGUE[i]) * 1e6, "sku principal");
+            }
+            require(pol.pendingPrincipal(CATALOGUE[i]) == 0, "sku pending deployed");
+            require(pol.bidDepth(CATALOGUE[i]) > 0, "sku bid depth");
+        }
+        require(pol.principalContributed(H100) == 25_253_000_000, "H100 principal (25k + 250 + 3)");
+        // the convergence proof, as state: the pool now trades within the
+        // band corridor (~±720 ticks) of the oracle reference — market,
+        // oracle, and index agree within the spread the design promises.
+        // referenceSqrtPriceX96 is sqrt(h) in gUSD-per-GPU terms, while the
+        // pool's slot0 tick is in pool-price terms (1/h when gUSD is
+        // currency0) — mirror the orientation before comparing.
+        {
+            PoolKey memory hkey = _canonicalKey(d, H100);
+            (, int24 spotTick,,) = stateView.getSlot0(hkey.toId());
+            int24 hTick = TickMath.getTickAtSqrtPrice(uint160(issuance.referenceSqrtPriceX96(H100)));
+            bool hGIsC0 = d.gusd < address(GPUToken(issuance.tokenOf(H100)));
+            int24 refTick = hGIsC0 ? -hTick : hTick;
+            uint256 drift = spotTick > refTick ? uint256(int256(spotTick - refTick)) : uint256(int256(refTick - spotTick));
+            require(drift <= 720, "spot within band corridor of reference");
+        }
         (uint256 stableQuote,) = quoter.quoteExactInputSingle(
             IV4Quoter.QuoteExactSingleParams({poolKey: skey, zeroForOne: usdtIsC0, exactAmount: 1_000e6, hookData: ""})
         );
@@ -396,7 +522,7 @@ contract DeployFull is Deploy {
         uint256 price
     ) internal {
         GPUIssuance issuance = GPUIssuance(d.issuance);
-        issuance.createGpu(gpuId, name, symbol, 50, 3000, 60);
+        issuance.createGpu(gpuId, name, symbol, 50, 3000, 60, 600, 120);
         _setPrice(deployer, d.oracle, gpuId, price);
         issuance.setIssuanceEnabled(gpuId, true);
         // Deploy's internal helper: initializes the canonical pool from the
@@ -439,13 +565,8 @@ contract DeployFull is Deploy {
     function _canonicalKey(Deployment memory d, bytes32 gpuId) internal view returns (PoolKey memory key) {
         GPUIssuance issuance = GPUIssuance(d.issuance);
         address gpuToken = issuance.tokenOf(gpuId);
-        bool gIsC0 = d.gusd < gpuToken;
-        key.currency0 = gIsC0 ? Currency.wrap(d.gusd) : Currency.wrap(gpuToken);
-        key.currency1 = gIsC0 ? Currency.wrap(gpuToken) : Currency.wrap(d.gusd);
         IGPUIssuance.PoolParams memory pp = issuance.poolParamsOf(gpuId);
-        key.fee = pp.fee;
-        key.tickSpacing = pp.tickSpacing;
-        key.hooks = GPUHook(d.hook);
+        key = GpuPoolKey.canonical(d.gusd, gpuToken, pp, GPUHook(d.hook));
     }
 
     function _mintPosition(
@@ -461,7 +582,12 @@ contract DeployFull is Deploy {
             Actions.MINT_POSITION,
             abi.encode(key, tickLower, tickUpper, liquidity, type(uint128).max, type(uint128).max, owner, "")
         );
-        posm.modifyLiquidities(plan.finalizeModifyLiquidityWithClose(key), block.timestamp + 600);
+        // 1-hour deadline: the simulation bakes block.timestamp at sim time,
+        // but a 150-tx broadcast lands minutes later (forge re-sends the
+        // recorded calldata verbatim) — a +600s deadline reverted
+        // DeadlinePassed mid-broadcast. A production frontend uses
+        // minutes-long deadlines for the same reason.
+        posm.modifyLiquidities(plan.finalizeModifyLiquidityWithClose(key), block.timestamp + 3600);
     }
 
     /// @dev The script's own seed table — the same constants used to seed the
@@ -490,15 +616,18 @@ contract DeployFull is Deploy {
     }
 
     /// @dev Rewrite the deployment record Deploy wrote, with the extended
-    ///      stables list. The ORIGINAL startBlock is preserved: recomputing
-    ///      block.number - 1 here would advance the indexer's backfill anchor
-    ///      past Deploy.run()'s events and silently skip them.
-    function _persistFull(Deployment memory d, address[] memory stables) internal {
+    ///      stables list. `anchorBlock` is the pre-broadcast head captured at
+    ///      runFull entry — Deploy._persist's own `block.number - 1` sees the
+    ///      already-advanced chain head when nested here, which would point
+    ///      the indexer's backfill past the genesis events. The serialize key
+    ///      must differ from Deploy's "deployment": vm's registry persists
+    ///      across the script, and serializing the 2-element stables array
+    ///      into a key that already holds Deploy's 1-element array mutates it
+    ///      in place without resizing — the USDT entry silently vanished.
+    function _persistFull(Deployment memory d, address[] memory stables, uint256 anchorBlock) internal {
         string memory path = string.concat("./deployments/", vm.toString(block.chainid), ".json");
-        string memory json = vm.readFile(path);
-        uint256 startBlock = vm.parseJsonUint(json, ".startBlock");
 
-        string memory obj = "deployment";
+        string memory obj = "deployment.full";
         vm.serializeAddress(obj, "underlying", d.underlying);
         vm.serializeAddress(obj, "stableRouter", d.stableRouter);
         vm.serializeAddress(obj, "stables", stables);
@@ -507,6 +636,7 @@ contract DeployFull is Deploy {
         vm.serializeAddress(obj, "gusd", d.gusd);
         vm.serializeAddress(obj, "sgusd", d.sgusd);
         vm.serializeAddress(obj, "ledger", d.ledger);
+        vm.serializeAddress(obj, "marketLiquidity", d.marketLiquidity);
         vm.serializeAddress(obj, "issuance", d.issuance);
         vm.serializeAddress(obj, "oracle", d.oracle);
         try GPUPriceOracle(d.oracle).publisher() returns (address pub) {
@@ -519,7 +649,7 @@ contract DeployFull is Deploy {
         vm.serializeAddress(obj, "quoter", d.quoter);
         vm.serializeAddress(obj, "weth", d.weth);
         string memory out = vm.serializeUint(obj, "chainId", block.chainid);
-        out = vm.serializeUint(obj, "startBlock", startBlock);
+        out = vm.serializeUint(obj, "startBlock", anchorBlock);
         vm.writeJson(out, path);
         console2.log("deployment record updated:", path);
     }

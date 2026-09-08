@@ -20,7 +20,7 @@ on their indexed pool `id` — non-protocol pools cost nothing.
 
 ## Schemas
 
-- `INDEXER_DEPLOYMENT_SCHEMA` (e.g. `gusd_index_dev_v1`) — immutable history
+- `INDEXER_DEPLOYMENT_SCHEMA` (e.g. `gusd_index_dev_v2`) — immutable history
   per deployment. A schema change = a new `v<n+1>`, a fresh backfill, and
   `ponder db prune` of the old.
 - `INDEXER_VIEWS_SCHEMA` (e.g. `gusd_index_dev`) — stable SQL views the oracle

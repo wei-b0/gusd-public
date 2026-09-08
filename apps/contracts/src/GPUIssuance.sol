@@ -12,12 +12,16 @@ import {GPUToken} from "./GPUToken.sol";
 import {GpuId} from "./libraries/GpuId.sol";
 import {IGPUPriceOracle} from "./oracle/IGPUPriceOracle.sol";
 import {IGPUIssuance} from "./interfaces/IGPUIssuance.sol";
+import {IMarketLiquidity} from "./interfaces/IMarketLiquidity.sol";
 
 /// @title GPUIssuance — permissionless primary market for GPU-hour claims.
 /// @notice Users pay gUSD (oracle price + issuance fee) and mint GPU tokens.
-///         The base payment lands in the per-GPU reserve and NEVER leaves:
-///         there is no NAV redemption and no reserve withdrawal in V1.
-///         Secondary trading (Uniswap v4) cannot touch these reserves.
+///         The base payment is forwarded to GPUMarketLiquidity, where it
+///         progressively capitalizes the GPU's canonical market as bid-side
+///         liquidity around the oracle reference. There is no NAV redemption
+///         and no withdrawal path anywhere: principal exits only as market
+///         trades. Issuance never touches the pool — placement is a separate
+///         permissionless step, so a v4 problem can never fail a primary buy.
 /// @dev    Issuance composition (all coordination-fixed, see IGPUPriceOracle):
 ///         base(6dec gUSD) = amount(18dec) * price(4dec) / 10^16, Ceil.
 ///         Worked example: 100 H100 @ 2.5000 -> 100e18 * 25_000 / 1e16
@@ -32,6 +36,7 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
 
     uint16 public constant MAX_ISSUANCE_FEE_BPS = 1_000; // 10%
     uint256 public constant PRICE_SCALE = 10_000; // 4-decimal fixed point (coordination-fixed)
+    int24 public constant MAX_BAND_TICKS = 100_000; // POL band geometry cap (int24-arithmetic safety)
 
     // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6), derived from
     // the oracle's PRICE_SCALE in the constructor (== 1e16 for 4 decimals)
@@ -43,13 +48,15 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         uint16 feeBps;
         uint24 fee; // canonical v4 pool fee
         int24 tickSpacing;
+        int24 bandWidthTicks; // POL band depth (multiple of tickSpacing, > spread)
+        int24 bandSpreadTicks; // gap between the ask edge and the bid zone
         uint256 totalIssued;
-        uint256 reserve;
     }
 
     IERC20 public immutable gUSD;
     IGPUPriceOracle public immutable oracle;
     address public immutable revenueLedger;
+    address public immutable marketLiquidity;
 
     uint256 public maxOracleStaleness = 25 hours;
 
@@ -63,9 +70,12 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     error OraclePriceZero();
     error OracleStale();
     error OracleFutureTimestamp();
+    error OraclePriceRange();
     error ZeroAmount();
+    error ZeroAddress();
     error FeeTooLarge();
     error PriceScaleMismatch();
+    error InvalidBandTicks();
 
     event GpuCreated(bytes32 indexed gpuId, address token, uint16 feeBps, uint24 poolFee, int24 tickSpacing);
     event Issued(
@@ -75,7 +85,7 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     event IssuanceFeeSet(bytes32 indexed gpuId, uint16 feeBps);
     event MaxOracleStalenessSet(uint256 seconds_);
 
-    constructor(IERC20 gUSD_, IGPUPriceOracle oracle_, address revenueLedger_, address initialOwner)
+    constructor(IERC20 gUSD_, IGPUPriceOracle oracle_, address revenueLedger_, address marketLiquidity_, address initialOwner)
         Ownable(initialOwner)
     {
         // The 4-decimal price convention is a coordination-fixed encoding
@@ -83,9 +93,11 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         // any other scale would misprice every issuance silently.
         uint256 oracleScale = oracle_.PRICE_SCALE();
         if (oracleScale != PRICE_SCALE) revert PriceScaleMismatch();
+        if (marketLiquidity_ == address(0)) revert ZeroAddress();
         gUSD = gUSD_;
         oracle = oracle_;
         revenueLedger = revenueLedger_;
+        marketLiquidity = marketLiquidity_;
         // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6), derived from
         // the oracle's own scale — never re-declared as a literal.
         compositionDivisor = Math.mulDiv(10 ** 18, oracleScale, 10 ** 6);
@@ -99,11 +111,14 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         string calldata symbol,
         uint16 feeBps,
         uint24 fee,
-        int24 tickSpacing
+        int24 tickSpacing,
+        int24 bandWidthTicks,
+        int24 bandSpreadTicks
     ) external onlyOwner {
         GpuId.validate(gpuId);
         if (_gpus[gpuId].token != address(0)) revert GpuAlreadyExists();
         if (feeBps > MAX_ISSUANCE_FEE_BPS) revert FeeTooLarge();
+        _validateBandTicks(tickSpacing, bandWidthTicks, bandSpreadTicks);
         GPUToken token = new GPUToken{salt: gpuId}(address(this), gpuId, name, symbol);
         _gpus[gpuId] = GpuConfig({
             token: address(token),
@@ -111,8 +126,9 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
             feeBps: feeBps,
             fee: fee,
             tickSpacing: tickSpacing,
-            totalIssued: 0,
-            reserve: 0
+            bandWidthTicks: bandWidthTicks,
+            bandSpreadTicks: bandSpreadTicks,
+            totalIssued: 0
         });
         _gpuIdOfToken[address(token)] = gpuId;
         _gpuIds.push(gpuId);
@@ -148,7 +164,13 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     // ------------------------------------------------------------ issuance
 
     /// @notice Buys `amount` GPU tokens at the oracle price + issuance fee.
-    /// @return base gUSD paid into the reserve (excludes fee).
+    ///         The base payment is forwarded to `marketLiquidity` (the POL),
+    ///         where it capitalizes the GPU's canonical market as bid-side
+    ///         liquidity around the oracle reference; the fee is protocol
+    ///         revenue. No v4 interaction: placement is a separate
+    ///         permissionless step, so a v4 problem can never fail a primary
+    ///         buy.
+    /// @return base gUSD paid as market capital (excludes fee).
     /// @return fee gUSD paid as issuance fee to the revenue ledger.
     function issue(bytes32 gpuId, uint256 amount, address to)
         external
@@ -166,11 +188,18 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         base = Math.mulDiv(amount, price, compositionDivisor, Math.Rounding.Ceil);
         fee = Math.mulDiv(base, cfg.feeBps, 10_000, Math.Rounding.Ceil);
 
-        // CEI: pull base + fee from the user, forward fee, mint last.
-        _gpus[gpuId].reserve += base;
+        // CEI: pull base + fee from the user, route both, mint last. Issuance
+        // is fully decoupled from v4: placement (GPUMarketLiquidity
+        // .deployPending) is a separate permissionless step, so a v4 problem
+        // can never fail a primary buy. The principal is market capital, not
+        // a redeemable reserve: it deepens the market it created.
         _gpus[gpuId].totalIssued += amount;
         gUSD.safeTransferFrom(msg.sender, address(this), base + fee);
         if (fee > 0) gUSD.safeTransfer(revenueLedger, fee);
+        // principal -> market capital: the POL books it as pending and places
+        // it as a bid band around the oracle reference
+        gUSD.safeTransfer(marketLiquidity, base);
+        IMarketLiquidity(marketLiquidity).notePrincipal(gpuId, base);
         GPUToken(cfg.token).mint(to, amount);
 
         emit Issued(msg.sender, gpuId, to, amount, base, fee);
@@ -210,14 +239,42 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         return FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));
     }
 
-    function gpuReserve(bytes32 gpuId) external view returns (uint256) {
-        return _gpus[gpuId].reserve;
+    function bandWidthOf(bytes32 gpuId) external view returns (int24) {
+        _requireKnown(gpuId);
+        return _gpus[gpuId].bandWidthTicks;
     }
 
-    function totalIssuanceReserve() external view returns (uint256 sum) {
-        for (uint256 i; i < _gpuIds.length; ++i) {
-            sum += _gpus[_gpuIds[i]].reserve;
-        }
+    function bandSpreadTicksOf(bytes32 gpuId) external view returns (int24) {
+        _requireKnown(gpuId);
+        return _gpus[gpuId].bandSpreadTicks;
+    }
+
+    function feeBpsOf(bytes32 gpuId) external view returns (uint16) {
+        _requireKnown(gpuId);
+        return _gpus[gpuId].feeBps;
+    }
+
+    /// @notice Current oracle reference price as a gUSD-wei-per-GPU-wei
+    ///         sqrtPriceX96 (2^96-scaled sqrt of the price ratio), with the
+    ///         full guard set `issue()` applies. Nothing is ever placed at a
+    ///         stale reference.
+    function referenceSqrtPriceX96(bytes32 gpuId) external view returns (uint256) {
+        _oraclePrice(gpuId); // zero / future-timestamp / staleness guards
+        (uint256 price,) = oracle.getPrice(gpuId);
+        // radicand = (price / compositionDivisor) * 2^192; its sqrt is
+        // sqrt(ratio) * 2^96 — exactly v4's sqrtPriceX96 convention
+        uint256 sqrt = FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));
+        if (sqrt > type(uint160).max) revert OraclePriceRange();
+        return sqrt;
+    }
+
+    /// @dev POL band geometry must be well-formed: a positive multiple of the
+    ///      pool's tick spacing, spread < width (disjoint zones), capped for
+    ///      int24-arithmetic safety in the POL.
+    function _validateBandTicks(int24 tickSpacing, int24 width, int24 spread) internal pure {
+        if (width <= 0 || spread <= 0 || spread >= width) revert InvalidBandTicks();
+        if (width > MAX_BAND_TICKS) revert InvalidBandTicks();
+        if (width % tickSpacing != 0 || spread % tickSpacing != 0) revert InvalidBandTicks();
     }
 
     function gpuConfig(bytes32 gpuId) external view returns (GpuConfig memory) {

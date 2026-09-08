@@ -30,6 +30,7 @@ import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
 import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
 import {IGPUIssuance} from "../../src/interfaces/IGPUIssuance.sol";
+import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 
@@ -59,6 +60,7 @@ contract E2ETest is Test, DeployPermit2 {
     PoolKey internal key;
     PoolId internal poolId;
     bool internal gIsC0;
+    GPUMarketLiquidity internal pol;
 
     bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
     uint24 internal constant POOL_FEE = 3000;
@@ -89,7 +91,8 @@ contract E2ETest is Test, DeployPermit2 {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         sg = new sgUSD(IERC20(address(gusd)), address(this));
         ledger = new RevenueLedger(IERC20(address(gusd)), address(this));
-        issuance = new GPUIssuance(IERC20(address(gusd)), oracle, address(ledger), address(this));
+        pol = new GPUMarketLiquidity(manager, gusd, address(ledger), address(this));
+        issuance = new GPUIssuance(IERC20(address(gusd)), oracle, address(ledger), address(pol), address(this));
 
         bytes memory ctorArgs = abi.encode(manager, address(gusd), issuance, address(ledger), address(this));
         (address hookAddr, bytes32 salt) =
@@ -98,6 +101,7 @@ contract E2ETest is Test, DeployPermit2 {
         hook = GPUHook(hookAddr);
 
         router = new GpuRouter(manager, gusd, issuance, hook);
+        pol.setRefs(address(issuance), address(hook));
 
         gusd.setRevenueSink(address(ledger));
         gusd.setFees(0, 0);
@@ -112,7 +116,7 @@ contract E2ETest is Test, DeployPermit2 {
         gusd.approve(address(sg), 1e6);
         sg.seed(1e6);
 
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, POOL_FEE, TICK_SPACING);
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, POOL_FEE, TICK_SPACING, 600, 120);
         issuance.setIssuanceEnabled(H100, true);
         oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         gpu = GPUToken(issuance.tokenOf(H100));
@@ -231,7 +235,10 @@ contract E2ETest is Test, DeployPermit2 {
         uint256 paid1 = _buyGpu(100e18, 0, 100e18, address(gusd), 300e6, alice);
         assertEq(paid1, 251_250_000, "genesis cost 100x2.5x1.005");
         assertEq(gpu.balanceOf(alice), 100e18);
-        assertEq(issuance.gpuReserve(H100), 250_000_000, "reserve");
+        assertEq(pol.principalContributed(H100), 250_000_000, "principal");
+        assertEq(pol.pendingPrincipal(H100), 0, "router placed it at the anchor");
+        assertGt(pol.bidDepth(H100), 0, "bid band live");
+        assertEq(gusd.balanceOf(address(issuance)), 0, "issuance holds no gUSD");
         assertEq(hook.totalTradingFeesAccrued(), 0, "no hook fee on genesis");
         assertEq(gusd.balanceOf(address(ledger)) - ledger0, 1_250_000, "issuance fee");
         assertEq(gusd.balanceOf(address(router)), 0, "router empty");
@@ -258,12 +265,14 @@ contract E2ETest is Test, DeployPermit2 {
         assertGt(lpgusd, 0, "LP gUSD fee accrued");
 
         // 4) mixed BUY 5 = 3 pool + 2 issuance
-        uint256 reserve4 = issuance.gpuReserve(H100);
+        uint256 principal4 = pol.principalContributed(H100);
         uint256 ledger4 = gusd.balanceOf(address(ledger));
         vm.prank(bob);
         _buyGpu(5e18, 3e18, 2e18, address(underlying), 20e6, bob);
         assertEq(gpu.balanceOf(bob), 7e18);
-        assertEq(issuance.gpuReserve(H100) - reserve4, 5_000_000, "issuance reserve 2x2.5");
+        assertEq(pol.principalContributed(H100) - principal4, 5_000_000, "issuance principal 2x2.5");
+        assertEq(pol.pendingPrincipal(H100), 0, "router deployed the pending");
+        assertGt(pol.bidDepth(H100), 0, "bid band live");
         assertEq(gusd.balanceOf(address(ledger)) - ledger4, 25_000, "issuance fee 0.5% of 5");
 
         // 5) SELL 1 H100 -> USDC: pure secondary, oracle untouched
@@ -273,7 +282,7 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(underlying.balanceOf(bob) - bobUsdc, out5, "sell payout delivered");
         assertEq(gpu.balanceOf(bob), 6e18);
         assertGt(hook.totalTradingFeesAccrued(), hookFees + hookFeeBuy, "hook fee on sell");
-        assertEq(issuance.gpuReserve(H100), 255_000_000, "reserves untouched by trades");
+        assertEq(pol.principalContributed(H100), 255_000_000, "principal untouched by trades");
 
         // 6) harvest + distribute: hook fees -> ledger -> sgUSD vault/treasury
         vm.prank(address(this));
@@ -292,7 +301,9 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(gusd.balanceOf(address(router)), 0, "router holds no gUSD");
         assertEq(gpu.balanceOf(address(router)), 0, "router holds no GPU");
         assertEq(gusd.balanceOf(address(hook)), 0, "hook drained");
-        assertEq(issuance.gpuReserve(H100), 255_000_000, "issuance reserve final");
+        assertEq(pol.principalContributed(H100), 255_000_000, "principal final");
+        assertEq(pol.pendingPrincipal(H100), 0, "pending final");
+        assertEq(gusd.balanceOf(address(issuance)), 0, "issuance empty final");
         assertGt(sg.convertToAssets(1e6), 1e6, "sgUSD share price up");
         assertEq(posm.balanceOf(address(router)), 0, "router holds no NFTs");
     }
@@ -302,7 +313,7 @@ contract E2ETest is Test, DeployPermit2 {
         (uint256 base0,,) = issuance.quoteIssue(H100, 1e18);
         assertEq(base0, 2_500_000);
         (, int24 tickBefore,,) = stateView.getSlot0(poolId);
-        uint256 reserve = issuance.gpuReserve(H100);
+        uint256 principal = pol.principalContributed(H100);
 
         oracle.setPrice(H100, 30_000, block.timestamp); // $3.00
 
@@ -310,7 +321,7 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(base1, 3_000_000, "issuance repriced");
         (, int24 tickAfter,,) = stateView.getSlot0(poolId);
         assertEq(tickBefore, tickAfter, "pool price moved?");
-        assertEq(issuance.gpuReserve(H100), reserve, "reserve moved?");
+        assertEq(pol.principalContributed(H100), principal, "principal moved?");
     }
 
     /// @notice Oversized pool BUY with an impact-capped sqrtLimit: the pool

@@ -116,7 +116,7 @@ Implement:
 - GPU registry/configuration,
 - mock GPU oracle,
 - primary GPU issuance,
-- GPU issuance reserve accounting,
+- market-capital accounting (principal → POL bid bands),
 - issuance fees.
 
 Start with one GPU, preferably:
@@ -294,11 +294,19 @@ GPU-token supply cannot increase outside authorized primary issuance.
 ```
 
 ```text
-Primary GPU issuance must result in the required gUSD entering GPU issuance accounting.
+Primary GPU issuance must result in the required gUSD entering
+market-capital accounting: principal → POL, fee → revenue ledger.
+The issuance contract holds zero gUSD at rest.
 ```
 
 ```text
-Secondary GPU trades must not silently modify primary issuance reserves.
+POL never mints GPU. Every GPU it holds originates from market swaps
+(band conversions) or LP fee accrual.
+```
+
+```text
+Secondary GPU trades move inventory between band sides; they never
+mint GPU or create principal.
 ```
 
 ```text
@@ -411,13 +419,16 @@ Current areas that may still require design decisions include:
 
 - exact primary issuance availability rules,
 - issuance fee parameters,
-- below-oracle supply management,
-- GPU reserve withdrawal/use rules,
+- below-oracle supply management beyond POL band depth,
+- band spread/width tuning per GPU market,
 - dynamic fee policy,
 - protocol revenue split,
 - sgUSD revenue distribution details,
-- protocol-owned initial liquidity,
 - governance and emergency controls.
+
+Resolved by design in V1: protocol-owned liquidity is not pre-seeded —
+primary principal capitalizes each market's bid bands (PROTOCOL.md
+§19/§20); there is no reserve withdrawal path at all.
 
 Where these do not block a milestone, keep them configurable or out of scope.
 
