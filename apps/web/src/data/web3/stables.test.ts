@@ -23,6 +23,7 @@ function record(underlying: string, stables: string[]): ProtocolAddresses {
     stableRouter: "0x000000000000000000000000000000000000000c",
     stables: stables as Address[],
     weth: "0x000000000000000000000000000000000000000d",
+    startBlock: 0,
   };
 }
 
@@ -104,6 +105,21 @@ describe("stableConfig — the real wiring (deployment record + table)", () => {
     expect(cfg.underlying.name).toBe("Global Dollar");
     expect(cfg.underlying.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
     expect(stablesFor(31337)[0]).toEqual(cfg.underlying);
+  });
+
+  it("names the Deploy.full mock USDT (the committed full-posture record)", () => {
+    const cfg = stableConfig(31337);
+    // Full-posture record (Deploy.full): [reserve, mock USDT]; the pinned
+    // address is CREATE2-deterministic. A minimal-Deploy regeneration drops
+    // the whitelist entry and this fails loudly — re-run Deploy.full or
+    // re-pin intentionally.
+    expect(cfg.others).toHaveLength(1);
+    expect(cfg.others[0]).toEqual({
+      address: "0xAd8F7921738819152FFA371c984D736842ed8AFE",
+      symbol: "USDT",
+      name: "Mock Tether USD",
+    });
+    expect(stableMetaOf("0xad8f7921738819152ffa371c984d736842ed8afe", 31337)).toEqual(cfg.others[0]);
   });
 });
 

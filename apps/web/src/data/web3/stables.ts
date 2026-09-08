@@ -47,10 +47,26 @@ interface ChainStableTableEntry {
  *  (it rotates on Anvil redeploys). */
 const CHAIN_STABLES: Record<number, ChainStableTableEntry> = {
   /** Anvil dev — the mock reserve wears USDG's identity by Deploy default,
-   *  so the dev preview shows the Robinhood Chain posture. */
-  31337: { underlying: { symbol: "USDG", name: "Global Dollar" } },
-  /** Robinhood Chain testnet — Paxos USDG (Global Dollar), 6 decimals. */
-  46630: { underlying: { symbol: "USDG", name: "Global Dollar" } },
+   *  so the dev preview shows the Robinhood Chain posture. The mock USDT
+   *  is created via the CREATE2 proxy with a fixed salt by
+   *  Deploy.full.s.sol (`gusd.mock.usdt.v1`), so its address is identical
+   *  on every chain the script touches. */
+  31337: {
+    underlying: { symbol: "USDG", name: "Global Dollar" },
+    others: { "0xAd8F7921738819152FFA371c984D736842ed8AFE": { symbol: "USDT", name: "Mock Tether USD" } },
+  },
+  /** Base Sepolia — testnet deploys of the full posture (Deploy.full);
+   *  same mock-reserve display posture as Anvil. */
+  84532: {
+    underlying: { symbol: "USDG", name: "Global Dollar" },
+    others: { "0xAd8F7921738819152FFA371c984D736842ed8AFE": { symbol: "USDT", name: "Mock Tether USD" } },
+  },
+  /** Robinhood Chain testnet — Paxos USDG (Global Dollar), 6 decimals;
+   *  the mock USDT rides the StableRouter as a second funding stable. */
+  46630: {
+    underlying: { symbol: "USDG", name: "Global Dollar" },
+    others: { "0xAd8F7921738819152FFA371c984D736842ed8AFE": { symbol: "USDT", name: "Mock Tether USD" } },
+  },
   /** Robinhood Chain mainnet — Paxos USDG, the chain's canonical stable. */
   4663: { underlying: { symbol: "USDG", name: "Global Dollar" } },
 };
