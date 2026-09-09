@@ -25,7 +25,7 @@ import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
 import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
 import { AcrossBridgePort } from "@/data/web3/bridge/across";
 import { PrivyAuthPort } from "./privy-auth-port";
-import { disposeAvailabilityCache, disposeProbeCache } from "@/data/web3/trading/quotes";
+import { disposeAvailabilityCache } from "@/data/web3/trading/quotes";
 
 /**
  * The transaction port over the lifecycle engine: pre-flight session and
@@ -123,7 +123,6 @@ export class Web3Services implements Services {
       protocol: this.protocolStore ?? undefined,
       onSettled: () => {
         disposeAvailabilityCache();
-        disposeProbeCache();
       },
     });
     this.mint = new OnChainMintPort({

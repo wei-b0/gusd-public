@@ -7,11 +7,9 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
-import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
 import {IV4Quoter} from "@uniswap/v4-periphery/interfaces/IV4Quoter.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
@@ -19,6 +17,8 @@ import {Actions} from "@uniswap/v4-periphery/libraries/Actions.sol";
 // test-only Planner reuse, same as Demo: production frontends encode the
 // PositionManager bundle offchain
 import {Planner, Plan} from "v4-periphery-test/shared/Planner.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {GUSD} from "../src/GUSD.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
 import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
@@ -27,23 +27,31 @@ import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {sgUSD} from "../src/sgUSD.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
+import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
+import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {StableRouter} from "../src/StableRouter.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
-import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {MockGPUPriceOracle} from "../src/oracle/MockGPUPriceOracle.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Deploy} from "./Deploy.s.sol";
 
 /// @notice Full-catalogue dev/testnet deployment: runs the production Deploy
 ///         unchanged, then seeds EVERYTHING the web app exercises onchain —
 ///         all 7 canonical SKUs (oracle price + enabled issuance + canonical
 ///         pool), a deterministic mock USDT whitelisted on the StableRouter
-///         with a funded USDT/reserve pool, full-range LP depth on every
-///         pool, and a compact demo-activity pass (buys, sells, stable
-///         funding, staking, harvest + distribute) from two test actors so
-///         the tape, activity ledgers, and cost basis are populated the
-///         moment the stack is up.
+///         with a funded USDT/reserve pool, and a compact demo-activity pass
+///         (genesis backstop buys, bootstrap conversion sells, actor trades,
+///         an instant-reprice proof, distribute + staking) so the tape,
+///         activity ledgers, vault inventory and cost basis are populated
+///         the moment the stack is up.
+///
+///         Seeding doctrine (C-max): no treasury LP seeds on GPU pools — the
+///         vault's inventory originates only from real flows. Genesis buys
+///         run the in-swap issuance backstop on the cold pools (principal
+///         becomes bid capacity); a bootstrap conversion sells a slice back
+///         so the vault holds genuine ask-side GPU. GpuQuoter drives every
+///         activity buy (quote == execution). GPU pools carry no LP depth:
+///         the hook IS the book; only the hook-free stable pool is LP'd.
 ///
 ///         Run: forge script script/Deploy.full.s.sol --rpc-url <url> --broadcast --sig "runFull()"
 ///         The chain it produces is NON-VIRGIN: Demo.s.sol (virgin-state
@@ -84,8 +92,15 @@ contract DeployFull is Deploy {
     bytes32 constant USDT_SALT = keccak256("gusd.mock.usdt.v1");
 
     uint256 constant GENESIS_PER_SKU = 10_000e18; // deployer inventory (GPU-wei)
-    uint128 constant GPU_POOL_LIQUIDITY = 2e15; // ~25x Demo's H100 position
     uint128 constant STABLE_POOL_LIQUIDITY = 1e13; // ~10M units per side at 1:1
+
+    // GpuQuoter floats: seeds the PoolManager during quote simulations. The
+    // whole unlock reverts on every quote, so the float is never consumed —
+    // it only has to back the largest single simulation. gUSD backs buys;
+    // each SKU's GPU float backs sell quotes (the hook takes the seller's
+    // GPU in-lock, so the simulation needs physical GPU behind it).
+    uint256 constant QUOTER_FLOAT = 2_000_000e6;
+    uint256 constant GPU_FLOAT_PER_SKU = 1_000e18;
 
     // anvil rich keys (test actors, same as Demo): alice = #2, bob = #3
     uint256 constant ALICE_PK = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
@@ -130,14 +145,17 @@ contract DeployFull is Deploy {
         vm.startBroadcast(pk);
         GUSD gusd = GUSD(d.gusd);
         GPUIssuance issuance = GPUIssuance(d.issuance);
-        GPUMarketLiquidity pol = GPUMarketLiquidity(d.marketLiquidity);
+        GPUMarketLiquidity vault = GPUMarketLiquidity(d.marketLiquidity);
         GPUHook hook = GPUHook(d.hook);
         RevenueLedger ledger = RevenueLedger(d.ledger);
         sgUSD sg = sgUSD(d.sgusd);
         GpuRouter router = GpuRouter(d.router);
         StableRouter stableRouter = StableRouter(d.stableRouter);
         StateView stateView = StateView(d.stateView);
+        // stock V4Quoter: valid for the hook-free stable pool only (GPU pools
+        // quote through the float-seeded GpuQuoter)
         IV4Quoter quoter = IV4Quoter(d.quoter);
+        GpuQuoter gq = GpuQuoter(d.gpuQuoter);
         // PositionManager has a payable fallback (WETH deposits): cast via
         // an interface-shaped variable, same as Demo
         address posmAddr = d.positionManager;
@@ -161,58 +179,87 @@ contract DeployFull is Deploy {
         // ----------------------------- 2) deployer gUSD working balance
         // Mock reserve funds itself (the Deploy default posture); a real
         // UNDERLYING has no mint — fall back to transferring holdings.
-        _fundReserve(d.underlying, deployer, 12_000_000e6, deployer);
+        // 16M = the 4M gUSD backing (pulled back out by the mint below) + the
+        // 10M stable-pool LP position + slack. GUSD mint/redeem rounds the
+        // payout through this balance and the reserve, so it must clear both.
+        _fundReserve(d.underlying, deployer, 16_000_000e6, deployer);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
-        gusd.mint(1_000_000e6, deployer);
+        // Covers the quoter float (2M) + the genesis backstop buys across the
+        // catalogue (~0.45M incl. fees) + slack; the mock reserve mints freely.
+        gusd.mint(4_000_000e6, deployer);
         gusd.approve(d.router, type(uint256).max);
 
-        // --------------------- 3) genesis inventory: 100% issuance per SKU
-        // Pool is still empty -> pure primary issuance at the oracle price +
-        // 0.5% issuance fee. maxPaid = base x 1.005 (+1 wei rounding slack).
+        // ------------------------------------------- 2.5) quoter float
+        // One owner funding backs every quote in this pass: each quote ends
+        // in a reverted unlock, so the float is never actually consumed.
+        gusd.approve(d.gpuQuoter, type(uint256).max);
+        gq.setGusdFloat(QUOTER_FLOAT);
+
+        // --------------------- 3) genesis inventory: in-swap backstop per SKU
+        // Pools are registered but carry nothing: no LP, no vault inventory.
+        // The hook's ladder walks W=0 and the issuance backstop mints 100%
+        // of the demand in-swap — the principal lands in the vault as bid
+        // capacity (notePrincipal) inside the very same swap. maxPaid is the
+        // exact hand-computed charge chain: base + issuance fee + hook fee
+        // (+2 wei slack for the fee-adjusted spend-cap floor).
         for (uint256 i; i < CATALOGUE.length; ++i) {
             bytes32 gpuId = CATALOGUE[i];
             uint256 price = _priceOf(gpuId);
-            // gUSD-wei per whole GPU = price x 100 (1e4 scale -> 1e6 scale);
-            // GENESIS_PER_SKU is in GPU-wei, hence the 1e18 divisor
-            uint256 maxPaid = (GENESIS_PER_SKU * price * 100 * 1_005) / (1_000 * 1e18) + 1;
+            uint256 base = Math.mulDiv(GENESIS_PER_SKU, price, issuance.compositionDivisor(), Math.Rounding.Ceil);
+            uint256 ifee = Math.mulDiv(base, 50, 10_000, Math.Rounding.Ceil);
+            uint256 charge = base + ifee;
+            // The hook fee rides on top of the charge (read live from the
+            // hook — Deploy sets hookFeeBps); the 2-wei slack covers the
+            // fee-adjusted spend-cap ceiling.
+            uint256 hfee = Math.mulDiv(charge, hook.hookFeeBps(), 10_000, Math.Rounding.Ceil);
             uint256 paid = _buy(
                 router,
                 GpuRouter.BuyParams({
                     gpuId: gpuId,
                     gpuOut: GENESIS_PER_SKU,
-                    poolGpuOut: 0,
-                    issueGpuOut: GENESIS_PER_SKU,
                     payment: d.gusd,
-                    maxPaid: maxPaid,
+                    maxPaid: charge + hfee + 2,
+                    deadline: 0,
                     sqrtLimitX96: 0,
                     recipient: deployer
                 })
             );
-            require(paid <= maxPaid, "genesis overspend");
+            require(paid == charge + hfee, "genesis charge chain");
+        }
+
+        // ------------------------------ 3.4) quoter GPU float: sell quotes
+        // Sell quotes seed the PoolManager with the quoter's GPU float — the
+        // same revert-borne doctrine as the gUSD float above (the whole
+        // unlock rolls back, so the float only has to back the largest
+        // single simulation). Funded out of the deployer's genesis inventory
+        // — a genuine primary buy's output — one SKU at a time.
+        for (uint256 i; i < CATALOGUE.length; ++i) {
+            GPUToken token = GPUToken(issuance.tokenOf(CATALOGUE[i]));
+            token.approve(d.gpuQuoter, GPU_FLOAT_PER_SKU);
+            gq.setGpuFloat(address(token), GPU_FLOAT_PER_SKU);
         }
 
         // ------------------- 3.5) bootstrap conversion: ask-side inventory
-        // Bid-only bands hold no GPU, so pool BUYs would be unquotable until
-        // sellers convert band depth. Selling ~1% of each SKU's genesis
-        // inventory converts a slice of the band into GPU (the position pays
-        // out its gUSD for the seller's GPU), which seeds the ask side and
-        // makes the activity pass's pool legs executable.
+        // The vault starts bid-only (principal from the genesis backstop).
+        // Selling ~1% of each SKU's genesis inventory has the vault BUY GPU
+        // at its own bid — genuine market acquisition, the only source of
+        // ask-side inventory — so the activity pass's buys fill from POL.
         for (uint256 i; i < CATALOGUE.length; ++i) {
             bytes32 gpuId = CATALOGUE[i];
             GPUToken token = GPUToken(issuance.tokenOf(gpuId));
             uint256 price = _priceOf(gpuId);
-            uint256 expected = 100e18 * price / 1e16; // 100 GPU in gUSD-wei
+            uint256 expected = 100e18 * price / issuance.compositionDivisor(); // 100 GPU in gUSD-wei
             token.approve(d.router, type(uint256).max);
             router.sell(
                 GpuRouter.SellParams({
                     gpuId: gpuId,
                     gpuIn: 100e18,
                     payout: d.underlying,
-                    // the sell executes against the bid band, which the POL
-                    // prices bandSpreadTicks (120 ticks ≈ 1.3%) below the ask
-                    // by design; add the in-band discount + 0.5% hook fee —
-                    // proceeds land ~1.8% under the oracle, so 3% slack
-                    minOut: expected * 97 / 100,
+                    // bid = oracle - 0.5%; the seller also bears the 0.1% POL
+                    // fee and the 0.5% hook fee — proceeds land ~1.1% under
+                    // the oracle, so 2% slack
+                    minOut: expected * 98 / 100,
+                    deadline: 0,
                     sqrtLimitX96: 0,
                     recipient: deployer
                 })
@@ -236,12 +283,12 @@ contract DeployFull is Deploy {
         PoolManager(d.poolManager).initialize(skey, uint160(1) << 96); // 1:1 (both 6-dec)
 
         // --------------------------------- 5) stable-pool seed only
-        // GPU pools start EMPTY of deployer liquidity — each primary issuance
-        // capitalizes its own market via the POL (bid bands), and a bootstrap
-        // conversion (below) seeds the ask side. Only the hook-free stable
-        // pool is LP'd here: the web's mint desk hardcodes it (apps/web/src/
-        // data/web3/gusd/actions.ts STABLE_POOL) and StableRouter rejects
-        // hook-bearing pools.
+        // GPU pools start EMPTY of deployer liquidity — the hook is the book
+        // (backstop + vault inventory + any external LPs that arrive), and
+        // treasury LP seeds are explicitly out of design. Only the hook-free
+        // stable pool is LP'd here: the web's mint desk hardcodes it
+        // (apps/web/src/data/web3/gusd/actions.ts STABLE_POOL) and
+        // StableRouter rejects hook-bearing pools.
         MockERC20(usdt).mint(deployer, 12_000_000e6);
         IERC20(usdt).approve(d.permit2, type(uint256).max);
         IAllowanceTransfer(d.permit2).approve(usdt, d.positionManager, type(uint160).max, type(uint48).max);
@@ -266,28 +313,37 @@ contract DeployFull is Deploy {
 
         // ============================================ ACTIVITY PASS
         // alice: gUSD position + stable-funded mint (wallet history, cost
-        // basis); bob: pool buys + sells on every SKU (tape, volumes, fees).
+        // basis); bob: pool buys + sells on every SKU (tape, volumes, fees)
+        // — every buy quote==execution through the GpuQuoter.
 
         // --------------------------------------------------- alice leg
         vm.startBroadcast(ALICE_PK);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
         gusd.mint(10_000e6, alice);
         gusd.approve(d.router, type(uint256).max);
-        // 100 H100 from a fully-liquid market: pure issuance leg at the
-        // oracle ceiling — her avg entry lands at 2.5125 gUSD
-        _buy(
-            router,
-            GpuRouter.BuyParams({
-                gpuId: H100,
-                gpuOut: 100e18,
-                poolGpuOut: 0,
-                issueGpuOut: 100e18,
-                payment: d.gusd,
-                maxPaid: 300e6,
-                sqrtLimitX96: 0,
-                recipient: alice
-            })
-        );
+        // 50 H100 from the vault's ask at the oracle ceiling: the bootstrap
+        // conversion left exactly 100 GPU of ask inventory, so this is a
+        // pure-POL fill at 25_000 x 1.005 = 25_125/GPU — charge 125_625_000
+        // + hook fee 628_125. The assert pins quote, hook and hand math to
+        // the same number.
+        {
+            PoolKey memory ahkey = _canonicalKey(d, H100);
+            GpuQuoter.QuoteResult memory ra = gq.quoteBuyExactOut(ahkey, 50e18);
+            require(ra.gusdIn == 126_253_125, "alice quote at ask ceiling");
+            uint256 paidA = _buy(
+                router,
+                GpuRouter.BuyParams({
+                    gpuId: H100,
+                    gpuOut: 50e18,
+                    payment: d.gusd,
+                    maxPaid: ra.gusdIn,
+                    deadline: 0,
+                    sqrtLimitX96: 0,
+                    recipient: alice
+                })
+            );
+            require(paidA == ra.gusdIn, "alice quote==execution");
+        }
         // stable funding round-trip: USDT -> gUSD through the seeded pool
         IERC20(usdt).approve(d.stableRouter, type(uint256).max);
         bool usdtIsC0 = usdt < d.underlying;
@@ -304,30 +360,28 @@ contract DeployFull is Deploy {
         vm.startBroadcast(BOB_PK);
         IERC20(d.underlying).approve(d.router, type(uint256).max);
         gusd.approve(d.router, type(uint256).max);
-        // pool BUY + SELL on every SKU: the H100 pass mirrors Demo (quote ->
-        // exact execution), the rest light up each market's tape/rows.
+        // pool BUY + SELL on every SKU: quote -> exact execution (the web's
+        // own flow), lighting up each market's tape/rows. Fills come from
+        // the vault's ask (buys) and bid (sells) — the pools carry no LP.
         for (uint256 i; i < CATALOGUE.length; ++i) {
             bytes32 gpuId = CATALOGUE[i];
             GPUToken token = GPUToken(issuance.tokenOf(gpuId));
-            bool gIsC0 = d.gusd < address(token);
             PoolKey memory key = _canonicalKey(d, gpuId);
 
-            (uint256 quotedIn,) = quoter.quoteExactOutputSingle(
-                IV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: gIsC0, exactAmount: 2e18, hookData: ""})
-            );
-            _buy(
+            GpuQuoter.QuoteResult memory rb = gq.quoteBuyExactOut(key, 2e18);
+            uint256 paidB = _buy(
                 router,
                 GpuRouter.BuyParams({
                     gpuId: gpuId,
                     gpuOut: 2e18,
-                    poolGpuOut: 2e18,
-                    issueGpuOut: 0,
                     payment: d.underlying,
-                    maxPaid: quotedIn,
+                    maxPaid: rb.gusdIn,
+                    deadline: 0,
                     sqrtLimitX96: 0,
                     recipient: bob
                 })
             );
+            require(paidB == rb.gusdIn, "bob quote==execution");
 
             token.approve(d.router, type(uint256).max);
             uint256 price = _priceOf(gpuId);
@@ -336,7 +390,10 @@ contract DeployFull is Deploy {
                     gpuId: gpuId,
                     gpuIn: 1e18,
                     payout: d.underlying,
-                    minOut: (price * 90), // 0.9 x oracle in underlying-wei
+                    // 100% POL bid fill: proceeds land ~1.1% under the
+                    // oracle (bid spread + POL fee + hook fee)
+                    minOut: price * 98 / 100,
+                    deadline: 0,
                     sqrtLimitX96: 0,
                     recipient: bob
                 })
@@ -344,101 +401,53 @@ contract DeployFull is Deploy {
         }
         vm.stopBroadcast();
 
-        // ------------------------------------- H100 reprice + repriced BUY
-        // Only the NEXT issuance reprices; the pool keeps its tick. bob's
-        // issuance buy at $3.00 vs his $2.50 pool entries gives the UI real
-        // realized-PnL data.
+        // --------------------------- oracle reprice: instant and structural
+        // The C-max proof segment. One oracle publish — no keeper, no
+        // recenter, no pending phase — and the very next swap prices both
+        // edges from the fresh reference. bob's buy fills from the vault's
+        // ask at the NEW ask ($3.0150); its proceeds re-enter the bid
+        // inventory without re-counting principal (provenance invariant);
+        // polState shows the repriced book immediately.
         (uint256 base6,,) = _repriceAndQuote(d, deployer, H100, 30_000);
+        require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
         vm.startBroadcast(BOB_PK);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
-        gusd.mint(10e6, bob);
-        gusd.approve(d.router, type(uint256).max);
-        _buy(
-            router,
-            GpuRouter.BuyParams({
-                gpuId: H100,
-                gpuOut: 1e18,
-                poolGpuOut: 0,
-                issueGpuOut: 1e18,
-                payment: d.gusd,
-                maxPaid: 5e6,
-                sqrtLimitX96: 0,
-                recipient: bob
-            })
-        );
-        vm.stopBroadcast();
-        require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
-        // The defer, asserted where it happens: the pool still trades at the
-        // pre-reprice price, past the new band's corridor, so bob's principal
-        // correctly waits instead of being placed at a stale anchor.
-        require(pol.pendingPrincipal(H100) == 3_000_000, "H100 deferred pending (repriced buy)");
-
-        // --------------------------------- convergence: recenter + arb buy
-        // An oracle move leaves the pool behind — and the design does NOT
-        // force it back (no oracle-bounded swaps: blocked swaps are dead
-        // capital). Two permissionless forces close the gap instead, and in
-        // production arbitrageurs/keepers call them within moments. The demo
-        // scripts both so the desk shows market ≈ index after this pass:
-        vm.startBroadcast(pk);
-        // 1) recenter: stale 2.50-anchored bands are removed and the same
-        //    real inventory redeployed around $3.00 where geometry allows —
-        //    recovered GPU to an ask band at reference + fee. The recovered
-        //    gUSD honestly DEFERS: the pool still trades at ~$2.50, cheaper
-        //    than the entire new bid zone, and nothing may place at a stale
-        //    anchor (same corridor rule that deferred bob's buy). Removal is
-        //    not a swap; nobody trades at stale prices.
-        uint256 removed = pol.recenter(H100, 10);
-        require(removed >= 1, "stale bands recentred");
-        // principal is a cumulative statistic: recentering re-prices
-        // inventory, it never re-counts it.
-        require(pol.principalContributed(H100) == 25_253_000_000, "recenter re-counted principal");
-        vm.stopBroadcast();
-
-        vm.startBroadcast(BOB_PK);
-        PoolKey memory hkey = _canonicalKey(d, H100);
-        bool hGIsC0 = d.gusd < address(GPUToken(issuance.tokenOf(H100)));
-        (uint256 convIn,) = quoter.quoteExactOutputSingle(
-            IV4Quoter.QuoteExactSingleParams({poolKey: hkey, zeroForOne: hGIsC0, exactAmount: 1e18, hookData: ""})
-        );
-        // 2) the arb buy — the convergence force the design waits for: the
-        //    pool leg jumps spot through the (empty) pre-reprice range into
-        //    the fresh ask band and fills at reference × (1 + fee) ± in-band
-        //    movement, plus the 0.8% LP+protocol fee stack the quoter
-        //    includes — the 17% discount is gone. Corridor bound ~±3%.
-        require(convIn >= 2_940_000 && convIn <= 3_100_000, "post-recenter ask within corridor of reference");
-        _buy(
-            router,
-            GpuRouter.BuyParams({
-                gpuId: H100,
-                gpuOut: 1e18,
-                poolGpuOut: 1e18,
-                issueGpuOut: 0,
-                payment: d.underlying,
-                maxPaid: convIn,
-                sqrtLimitX96: 0,
-                recipient: bob
-            })
-        );
-        vm.stopBroadcast();
-
-        // 3) the pool now trades inside the corridor, so the deferred
-        //    principal (bob's repriced 3 + the recentred gUSD) places as the
-        //    bid band at the new anchor — the router already attempted it
-        //    best-effort inside the buy; a no-op here if so. This call MUST
-        //    sit inside a broadcast: off-broadcast calls mutate only the
-        //    script's local EVM, so the require would pass while the chain
-        //    keeps the principal pending.
-        vm.startBroadcast(pk);
-        pol.deployPending(H100);
-        require(pol.pendingPrincipal(H100) == 0, "pending placed post-convergence");
-        vm.stopBroadcast();
-
-        // -------------------------------- harvest revenue -> sgUSD vault
-        vm.startBroadcast(pk);
-        for (uint256 i; i < CATALOGUE.length; ++i) {
-            hook.harvestTradingFees(_canonicalKey(d, CATALOGUE[i]).toId(), 0);
-            require(hook.pendingTradingFees(_canonicalKey(d, CATALOGUE[i]).toId()) == 0, "harvest");
+        gusd.mint(20e6, bob);
+        {
+            PoolKey memory hkey = _canonicalKey(d, H100);
+            uint256 bidBefore = vault.bidInventoryGusd(H100);
+            uint256 principalBefore = vault.principalContributed(H100);
+            uint256 askBefore = vault.askInventoryGpu(H100);
+            GpuQuoter.QuoteResult memory r6 = gq.quoteBuyExactOut(hkey, 2e18);
+            // 2 GPU at the new ask 30_000 x 1.005 = 30_150: charge
+            // 6_030_000 + hook fee 30_150 — instantly repriced.
+            require(r6.gusdIn == 6_060_150, "quote at the new ask");
+            uint256 paid6 = _buy(
+                router,
+                GpuRouter.BuyParams({
+                    gpuId: H100,
+                    gpuOut: 2e18,
+                    payment: d.gusd,
+                    maxPaid: r6.gusdIn,
+                    deadline: 0,
+                    sqrtLimitX96: 0,
+                    recipient: bob
+                })
+            );
+            require(paid6 == r6.gusdIn, "quote==execution (repriced)");
+            require(vault.bidInventoryGusd(H100) - bidBefore == 6_023_970, "POL proceeds -> bid capacity");
+            require(vault.principalContributed(H100) == principalBefore, "principal never re-counted");
+            require(askBefore - vault.askInventoryGpu(H100) == 2e18, "ask inventory consumed");
+            (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) = hook.polState(H100);
+            require(live6, "pol live post-reprice");
+            require(askPrice6 == 30_150 && bidPrice6 == 29_850, "edges repriced in-swap");
         }
+        vm.stopBroadcast();
+
+        // ----------------------------- distribute protocol revenue
+        // Fees route to the revenue ledger in-swap (POL fee, hook fee,
+        // issuance fee) — there is no harvest phase to run first.
+        vm.startBroadcast(pk);
         ledger.distribute();
         require(gusd.balanceOf(d.ledger) == 0, "ledger drained");
 
@@ -457,40 +466,21 @@ contract DeployFull is Deploy {
         stables[1] = usdt;
         _persistFull(d, stables, anchorBlock);
 
-        for (uint256 i; i < CATALOGUE.length; ++i) {
-            PoolId pid = _canonicalKey(d, CATALOGUE[i]).toId();
-            require(stateView.getLiquidity(pid) > 0, "pool liquidity");
-            require(GPUToken(issuance.tokenOf(CATALOGUE[i])).balanceOf(d.router) == 0, "router empty");
-        }
+        require(stateView.getLiquidity(skey.toId()) > 0, "stable pool liquidity");
         require(stableRouter.allStables().length == 2, "stables whitelisted");
-        // POL accounting: per-SKU principal capitalized == genesis (10k GPU) +
-        // alice (100) + bob's repriced 1; every unit deployed — bob's repriced
-        // buy deferred past the corridor (asserted where it happened), then
-        // the convergence pass recentred and placed it. H100's price check is
-        // excluded because its oracle seed moved mid-flow (25k at 2.50, 3 at
-        // 3.00) — pinned explicitly below.
+        // POL accounting: per-SKU principal capitalized == the genesis
+        // backstop buys (the only issuance in this pass). Every activity
+        // fill rode the vault's inventory: ask-side proceeds re-enter the
+        // bid inventory WITHOUT re-counting principal (asserted at the
+        // reprice step), and sell fills consume bid capacity only.
         for (uint256 i; i < CATALOGUE.length; ++i) {
-            if (CATALOGUE[i] != H100) {
-                require(pol.principalContributed(CATALOGUE[i]) == _priceOf(CATALOGUE[i]) * 1e6, "sku principal");
-            }
-            require(pol.pendingPrincipal(CATALOGUE[i]) == 0, "sku pending deployed");
-            require(pol.bidDepth(CATALOGUE[i]) > 0, "sku bid depth");
-        }
-        require(pol.principalContributed(H100) == 25_253_000_000, "H100 principal (25k + 250 + 3)");
-        // the convergence proof, as state: the pool now trades within the
-        // band corridor (~±720 ticks) of the oracle reference — market,
-        // oracle, and index agree within the spread the design promises.
-        // referenceSqrtPriceX96 is sqrt(h) in gUSD-per-GPU terms, while the
-        // pool's slot0 tick is in pool-price terms (1/h when gUSD is
-        // currency0) — mirror the orientation before comparing.
-        {
-            PoolKey memory hkey = _canonicalKey(d, H100);
-            (, int24 spotTick,,) = stateView.getSlot0(hkey.toId());
-            int24 hTick = TickMath.getTickAtSqrtPrice(uint160(issuance.referenceSqrtPriceX96(H100)));
-            bool hGIsC0 = d.gusd < address(GPUToken(issuance.tokenOf(H100)));
-            int24 refTick = hGIsC0 ? -hTick : hTick;
-            uint256 drift = spotTick > refTick ? uint256(int256(spotTick - refTick)) : uint256(int256(refTick - spotTick));
-            require(drift <= 720, "spot within band corridor of reference");
+            bytes32 gpuId = CATALOGUE[i];
+            address gpuToken = issuance.tokenOf(gpuId);
+            require(GPUToken(gpuToken).balanceOf(d.router) == 0, "router empty");
+            require(GPUToken(gpuToken).balanceOf(d.hook) == 0, "hook empty at rest");
+            require(vault.principalContributed(gpuId) == _priceOf(gpuId) * 1e6, "sku principal");
+            require(vault.bidInventoryGusd(gpuId) > 0, "sku bid depth");
+            require(vault.askInventoryGpu(gpuId) > 0, "sku ask inventory");
         }
         (uint256 stableQuote,) = quoter.quoteExactInputSingle(
             IV4Quoter.QuoteExactSingleParams({poolKey: skey, zeroForOne: usdtIsC0, exactAmount: 1_000e6, hookData: ""})
@@ -505,6 +495,7 @@ contract DeployFull is Deploy {
         console2.log("full catalogue live:", vm.toString(CATALOGUE.length), "SKUs");
         console2.log("mock USDT (pin in apps/web/src/data/web3/stables.ts):", usdt);
         console2.log("stable pool", vm.toString(Currency.unwrap(skey.currency0)), "/", vm.toString(Currency.unwrap(skey.currency1)));
+        console2.log("gpuQuoter (float-funded):", d.gpuQuoter);
         console2.log("sgUSD assets", gusd.balanceOf(address(sg)));
         console2.log("vault revenue to date", ledger.totalToVault());
     }
@@ -522,9 +513,11 @@ contract DeployFull is Deploy {
         uint256 price
     ) internal {
         GPUIssuance issuance = GPUIssuance(d.issuance);
-        issuance.createGpu(gpuId, name, symbol, 50, 3000, 60, 600, 120);
+        issuance.createGpu(gpuId, name, symbol, 50, 3000, 60);
         _setPrice(deployer, d.oracle, gpuId, price);
         issuance.setIssuanceEnabled(gpuId, true);
+        // POL params (see Deploy.run) — the hook is inert without them.
+        GPUHook(d.hook).setPolParams(gpuId, 50, 50, 10);
         // Deploy's internal helper: initializes the canonical pool from the
         // (now-seeded) oracle price and asserts hook registration
         _initializeCanonicalPool(d, gpuId);
@@ -644,6 +637,7 @@ contract DeployFull is Deploy {
         } catch {}
         vm.serializeAddress(obj, "hook", d.hook);
         vm.serializeAddress(obj, "router", d.router);
+        vm.serializeAddress(obj, "gpuQuoter", d.gpuQuoter);
         vm.serializeAddress(obj, "permit2", d.permit2);
         vm.serializeAddress(obj, "positionManager", d.positionManager);
         vm.serializeAddress(obj, "quoter", d.quoter);

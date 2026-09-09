@@ -15,6 +15,7 @@ import { getPublicClient } from "./public-client";
 import { getActiveChain } from "./chains";
 import { DEPLOYMENTS, type ProtocolAddresses } from "./abis/addresses.generated";
 import { GUSD_ABI } from "./abis/gusd";
+import { GPU_QUOTER_ABI } from "./abis/gpu_quoter";
 import { GPUISSUANCE_ABI } from "./abis/gpuissuance";
 import { GPU_ROUTER_ABI } from "./abis/gpu_router";
 import { GPU_HOOK_ABI } from "./abis/gpu_hook";
@@ -95,6 +96,11 @@ function oracleContract(client?: PublicClient): OracleContract {
   return contract(contractAddresses().oracle, GPU_PRICE_ORACLE_ABI, client);
 }
 
+export type GpuQuoterContract = ContractFor<typeof GPU_QUOTER_ABI>;
+function gpuQuoterContract(client?: PublicClient): GpuQuoterContract {
+  return contract(contractAddresses().gpuQuoter, GPU_QUOTER_ABI, client);
+}
+
 export type QuoterContract = ContractFor<typeof V4_QUOTER_ABI>;
 function quoterContract(client?: PublicClient): QuoterContract {
   return contract(contractAddresses().quoter, V4_QUOTER_ABI, client);
@@ -127,6 +133,9 @@ export interface ContractSet {
   sgusd: SGusdContract;
   stableRouter: StableRouterContract;
   oracle: OracleContract;
+  /** The float-seeded GPU lens — quotes GPU pools through their real hook. */
+  gpuQuoter: GpuQuoterContract;
+  /** The stock v4 quoter — hook-free pools only (the stable swap leg). */
   quoter: QuoterContract;
   stateView: StateViewContract;
   /** The addresses themselves — for allowance targets and pool keys. */
@@ -154,6 +163,7 @@ export function getContracts(chainId?: number): ContractSet {
     sgusd: sgusdContract(client),
     stableRouter: stableRouterContract(client),
     oracle: oracleContract(client),
+    gpuQuoter: gpuQuoterContract(client),
     quoter: quoterContract(client),
     stateView: stateViewContract(client),
     addresses,

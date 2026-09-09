@@ -8,6 +8,8 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
 import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
@@ -18,11 +20,13 @@ import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
+import {GpuQuoter} from "../../src/lens/GpuQuoter.sol";
 import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @notice Product-surface rig for GpuRouter: genesis / pool / mixed BUY, SELL,
 ///         slippage and refund behavior. Runs under both currency orderings.
@@ -35,6 +39,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     GPUIssuance internal issuance;
     GPUHook internal hook;
     GpuRouter internal router;
+    GpuQuoter internal gq;
+    int24 internal initTick;
     GPUMarketLiquidity internal pol;
     StateView internal stateView;
     address internal ledger;
@@ -57,19 +63,19 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
         oracle = new MockGPUPriceOracle(address(this));
-        pol = new GPUMarketLiquidity(manager, gusd, ledger, address(this));
+        pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
         GPU_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_MAIN");
 
         bytes memory ctorArgs =
-            abi.encode(IPoolManager(address(manager)), address(gusd), issuance, ledger, address(this));
+            abi.encode(IPoolManager(address(manager)), address(gusd), oracle, issuance, ledger, address(this));
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
                 | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
         (address hookAddr, bytes32 salt) = HookMiner.find(address(this), flags, type(GPUHook).creationCode, ctorArgs);
         hook = GPUHook(hookAddr);
-        new GPUHook{salt: salt}(IPoolManager(address(manager)), address(gusd), issuance, ledger, address(this));
+        new GPUHook{salt: salt}(IPoolManager(address(manager)), address(gusd), oracle, issuance, ledger, address(this));
 
         router = new GpuRouter(IPoolManager(address(manager)), gusd, issuance, hook);
         pol.setRefs(address(issuance), address(hook));
@@ -78,19 +84,22 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         RevenueLedger(ledger).setVault(makeAddr("sgusdVault"));
         RevenueLedger(ledger).setTreasury(makeAddr("treasury"));
 
-        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING, 600, 120);
+        issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(GPU_ID, true);
         gpu = GPUToken(issuance.tokenOf(GPU_ID));
         oracle.setPrice(GPU_ID, 25_000, block.timestamp); // 2.5000 gUSD/GPU-hour
 
         // a second GPU with NO pool: genesis + unregistered-pool tests
         GENESIS_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_GENESIS");
-        issuance.createGpu(GENESIS_ID, "Genesis GPU", "GGPU", 50, POOL_FEE, TICK_SPACING, 600, 120);
+        issuance.createGpu(GENESIS_ID, "Genesis GPU", "GGPU", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(GENESIS_ID, true);
         oracle.setPrice(GENESIS_ID, 25_000, block.timestamp);
 
         gIsC0 = address(gusd) < address(gpu);
-        manager.initialize(_canonicalKey(), SQRT_PRICE_1_1);
+        // init at the oracle reference ($2.50/GPU-hour) so the native book
+        // sits at the hook's edges (the C-max merged-book geometry)
+        initTick = gIsC0 ? int24(267_120) : int24(-267_120); // spacing-aligned (raw ref ~267_161)
+        manager.initialize(_canonicalKey(), TickMath.getSqrtPriceAtTick(initTick));
         stateView = new StateView(manager);
 
         // fund users + approvals to the router
@@ -105,15 +114,24 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
         vm.stopPrank();
 
-        // LP the canonical pool: ~5.98e12 raw per side (issue first: _issueGpuTo
-        // deals gUSD absolutely, which would clobber a prior _dealGusd balance)
+        // LP the canonical pool around the oracle anchor (issue first:
+        // _issueGpuTo deals gUSD absolutely, which would clobber a prior
+        // _dealGusd balance)
         _issueGpuTo(address(this), 1_000e18);
         _dealGusd(address(this), 10_000_000e6);
         IERC20(address(gusd)).approve(address(modifyLiquidityRouter), type(uint256).max);
         IERC20(address(gpu)).approve(address(modifyLiquidityRouter), type(uint256).max);
         modifyLiquidityRouter.modifyLiquidity(
-            _canonicalKey(), ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 1e15, salt: 0}), ""
+            _canonicalKey(),
+            ModifyLiquidityParams({tickLower: initTick - 120, tickUpper: initTick + 120, liquidityDelta: 1e15, salt: 0}),
+            ""
         );
+
+        // executable-quote lens + deploy-posture hook fee
+        gq = new GpuQuoter(IPoolManager(address(manager)), address(gusd), issuance, address(this));
+        IERC20(address(gusd)).approve(address(gq), type(uint256).max);
+        gq.setGusdFloat(1_000_000e6);
+        hook.setHookFeeBps(50);
     }
 
     // ------------------------------------------------------------- helpers
@@ -168,75 +186,59 @@ abstract contract GpuRouterTestBase is Test, Deployers {
 
     // ---------------------------------------------------------- genesis BUY
 
-    /// Scenario 2: BUY on a brand-new market — zero circulating supply, no
-    /// pool at all; 100% primary issuance at oracle + issuance fee.
+    /// BUY on a brand-new market: no registered pool -> 100% primary
+    /// issuance fallback (zero v4 dependency), principal -> vault instantly.
     function test_genesisBuy_issuanceOnly() public {
         uint256 gpuOut = 10e18; // 10 GPU-hours
         (uint256 base, uint256 issFee,) = issuance.quoteIssue(GENESIS_ID, gpuOut);
 
-        uint256 pendingBefore = pol.pendingPrincipal(GENESIS_ID);
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
         vm.prank(alice);
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GENESIS_ID,
-                gpuOut: gpuOut,
-                poolGpuOut: 0,
-                issueGpuOut: gpuOut,
-                payment: address(gusd),
-                maxPaid: base + issFee,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GENESIS_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: base + issFee,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
 
         assertEq(paid, base + issFee, "paid = issuance quote");
         assertEq(GPUToken(issuance.tokenOf(GENESIS_ID)).balanceOf(alice), gpuOut, "recipient minted");
-        assertEq(pol.principalContributed(GENESIS_ID), pendingBefore + base, "principal grew by base");
-        assertEq(pol.pendingPrincipal(GENESIS_ID), pendingBefore + base, "no pool: principal stays pending");
-        assertEq(pol.principalContributed(GENESIS_ID), pendingBefore + base, "principal counted on arrival");
+        assertEq(pol.principalContributed(GENESIS_ID), base, "principal capitalized immediately");
+        assertGt(pol.bidInventoryGusd(GENESIS_ID), 0, "principal is bid capacity");
         assertEq(gusd.balanceOf(ledger), ledgerBefore + issFee, "issuance fee to ledger");
-        assertEq(gusd.balanceOf(alice), aliceGusdBefore - paid, "alice spent quote");
-        assertEq(hook.totalTradingFeesAccrued(), 0, "no hook fee on genesis");
+        assertEq(hook.totalHookFeesGusd(), 0, "no hook fee on the genesis fallback");
         assertEq(gusd.balanceOf(address(router)), 0, "router empty");
+        assertEq(gusd.balanceOf(alice), aliceGusdBefore - paid, "alice spent the quote");
     }
 
     // ------------------------------------------------------------- pool BUY
 
-    /// Scenario 4: BUY filled entirely by the canonical pool, gUSD-funded.
-    /// Tight maxPaid; change refunded; hook fee accrued in gUSD.
+    /// BUY filled by the merged book (native + POL + backstop), gUSD-funded;
+    /// change refunded; the executable quote anchors execution exactly.
     function test_buy_viaPool_gusdPayment() public {
-        uint256 gpuOut = 1e12; // within the ~5.98e12 raw band
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+        uint256 gpuOut = 1e12;
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuOut);
+        assertEq(q.gpuOut, gpuOut);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
         vm.prank(alice);
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: gpuOut,
-                poolGpuOut: gpuOut,
-                issueGpuOut: 0,
-                payment: address(gusd),
-                maxPaid: 2_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: q.gusdIn,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
 
+        assertEq(paid, q.gusdIn, "quote == execution");
         assertEq(gpu.balanceOf(alice), gpuOut, "exact GPU out");
-        assertTrue(paid > 0 && paid <= 2_000_000e6, "paid within cap");
         assertEq(gusd.balanceOf(alice), aliceGusdBefore - paid, "alice paid net (change refunded)");
-        uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
-        // user pays leg + hook fee; the hook's basis is the raw pool leg
-        assertEq(hookFee, _hookFeeOf(paid - hookFee), "hook fee = 0.5% of pool leg");
         assertEq(gusd.balanceOf(address(router)), 0, "router empty");
-        assertEq(gusd.balanceOf(address(hook)), hook.totalTradingFeesAccrued() - hook.totalTradingFeesHarvested());
+        assertEq(gpu.balanceOf(address(router)), 0, "router holds no GPU");
     }
 
-    /// BUY funded with USDC: internal mintUSDC; change still refunds as gUSD.
+    /// BUY funded with USDC: internal mint; change still refunds as gUSD.
     function test_buy_viaPool_usdcPayment() public {
         uint256 gpuOut = 1e12;
         uint256 aliceUsdcBefore = underlying.balanceOf(alice);
@@ -245,57 +247,46 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.prank(alice);
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: gpuOut,
-                poolGpuOut: gpuOut,
-                issueGpuOut: 0,
-                payment: address(underlying),
-                maxPaid: 2_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: gpuOut, payment: address(underlying), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
 
         assertEq(underlying.balanceOf(alice), aliceUsdcBefore - 2_000_000e6, "USDC pulled = maxPaid");
         assertEq(gpu.balanceOf(alice), gpuOut, "exact GPU out");
-        // change refunds as gUSD (mint fee is 0 in this rig)
         assertGt(gusd.balanceOf(alice) - aliceGusdBefore, 0, "gUSD change refunded");
         assertTrue(paid <= 2_000_000e6);
         assertEq(gusd.balanceOf(address(router)), 0);
     }
 
-    /// Scenario 5+6: mixed BUY — pool leg + issuance leg in one tx.
+    /// Mixed BUY: the hook fills native first, then the in-swap issuance
+    /// backstop capitalizes the vault — principal tracks the issued base
+    /// exactly once, and the ledger receives the issuance + hook fees.
     function test_buy_mixedLegs() public {
-        uint256 poolLeg = 5e11;
-        uint256 issueLeg = 5e11;
-        uint256 gpuOut = poolLeg + issueLeg;
-        (uint256 base, uint256 issFee,) = issuance.quoteIssue(GPU_ID, issueLeg);
+        uint256 gpuOut = 1e12;
+        uint256 issuedBefore = issuance.gpuConfig(GPU_ID).totalIssued;
         uint256 principalBefore = pol.principalContributed(GPU_ID);
         uint256 ledgerBefore = gusd.balanceOf(ledger);
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+        uint256 hookFeesBefore = hook.totalHookFeesGusd();
 
         vm.prank(alice);
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: gpuOut,
-                poolGpuOut: poolLeg,
-                issueGpuOut: issueLeg,
-                payment: address(gusd),
-                maxPaid: 2_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
 
-        assertEq(gpu.balanceOf(alice), gpuOut, "both legs delivered");
-        assertEq(pol.principalContributed(GPU_ID), principalBefore + base, "principal grew");
-        assertEq(pol.pendingPrincipal(GPU_ID), 0, "router deployed pending into the band");
-        assertGt(pol.bidDepth(GPU_ID), 0, "bid band live");
-        assertEq(gusd.balanceOf(ledger), ledgerBefore + issFee, "issuance fee to ledger");
-        uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
-        // paid = poolLeg + hookFee + (base + issFee); basis = poolLeg only
-        assertEq(hookFee, _hookFeeOf(paid - hookFee - base - issFee), "hook fee on pool leg only");
+        assertEq(gpu.balanceOf(alice), gpuOut, "delivered");
+        assertTrue(paid > 0 && paid <= 2_000_000e6);
+        uint256 issuedDelta = issuance.gpuConfig(GPU_ID).totalIssued - issuedBefore;
+        uint256 base = Math.mulDiv(issuedDelta, 25_000, issuance.compositionDivisor(), Math.Rounding.Ceil);
+        assertEq(pol.principalContributed(GPU_ID) - principalBefore, base, "principal == backstop base");
+        uint256 ifee = issuedDelta > 0 ? Math.mulDiv(base, 50, 10_000, Math.Rounding.Ceil) : 0;
+        assertEq(
+            gusd.balanceOf(ledger) - ledgerBefore, ifee + (hook.totalHookFeesGusd() - hookFeesBefore),
+            "ledger = issuance fee + hook fee"
+        );
         assertEq(gusd.balanceOf(address(router)), 0);
     }
 
@@ -310,109 +301,75 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.expectRevert(GpuRouter.MaxPaidExceeded.selector);
         router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 1e12,
-                poolGpuOut: 1e12,
-                issueGpuOut: 0,
-                payment: address(gusd),
-                maxPaid: 1,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 1,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
     }
 
-    function test_buy_poolShortfall() public {
+    /// Elastic capacity: a BUY far beyond the native book no longer reverts —
+    /// the in-swap issuance backstop mints the tail (the router settles the
+    /// full budget first, so the hook's in-lock takes are physically backed).
+    function test_buy_backstopFillsHugeDemand() public {
+        uint256 issuedBefore = issuance.gpuConfig(GPU_ID).totalIssued;
         vm.prank(alice);
-        vm.expectRevert(GpuRouter.PoolShortfall.selector);
-        router.buy(
+        uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 1e15,
-                poolGpuOut: 1e15,
-                issueGpuOut: 0,
-                payment: address(gusd),
-                maxPaid: 10_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 100e18, payment: address(gusd), maxPaid: 10_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
+        assertEq(gpu.balanceOf(alice), 100e18, "full demand filled");
+        assertGt(issuance.gpuConfig(GPU_ID).totalIssued - issuedBefore, 0, "backstop participated");
+        assertGt(paid, 0);
+        assertEq(gusd.balanceOf(address(router)), 0);
     }
 
-    /// Scenario 12: stale oracle — issuance leg reverts, pool-only BUY works.
-    function test_buy_staleOracle_poolOnlyStillWorks() public {
+    /// Stale oracle: the hook is inert — native-only BUY still works, no
+    /// POL fills, no backstop, no fees.
+    function test_buy_staleOracle_nativeOnly() public {
         vm.warp(block.timestamp + 30 days);
-        vm.prank(alice);
-        vm.expectRevert();
-        router.buy(
-            GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 5e11,
-                poolGpuOut: 0,
-                issueGpuOut: 5e11,
-                payment: address(gusd),
-                maxPaid: 1_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
-            })
-        );
-
+        uint256 hookFees0 = hook.totalHookFeesGusd();
+        uint256 polFees0 = hook.totalPolFeesGusd();
+        uint256 principal0 = pol.principalContributed(GPU_ID);
+        uint256 issued0 = issuance.gpuConfig(GPU_ID).totalIssued;
         uint256 aliceGpuBefore = gpu.balanceOf(alice);
         vm.prank(alice);
-        router.buy(
+        uint256 paid = router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 1e12,
-                poolGpuOut: 1e12,
-                issueGpuOut: 0,
-                payment: address(gusd),
-                maxPaid: 2_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
+        assertGt(paid, 0, "native-only buy works");
         assertEq(gpu.balanceOf(alice) - aliceGpuBefore, 1e12);
+        assertEq(hook.totalHookFeesGusd(), hookFees0, "no hook fees when stale");
+        assertEq(hook.totalPolFeesGusd(), polFees0, "no POL fills when stale");
+        assertEq(pol.principalContributed(GPU_ID), principal0, "no backstop when stale");
+        assertEq(issuance.gpuConfig(GPU_ID).totalIssued, issued0, "no in-swap issuance when stale");
     }
 
     function test_buy_paramValidation() public {
         vm.startPrank(alice);
-        vm.expectRevert(GpuRouter.LegMismatch.selector);
+        vm.expectRevert(GpuRouter.ZeroGpuOut.selector);
         router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 10,
-                poolGpuOut: 3,
-                issueGpuOut: 6,
-                payment: address(gusd),
-                maxPaid: 100,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 0, payment: address(gusd), maxPaid: 100,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
         vm.expectRevert(GpuRouter.UnsupportedPayment.selector);
         router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 10,
-                poolGpuOut: 0,
-                issueGpuOut: 10,
-                payment: address(0xBEEF),
-                maxPaid: 100,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 10, payment: address(0xBEEF), maxPaid: 100,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
         vm.expectRevert(GpuRouter.UnknownGpu.selector);
         router.buy(
             GpuRouter.BuyParams({
-                gpuId: bytes32("NOPE"),
-                gpuOut: 10,
-                poolGpuOut: 0,
-                issueGpuOut: 10,
-                payment: address(gusd),
-                maxPaid: 100,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: bytes32("NOPE"), gpuOut: 10, payment: address(gusd), maxPaid: 100,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
         vm.stopPrank();
@@ -420,18 +377,20 @@ abstract contract GpuRouterTestBase is Test, Deployers {
 
     // ---------------------------------------------------------- buyExactIn
 
+    /// Full fill: the caller spends exactly gusdMaxIn; the hook fee on this
+    /// shape is charged IN-KIND in GPU (totalHookFeesGusd must not move).
     function test_buyExactIn_fullFill() public {
-        uint256 gusdMaxIn = 1e9; // 1,000 gUSD, well within the band
+        uint256 gusdMaxIn = 1e9;
         uint256 minGpuOut = 9e8;
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+        uint256 hookFees0 = hook.totalHookFeesGusd();
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
         vm.prank(alice);
-        uint256 gpuOut = router.buyExactIn(GPU_ID, gusdMaxIn, minGpuOut, 0, alice);
+        uint256 gpuOut = router.buyExactIn(GPU_ID, gusdMaxIn, minGpuOut, 0, 0, alice);
 
         assertGt(gpuOut, minGpuOut, "full fill");
         assertEq(gusd.balanceOf(alice), aliceGusdBefore - gusdMaxIn, "paid exactly gusdMaxIn");
-        assertEq(hook.totalTradingFeesAccrued() - hookAccruedBefore, _hookFeeOf(gusdMaxIn), "fee on gross input");
+        assertEq(hook.totalHookFeesGusd(), hookFees0, "exactIn buy fee is in-kind GPU, not gUSD");
         assertEq(gusd.balanceOf(address(router)), 0);
         assertEq(gpu.balanceOf(address(router)), 0);
     }
@@ -439,58 +398,54 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     function test_buyExactIn_slippage() public {
         vm.prank(alice);
         vm.expectRevert(GpuRouter.Slippage.selector);
-        router.buyExactIn(GPU_ID, 1e9, 5e12, 0, alice); // minGpuOut unreachable
-    }
-
-    /// Pool cannot absorb the full input: the hook's all-or-nothing rule
-    /// reverts the whole trade (PartialFillNotSupported, wrapped by core).
-    function test_buyExactIn_partialFillReverts() public {
-        vm.prank(alice);
-        vm.expectRevert();
-        router.buyExactIn(GPU_ID, 10_000_000e6, 0, 0, alice);
+        router.buyExactIn(GPU_ID, 1e9, 1e21, 0, 0, alice); // minGpuOut unreachable
     }
 
     function test_buyExactIn_requiresCanonicalPool() public {
         vm.prank(alice);
         vm.expectRevert(GpuRouter.NotCanonicalPool.selector);
-        router.buyExactIn(GENESIS_ID, 1e9, 0, 0, alice);
+        router.buyExactIn(GENESIS_ID, 1e9, 0, 0, 0, alice);
     }
 
     // --------------------------------------------------------------- SELL
 
-    /// Scenario 7: SELL via secondary, gUSD payout.
+    /// Scenario 7: SELL via the merged book, gUSD payout. The hook fee on
+    /// sells is gUSD-denominated on the net POL spend (native legs are fee-
+    /// free for the hook — LPs earn their own fee).
     function test_sell_gusdPayout() public {
         uint256 gpuIn = 1e12;
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+        uint256 polNotional0 = hook.totalPolNotionalGusd();
+        uint256 polFees0 = hook.totalPolFeesGusd();
+        uint256 hookFees0 = hook.totalHookFeesGusd();
         uint256 bobGusdBefore = gusd.balanceOf(bob);
         uint256 bobGpuBefore = gpu.balanceOf(bob);
 
         vm.prank(bob);
         uint256 out = router.sell(
             GpuRouter.SellParams({
-                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, sqrtLimitX96: 0, recipient: bob
+                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
 
         assertGt(out, 0, "received gUSD");
         assertEq(gusd.balanceOf(bob), bobGusdBefore + out);
         assertEq(gpu.balanceOf(bob), bobGpuBefore - gpuIn, "GPU pulled");
-        uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
-        // basis = raw pool leg = net gUSD out + hook fee (fee carved from it)
-        assertEq(hookFee, _hookFeeOf(out + hookFee), "fee on raw gUSD out");
+        uint256 polSpend = hook.totalPolNotionalGusd() - polNotional0;
+        uint256 polFee = hook.totalPolFeesGusd() - polFees0;
+        if (polSpend > 0) {
+            assertEq(hook.totalHookFeesGusd() - hookFees0, _hookFeeOf(polSpend - polFee), "hook fee on net POL spend");
+        }
         assertEq(gusd.balanceOf(address(router)), 0);
         assertEq(gpu.balanceOf(address(router)), 0);
     }
 
-    /// SELL with USDC payout: minOut grossed up for the redeem fee; the
-    /// redeem fee lands in the ledger.
+    /// SELL with USDC payout: the redeem fee lands in the ledger; out =
+    /// gusdNet net of the fee (the router grosses minOut up internally).
     function test_sell_usdcPayout_redeemFeeGrossUp() public {
         gusd.setFees(0, 100); // 1% redeem fee
-        uint256 gpuIn = 1e12;
-        uint256 minOut = 5e11; // USDC units
-        // requiredGusd = ceil(minOut * 10000 / 9900)
-        uint256 requiredGusd = (minOut * 10_000 + 9_899) / 9_900;
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+        uint256 gpuIn = 1e13;
+        uint256 minOut = 5; // USDC units; tiny trade on purpose
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 supplyBefore = gusd.totalSupply();
         uint256 bobUsdcBefore = underlying.balanceOf(bob);
@@ -498,7 +453,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.prank(bob);
         uint256 out = router.sell(
             GpuRouter.SellParams({
-                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(underlying), minOut: minOut, sqrtLimitX96: 0, recipient: bob
+                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(underlying), minOut: minOut, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
 
@@ -509,12 +465,11 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 gusdNet = redeemFee + (supplyBefore - gusd.totalSupply());
         assertGt(redeemFee, 0, "redeem fee to ledger");
         assertEq(out, gusdNet - redeemFee, "out = gusdNet net of redeem fee");
-        uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
-        assertEq(hookFee, _hookFeeOf(gusdNet + hookFee), "hook fee on raw leg");
         assertEq(gusd.balanceOf(address(router)), 0);
     }
 
-    /// Empty pool (initialized, zero liquidity): SELL fails cleanly.
+    /// Empty pool (initialized, zero liquidity, zero bid inventory): SELL
+    /// fails closed — the honest closed market.
     function test_sell_emptyPoolRevertsCleanly() public {
         manager.initialize(_canonicalKeyFor(GENESIS_ID), SQRT_PRICE_1_1); // no LP
         GPUToken genGpu = GPUToken(issuance.tokenOf(GENESIS_ID));
@@ -522,34 +477,48 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.startPrank(bob);
         genGpu.approve(address(router), type(uint256).max);
         vm.stopPrank();
+        // the genesis issuance principal capitalizes the vault bid even on a
+        // book with zero liquidity — the honest closed-market lever is the
+        // POL cap, and the hook revert surfaces ERC-7751-wrapped via unlock
+        hook.setPolCaps(0, 0);
         vm.prank(bob);
-        vm.expectRevert(GpuRouter.Slippage.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CustomRevert.WrappedError.selector,
+                address(hook),
+                IHooks.beforeSwap.selector,
+                abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector),
+                abi.encodePacked(Hooks.HookCallFailed.selector)
+            )
+        );
         router.sell(
             GpuRouter.SellParams({
-                gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, sqrtLimitX96: 0, recipient: bob
+                gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
     }
 
-    /// Oversized SELL: partial fill pro-rates the fee; unconsumed GPU
-    /// returns to the seller.
-    function test_sell_partialFill_returnsLeftover() public {
-        uint256 gpuIn = 1e15; // ~167x the band
-        uint256 hookAccruedBefore = hook.totalTradingFeesAccrued();
+    /// SELL within the merged book: the full input is consumed; the vault's
+    /// bid inventory pays the beyond-edge tail and acquires GPU at the bid.
+    function test_sell_fullConsumesInput() public {
+        uint256 gpuIn = 100e18;
+        uint256 bid0 = pol.bidInventoryGusd(GPU_ID);
+        uint256 ask0 = pol.askInventoryGpu(GPU_ID);
         uint256 bobGpuBefore = gpu.balanceOf(bob);
 
         vm.prank(bob);
         uint256 out = router.sell(
             GpuRouter.SellParams({
-                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, sqrtLimitX96: 0, recipient: bob
+                gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
 
-        uint256 consumed = bobGpuBefore - gpu.balanceOf(bob);
-        assertLt(consumed, gpuIn, "partial fill");
+        assertEq(bobGpuBefore - gpu.balanceOf(bob), gpuIn, "full input consumed");
         assertGt(out, 0);
-        uint256 hookFee = hook.totalTradingFeesAccrued() - hookAccruedBefore;
-        assertEq(hookFee, _hookFeeOf(out + hookFee), "fee pro-rated on actual leg");
+        assertLt(pol.bidInventoryGusd(GPU_ID), bid0, "bid inventory spent");
+        assertGt(pol.askInventoryGpu(GPU_ID), ask0, "vault acquired GPU at the bid");
         assertEq(gusd.balanceOf(address(router)), 0);
         assertEq(gpu.balanceOf(address(router)), 0);
     }
@@ -559,7 +528,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.expectRevert(GpuRouter.Slippage.selector);
         router.sell(
             GpuRouter.SellParams({
-                gpuId: GPU_ID, gpuIn: 1e12, payout: address(gusd), minOut: 5e13, sqrtLimitX96: 0, recipient: bob
+                gpuId: GPU_ID, gpuIn: 1e12, payout: address(gusd), minOut: 5e13, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
     }
@@ -569,15 +539,16 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.expectRevert(GpuRouter.NotCanonicalPool.selector);
         router.sell(
             GpuRouter.SellParams({
-                gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, sqrtLimitX96: 0, recipient: bob
+                gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
+                recipient: bob
             })
         );
     }
 
-    // ------------------------------------------------------------- scenario 3+8 sanity
+    // ------------------------------------------------------- LP fee sanity
 
-    /// LP fee accrues to the pool independently of the hook fee (both fees
-    /// from the same trade are separately observable).
+    /// LP fee accrues to the pool independently of the hook: native legs pay
+    /// LPs even when the hook's own counters stay flat.
     function test_buy_lpFeeAndHookFeeIndependent() public {
         (,, uint24 packedProtocolFee, uint24 lpFee) = stateView.getSlot0(_canonicalKey().toId());
         assertEq(packedProtocolFee, 0);
@@ -587,14 +558,8 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         vm.prank(alice);
         router.buy(
             GpuRouter.BuyParams({
-                gpuId: GPU_ID,
-                gpuOut: 1e12,
-                poolGpuOut: 1e12,
-                issueGpuOut: 0,
-                payment: address(gusd),
-                maxPaid: 2_000_000e6,
-                sqrtLimitX96: 0,
-                recipient: alice
+                gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice
             })
         );
         (uint256 g0b, uint256 g1b) = stateView.getFeeGrowthGlobals(_canonicalKey().toId());
@@ -606,7 +571,6 @@ abstract contract GpuRouterTestBase is Test, Deployers {
             assertGt(g1b, g1, "LP fee accrued in gUSD input side");
             assertEq(g0b, g0);
         }
-        assertGt(hook.totalTradingFeesAccrued(), 0, "hook fee accrued too");
     }
 }
 

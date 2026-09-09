@@ -38,7 +38,7 @@ import {
   type QuoteDeps,
   defaultQuoteDeps,
 } from "./quotes";
-import { buySpec, sellSpec } from "./specs";
+import { TRADE_DEADLINE_SECS, buySpec, sellSpec } from "./specs";
 
 export interface OnChainTradingPortDeps {
   /** The session source — the port refuses to act without one. */
@@ -167,18 +167,20 @@ export class OnChainTradingPort implements TradingPort {
     const buyStruct = () => ({
       gpuId,
       gpuOut: sizeRaw,
-      poolGpuOut: parseGpuUnits(legUnits(quote, "pool")),
-      issueGpuOut: parseGpuUnits(legUnits(quote, "issuance")),
       payment: getContracts().addresses.gusd as Address,
       maxPaid: parseGusd(quote.maxPaid),
+      deadline: BigInt(Math.floor(Date.now() / 1000) + TRADE_DEADLINE_SECS),
       sqrtLimitX96: 0n,
+      recipient: owner,
     });
     const sellStruct = () => ({
       gpuId,
       gpuIn: sizeRaw,
       payout: getContracts().addresses.gusd as Address,
       minOut: parseGusd(quote.minOut),
+      deadline: BigInt(Math.floor(Date.now() / 1000) + TRADE_DEADLINE_SECS),
       sqrtLimitX96: 0n,
+      recipient: owner,
     });
 
     const plan: ActionPlan = {

@@ -1,9 +1,10 @@
 /**
  * Trade action builders — the contract-facing half of the order slip.
- * Buys go through `router.buy` (exact-out, pool + issuance legs, refunding
- * spend cap); sells through `router.sell` (exact-in, payout floor). The
- * structs mirror GpuRouter.sol's BuyParams/SellParams one-to-one; all
- * amounts are raw onchain units.
+ * Buys go through `router.buy` (exact-out GPU, one composed hook swap —
+ * native book → POL → issuance backstop — refunding the spend cap); sells
+ * through `router.sell` (exact-in GPU, payout floor). The structs mirror
+ * GpuRouter.sol's BuyParams/SellParams one-to-one; all amounts are raw
+ * onchain units.
  */
 
 import type { Address } from "viem";
@@ -11,25 +12,28 @@ import type { TxSpec } from "@/domain/types";
 import { getContracts } from "../contracts";
 import { GPU_ROUTER_ABI } from "../abis/gpu_router";
 
-/** GpuRouter.BuyParams — gUSD payment, gUSD-equivalent spend cap. */
+/** Deadline the desk puts on trade signatures — ten minutes, plenty for
+ *  approve+sign+send, short enough that a stuck order can't fill at a
+ *  price the user signed long ago. */
+export const TRADE_DEADLINE_SECS = 600;
+
+/** GpuRouter.BuyParams — exact-out GPU, gUSD-equivalent spend cap. */
 export interface BuyParams {
   gpuId: `0x${string}`;
   /** Total GPU the recipient must receive (18-dec raw). */
   gpuOut: bigint;
-  /** Portion filled from the canonical pool (18-dec raw). */
-  poolGpuOut: bigint;
-  /** Portion minted via primary issuance (18-dec raw). */
-  issueGpuOut: bigint;
-  /** Payment asset — gUSD in v1 (the reserve pays via the mint path). */
+  /** Payment asset — gUSD in v1. */
   payment: Address;
   /** gUSD-equivalent spend cap; unconsumed funds are refunded. */
   maxPaid: bigint;
+  /** Unix seconds; the router reverts after it (0 = no deadline). */
+  deadline: bigint;
   sqrtLimitX96: bigint;
   /** 0 = msg.sender; the desk always names the session wallet. */
   recipient: Address;
 }
 
-/** GpuRouter.SellParams — payout floor in payout units (gUSD in v1). */
+/** GpuRouter.SellParams — exact-in GPU, payout floor in payout units. */
 export interface SellParams {
   gpuId: `0x${string}`;
   /** GPU sold (18-dec raw). */
@@ -38,11 +42,14 @@ export interface SellParams {
   payout: Address;
   /** Minimum payout, payout units. */
   minOut: bigint;
+  /** Unix seconds; the router reverts after it (0 = no deadline). */
+  deadline: bigint;
   sqrtLimitX96: bigint;
+  /** 0 = msg.sender; the desk always names the session wallet. */
   recipient: Address;
 }
 
-/** Buy GPU: pulls `maxPaid` gUSD, fills pool + issuance, refunds the rest. */
+/** Buy GPU: pulls `maxPaid` gUSD, fills the composed market, refunds the rest. */
 export function buySpec(params: Omit<BuyParams, "recipient">, recipient: Address): TxSpec {
   return {
     origin: "trade",

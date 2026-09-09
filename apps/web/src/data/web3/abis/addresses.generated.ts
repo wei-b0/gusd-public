@@ -8,6 +8,7 @@ import type { Address } from "viem";
 export interface ProtocolAddresses {
   chainId: number;
   gusd: Address;
+  gpuQuoter: Address;
   hook: Address;
   issuance: Address;
   ledger: Address;
@@ -37,8 +38,9 @@ export interface ProtocolAddresses {
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
   "31337": {
     "chainId": 31337,
+    "gpuQuoter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
     "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0xB8a1836Ed461310312F5568E087a44baC70C90cc",
+    "hook": "0x35a6c7de4f9f153C5B56412b105a104775dE50Cc",
     "issuance": "0x9A676e781A523b5d0C0e43731313A708CB607508",
     "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
     "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
@@ -50,7 +52,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "quoter": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
     "router": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
     "sgusd": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
-    "stableRouter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
+    "stableRouter": "0x3Aa5ebB10DC797CAC828524e59A333d0A371443c",
     "stables": [
       "0x5FbDB2315678afecb367f032d93F642f64180aa3",
       "0xAd8F7921738819152FFA371c984D736842ed8AFE"

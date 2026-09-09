@@ -1,27 +1,28 @@
 /**
  * Trade quotes — the execution stack the order slip signs against. Buys
- * are exact-out through `router.buy`: the desk prices the pool leg with
- * the hook-aware V4Quoter (the same pricing path execution runs) and the
- * issuance leg with the contract's own `quoteIssue`, then signs a
- * `maxPaid` cap the router pulls and refunds from. Sells are exact-in
- * through `router.sell`, signing a `minOut` payout floor. Neither quote
- * pre-commits the fill — state can move between eth_call and inclusion —
- * so execution is bounded by the signed limits, not by the quote.
+ * are exact-out through `router.buy`: one composed hook swap that fills
+ * from the native CL book, then POL inventory, then the issuance backstop.
+ * Sells are exact-in through `router.sell` (native + POL bid — no synthetic
+ * redemption). Both quote through the float-seeded GpuQuoter, which runs
+ * the pool's real hook inside an eth_call — the same pricing path
+ * execution runs — and the signed limits (`maxPaid` / `minOut`) bound the
+ * fill. Neither quote pre-commits it: state can move between eth_call and
+ * inclusion, so execution is bounded by the signed limits, not the quote.
  *
  * Honesty rules the math keeps: the quoter already runs the hook, so its
- * amount IS all-in — the protocol fee is split out for display only, and
- * LP fees stay inside the market leg rather than being fabricated as a
- * row. Fees live on the legs that incur them; the UI derives the fee
- * copy from the leg set, never from static market metadata. Genesis
- * pools hold no depth: the pool leg binary-searches what the pool can
- * actually fill and the remainder prices through issuance.
+ * number IS all-in — protocol fees are split out for display only, and LP
+ * fees stay inside the market leg rather than being fabricated as a row.
+ * Fees live on the legs that incur them; the UI derives the fee copy from
+ * the leg set, never from static market metadata. A quote that reverts
+ * (market capacity exceeded) is the honest "can't fill this size" — never
+ * a partial quote.
  */
 
 import type { Address } from "viem";
 import type { AssetId, TradeAvailability, TradeLeg, TradeQuote } from "@/domain/types";
 import { applyBps, formatGpuUnits, parseGpuUnits } from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
-import { canonicalPoolKey, isBuyZeroForOne } from "../pool";
+import { canonicalPoolKey } from "../pool";
 import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { contractReads, type ContractReads } from "../reads";
@@ -29,9 +30,6 @@ import { contractReads, type ContractReads } from "../reads";
 /** Slippage tolerance the slip offers, bps (the presets row). */
 export const TOLERANCE_PRESETS_BPS = [10, 50, 100] as const;
 export const DEFAULT_TOLERANCE_BPS = 50;
-
-/** Probe budget for the max-fillable pool search (log₂ of the size range). */
-const PROBE_BUDGET = 10;
 
 export interface QuoteDeps {
   reads: ContractReads;
@@ -60,12 +58,15 @@ export interface QuoteSingleParams {
 }
 
 /**
- * The quoter's quote functions are declared nonpayable (they call the
+ * The quoters' quote functions are declared nonpayable (they call the
  * poolManager's unlock), so viem's getContract files them under write —
  * but they are pure simulations executed by eth_call. The read surface is
- * the honest seam; it is cast to the two signatures the desk uses. Shared
- * with the mint desk's StableRouter swap leg (quoterReadFor); the
- * deps-seamed quoterRead stays the trading stack's entry.
+ * the honest seam; it is cast to the signatures the desks use.
+ *
+ * `QuoterRead` is the stock v4 quoter — still the pricing path for the
+ * hook-free stable pool (the mint desk's StableRouter swap leg). GPU pools
+ * quote through `GpuQuoterRead` (the float-seeded lens), which returns the
+ * decomposed QuoteResult.
  */
 export interface QuoterRead {
   quoteExactOutputSingle(args: [QuoteSingleParams]): Promise<[bigint, bigint]>;
@@ -81,67 +82,53 @@ function quoterRead(deps: QuoteDeps): QuoterRead {
 }
 
 /**
- * One pool probe: gUSD required to buy `gpuOutRaw` from the pool, all-in
- * (LP fee + hook fee — the quoter runs the hook). Null when the pool
- * cannot fill the size (v4 reverts on insufficient liquidity).
+ * GpuQuoter.QuoteResult — the composed market's answer, decomposed by fill
+ * source. viem decodes fully-named structs into objects, so this mirrors
+ * the Solidity struct field-for-field.
  */
-async function poolCostFor(
-  deps: QuoteDeps,
-  poolKey: { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address },
-  zeroForOne: boolean,
-  gpuOutRaw: bigint,
-): Promise<bigint | null> {
-  try {
-    const [amountIn] = await quoterRead(deps).quoteExactOutputSingle([
-      { poolKey, zeroForOne, exactAmount: gpuOutRaw, hookData: "0x" },
-    ]);
-    return amountIn > 0n ? amountIn : null;
-  } catch {
-    // No depth for that size — the probe's honest answer.
-    return null;
-  }
+export interface GpuQuoteResult {
+  isBuy: boolean;
+  exactIn: boolean;
+  /** Buys: total gUSD the swapper pays (0 for sells). */
+  gusdIn: bigint;
+  /** Sells: net gUSD the swapper receives (0 for buys). */
+  gusdOut: bigint;
+  /** Sells: total GPU the swapper sells (0 for buys). */
+  gpuIn: bigint;
+  /** Buys: total GPU the swapper receives (0 for sells). */
+  gpuOut: bigint;
+  /** GPU filled by the native CL book. */
+  nativeGpu: bigint;
+  /** GPU filled by POL inventory. */
+  polGpu: bigint;
+  /** GPU minted by the issuance backstop. */
+  backstopGpu: bigint;
+  /** POL fee charged. */
+  polFeeGusd: bigint;
+  /** Hook fee charged in gUSD (buys and sells alike when hookFeeBps > 0). */
+  hookFeeGusd: bigint;
+  /** Backstop principal (buys only). */
+  issueBase: bigint;
+  /** Backstop fee (buys only). */
+  issueFee: bigint;
+  /** Pool tick after the native leg. */
+  endTick: number;
 }
 
-/**
- * Binary-search the largest pool fill in (0, sizeRaw], given the full size
- * already failed. ~10 probes; cached per gpuId+block so a drifting desk
- * re-quotes without re-probing the same dry pool.
- */
-async function maxFillable(
-  deps: QuoteDeps,
-  cacheKey: string,
-  poolKey: Parameters<typeof poolCostFor>[1],
-  zeroForOne: boolean,
-  sizeRaw: bigint,
-): Promise<{ fill: bigint; cost: bigint }> {
-  const cached = probeCache.get(cacheKey);
-  if (cached) return cached;
-  let lo = 0n;
-  let hi = sizeRaw;
-  // ~PROBE_BUDGET halvings bound the search below any desk-relevant size.
-  for (let i = 0; i < PROBE_BUDGET && hi - lo > 1n; i += 1) {
-    const mid = lo + (hi - lo) / 2n;
-    const cost = await poolCostFor(deps, poolKey, zeroForOne, mid);
-    if (cost !== null) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
-  }
-  const fill = lo;
-  const cost = fill === 0n ? 0n : ((await poolCostFor(deps, poolKey, zeroForOne, fill)) ?? 0n);
-  const result = { fill, cost };
-  if (probeCache.size > 256) probeCache.clear();
-  probeCache.set(cacheKey, result);
-  return result;
+export interface GpuQuoterRead {
+  quoteBuyExactOut(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  quoteSell(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
 }
 
-/** Probe cache: `${gpuId}:${block}:${sizeRaw}` → the pool's max fill. */
-const probeCache = new Map<string, { fill: bigint; cost: bigint }>();
+/** GpuQuoter's PoolKey parameter — same fields as the v4 pool key. */
+export type GpuPoolKeyArg = QuoteSingleParams["poolKey"];
 
-/** Drop the probe cache (tests, or an operator forcing re-probes). */
-export function disposeProbeCache(): void {
-  probeCache.clear();
+export function gpuQuoterReadFor(contracts: ReturnType<typeof getContracts>): GpuQuoterRead {
+  return contracts.gpuQuoter.read as unknown as GpuQuoterRead;
+}
+
+function gpuQuoterRead(deps: QuoteDeps): GpuQuoterRead {
+  return gpuQuoterReadFor(deps.contracts);
 }
 
 /** Availability read for the slip's gate — null when unregistered. Short
@@ -184,7 +171,9 @@ export function disposeAvailabilityCache(): void {
   availabilityCache.clear();
 }
 
-/** Buy quote: exact-out, pool leg + issuance leg, `maxPaid` cap with tolerance. */
+/** Buy quote: exact-out, the composed market (native → POL → backstop),
+ *  `maxPaid` cap with tolerance. Genesis pools (no canonical pool yet)
+ *  price through primary issuance alone. */
 export async function quoteBuy(
   asset: AssetId,
   size: number,
@@ -203,6 +192,37 @@ export async function quoteBuy(
   const sizeRaw = parseGpuUnits(size);
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
 
+  const blockNumber = await deps.getBlockNumber();
+
+  if (!reg.poolRegistered) {
+    // Genesis: no secondary market exists — the whole size prices through
+    // primary issuance. Closed issuance means the size is not buyable.
+    if (!reg.issuanceEnabled) return null;
+    const [base, fee, total] = await deps.contracts.issuance.read.quoteIssue([gpuId, sizeRaw]);
+    if (base === 0n && total === 0n) return null; // no oracle publication
+    const maxPaidRaw = applyBps(total, toleranceBps, "up");
+    return {
+      asset,
+      side: "buy",
+      size,
+      price: Number(total) / 1e6 / size,
+      notional: Number(total) / 1e6,
+      maxPaid: Number(maxPaidRaw) / 1e6,
+      minOut: 0,
+      legs: [
+        {
+          kind: "issuance",
+          gpuUnits: size,
+          gUsd: Number(total) / 1e6,
+          fees: { issuance: Number(fee) / 1e6 },
+        },
+      ],
+      toleranceBps,
+      quotedAtMs: deps.now(),
+      blockNumber,
+    };
+  }
+
   const { addresses } = deps.contracts;
   const poolKey = canonicalPoolKey(
     addresses.gusd as Address,
@@ -210,76 +230,48 @@ export async function quoteBuy(
     reg.poolParams,
     addresses.hook as Address,
   );
-  const zeroForOne = isBuyZeroForOne(poolKey, addresses.gusd as Address);
 
-  const blockNumber = await deps.getBlockNumber();
-  let poolRaw = 0n;
-  let poolCostRaw = 0n;
-  if (reg.poolRegistered) {
-    const full = await poolCostFor(deps, poolKey, zeroForOne, sizeRaw);
-    if (full !== null) {
-      poolRaw = sizeRaw;
-      poolCostRaw = full;
-    } else {
-      const found = await maxFillable(
-        deps,
-        `${gpuId}:${blockNumber}:${sizeRaw}`,
-        poolKey,
-        zeroForOne,
-        sizeRaw,
-      );
-      poolRaw = found.fill;
-      poolCostRaw = found.cost;
-    }
+  let r: GpuQuoteResult;
+  try {
+    r = await gpuQuoterRead(deps).quoteBuyExactOut([poolKey, sizeRaw]);
+  } catch {
+    return null; // the market cannot fill this size — the honest "can't quote"
   }
-  // Whatever depth can't fill must come from issuance — closed issuance
-  // means the size is not buyable at all.
-  const issueRaw = sizeRaw - poolRaw;
-  if (issueRaw > 0n && !reg.issuanceEnabled) return null;
-
-  let issuanceTotalRaw = 0n;
-  let issuanceFeeRaw = 0n;
-  if (issueRaw > 0n) {
-    const [base, fee, total] = await deps.contracts.issuance.read.quoteIssue([gpuId, issueRaw]);
-    issuanceFeeRaw = fee;
-    issuanceTotalRaw = total;
-    if (base === 0n && total === 0n) return null; // no oracle publication
-  }
+  if (r.gpuOut !== sizeRaw || r.gusdIn === 0n) return null;
 
   // Legs carry their own fees — the UI derives the fee copy from this set,
-  // so the slip never shows a fee this fill doesn't incur. The pool leg's
-  // amountIn already carries the hook's take; split it out for the fee line
-  // only — the row that signs is the all-in total.
+  // so the slip never shows a fee this fill doesn't incur. gusdIn is all-in:
+  // the market portion is what remains after the backstop's principal+fee,
+  // and the protocol's gUSD take rides inside it (split out for the fee
+  // line only — the row that signs is the all-in total).
   const legs: TradeLeg[] = [];
-  if (poolRaw > 0n) {
-    const hookFeeBps = Number(await deps.contracts.hook.read.hookFeeBps());
-    const poolNetRaw = (poolCostRaw * 10_000n) / (10_000n + BigInt(hookFeeBps));
+  const marketGpu = r.nativeGpu + r.polGpu;
+  const backstopGusd = r.issueBase + r.issueFee;
+  if (marketGpu > 0n) {
     legs.push({
       kind: "pool",
-      gpuUnits: formatGpuUnits(poolRaw),
-      gUsd: Number(poolCostRaw) / 1e6,
-      fees: { protocol: Number(poolCostRaw - poolNetRaw) / 1e6 },
+      gpuUnits: formatGpuUnits(marketGpu),
+      gUsd: Number(r.gusdIn - backstopGusd) / 1e6,
+      fees: { protocol: Number(r.polFeeGusd + r.hookFeeGusd) / 1e6 },
     });
   }
-  if (issueRaw > 0n) {
+  if (r.backstopGpu > 0n) {
     legs.push({
       kind: "issuance",
-      gpuUnits: formatGpuUnits(issueRaw),
-      gUsd: Number(issuanceTotalRaw) / 1e6,
-      fees: { issuance: Number(issuanceFeeRaw) / 1e6 },
+      gpuUnits: formatGpuUnits(r.backstopGpu),
+      gUsd: Number(backstopGusd) / 1e6,
+      fees: { issuance: Number(r.issueFee) / 1e6 },
     });
   }
 
-  const notionalRaw = poolCostRaw + issuanceTotalRaw;
-  if (notionalRaw === 0n) return null;
-  const maxPaidRaw = applyBps(notionalRaw, toleranceBps, "up");
+  const maxPaidRaw = applyBps(r.gusdIn, toleranceBps, "up");
 
   return {
     asset,
     side: "buy",
     size,
-    price: Number(notionalRaw) / 1e6 / size,
-    notional: Number(notionalRaw) / 1e6,
+    price: Number(r.gusdIn) / 1e6 / size,
+    notional: Number(r.gusdIn) / 1e6,
     maxPaid: Number(maxPaidRaw) / 1e6,
     minOut: 0,
     legs,
@@ -289,7 +281,9 @@ export async function quoteBuy(
   };
 }
 
-/** Sell quote: exact-in, all proceeds to gUSD, `minOut` floor with tolerance. */
+/** Sell quote: exact-in, all proceeds to gUSD, `minOut` floor with
+ *  tolerance. Sells fill from the native book and the POL bid only —
+ *  there is no synthetic redemption, so a pool-less asset cannot sell. */
 export async function quoteSell(
   asset: AssetId,
   size: number,
@@ -315,44 +309,34 @@ export async function quoteSell(
     reg.poolParams,
     addresses.hook as Address,
   );
-  // Sells run GPU → gUSD: the opposite direction of a buy.
-  const zeroForOne = !isBuyZeroForOne(poolKey, addresses.gusd as Address);
 
   const blockNumber = await deps.getBlockNumber();
-  let netRaw: bigint;
+  let r: GpuQuoteResult;
   try {
-    const [amountOut] = await quoterRead(deps).quoteExactInputSingle([
-      { poolKey, zeroForOne, exactAmount: sizeRaw, hookData: "0x" },
-    ]);
-    netRaw = amountOut;
+    r = await gpuQuoterRead(deps).quoteSell([poolKey, sizeRaw]);
   } catch {
     return null; // no depth — the honest "can't quote"
   }
-  if (netRaw === 0n) return null;
+  if (r.gusdOut === 0n || r.gpuIn !== sizeRaw) return null;
 
-  // The swap's amountOut is net of the hook's take; restore the gross for
-  // the fee line. The row that signs is the net.
-  const { hook } = deps.contracts;
-  const hookFeeBps = Number(await hook.read.hookFeeBps());
-  const grossRaw = (netRaw * 10_000n) / (10_000n - BigInt(hookFeeBps));
-  const protocolFeeRaw = grossRaw - netRaw;
-
-  const minOutRaw = applyBps(netRaw, toleranceBps, "down");
+  // The seller receives gusdOut net of the protocol's take; the fee line
+  // names what was charged on the fills. The row that signs is the net.
+  const minOutRaw = applyBps(r.gusdOut, toleranceBps, "down");
 
   return {
     asset,
     side: "sell",
     size,
-    price: Number(netRaw) / 1e6 / size,
-    notional: Number(netRaw) / 1e6,
+    price: Number(r.gusdOut) / 1e6 / size,
+    notional: Number(r.gusdOut) / 1e6,
     maxPaid: 0,
     minOut: Number(minOutRaw) / 1e6,
     legs: [
       {
         kind: "pool",
         gpuUnits: size,
-        gUsd: Number(netRaw) / 1e6,
-        fees: { protocol: Number(protocolFeeRaw) / 1e6 },
+        gUsd: Number(r.gusdOut) / 1e6,
+        fees: { protocol: Number(r.polFeeGusd + r.hookFeeGusd) / 1e6 },
       },
     ],
     toleranceBps,

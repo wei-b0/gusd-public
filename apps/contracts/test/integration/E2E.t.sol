@@ -12,8 +12,6 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
 import {PositionDescriptor} from "@uniswap/v4-periphery/PositionDescriptor.sol";
-import {IV4Quoter} from "@uniswap/v4-periphery/interfaces/IV4Quoter.sol";
-import {V4Quoter} from "@uniswap/v4-periphery/lens/V4Quoter.sol";
 import {IWETH9} from "@uniswap/v4-periphery/interfaces/external/IWETH9.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import {DeployPermit2} from "permit2/test/utils/DeployPermit2.sol";
@@ -28,18 +26,23 @@ import {RevenueLedger} from "../../src/RevenueLedger.sol";
 import {sgUSD} from "../../src/sgUSD.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
+import {GpuQuoter} from "../../src/lens/GpuQuoter.sol";
 import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
 import {IGPUIssuance} from "../../src/interfaces/IGPUIssuance.sol";
 import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
-/// @notice End-to-end product chain on a deploy-mirror rig: genesis BUY ->
-///         external LP (PositionManager/Permit2) -> pool BUY -> mixed BUY ->
-///         SELL -> oracle reprice -> harvest -> distribute -> sgUSD accrual,
-///         plus failure shapes (oversized BUY/SELL with impact-capped limits,
-///         stale oracle). One ordering: currency ordering is covered
-///         exhaustively in the unit + LP suites.
+/// @notice End-to-end product chain on a deploy-mirror rig: genesis BUY
+///         (cold pool: 100% in-swap issuance backstop) -> external LP
+///         (PositionManager/Permit2) -> pool BUY (quote == execution) ->
+///         mixed BUY -> SELL -> distribute -> sgUSD accrual, plus failure
+///         shapes (oversized BUY filled by the backstop, honest finite sell
+///         liquidity, stale-oracle degradation). One ordering: currency
+///         ordering is covered exhaustively in the unit + LP suites.
 contract E2ETest is Test, DeployPermit2 {
     using PoolIdLibrary for PoolKey;
 
@@ -53,7 +56,7 @@ contract E2ETest is Test, DeployPermit2 {
     sgUSD internal sg;
     StateView internal stateView;
     PositionManager internal posm;
-    IV4Quoter internal quoter;
+    GpuQuoter internal gq;
     IAllowanceTransfer internal permit2;
     IPoolManager internal manager;
     GPUToken internal gpu;
@@ -86,22 +89,29 @@ contract E2ETest is Test, DeployPermit2 {
         posm = new PositionManager(
             manager, permit2, 100_000, new PositionDescriptor(manager, address(weth), "ETH"), IWETH9(address(weth))
         );
-        quoter = new V4Quoter(manager);
 
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         sg = new sgUSD(IERC20(address(gusd)), address(this));
         ledger = new RevenueLedger(IERC20(address(gusd)), address(this));
-        pol = new GPUMarketLiquidity(manager, gusd, address(ledger), address(this));
+        pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), oracle, address(ledger), address(pol), address(this));
 
-        bytes memory ctorArgs = abi.encode(manager, address(gusd), issuance, address(ledger), address(this));
+        bytes memory ctorArgs = abi.encode(manager, address(gusd), oracle, issuance, address(ledger), address(this));
         (address hookAddr, bytes32 salt) =
             HookMiner.find(address(this), HOOK_FLAGS, type(GPUHook).creationCode, ctorArgs);
-        new GPUHook{salt: salt}(manager, address(gusd), issuance, address(ledger), address(this));
+        new GPUHook{salt: salt}(manager, address(gusd), oracle, issuance, address(ledger), address(this));
         hook = GPUHook(hookAddr);
 
         router = new GpuRouter(manager, gusd, issuance, hook);
         pol.setRefs(address(issuance), address(hook));
+        // executable-quote lens: fund the gUSD float (rolled back on every
+        // quote revert — floats are reusable across tests)
+        gq = new GpuQuoter(manager, address(gusd), issuance, address(this));
+        underlying.mint(address(this), 10_000_000e6);
+        underlying.approve(address(gusd), type(uint256).max);
+        gusd.mint(10_000_000e6, address(this));
+        gusd.approve(address(gq), type(uint256).max);
+        gq.setGusdFloat(10_000_000e6);
 
         gusd.setRevenueSink(address(ledger));
         gusd.setFees(0, 0);
@@ -116,7 +126,7 @@ contract E2ETest is Test, DeployPermit2 {
         gusd.approve(address(sg), 1e6);
         sg.seed(1e6);
 
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, POOL_FEE, TICK_SPACING, 600, 120);
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(H100, true);
         oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         gpu = GPUToken(issuance.tokenOf(H100));
@@ -184,27 +194,23 @@ contract E2ETest is Test, DeployPermit2 {
     }
 
     function _buyGusd(address who, uint256 usdcAmount) internal {
+        deal(address(underlying), who, usdcAmount); // self-funding: setUp grants only 1M
         vm.startPrank(who);
         IERC20(address(underlying)).approve(address(gusd), type(uint256).max);
         gusd.mint(usdcAmount, who);
         vm.stopPrank();
     }
 
-    function _buyGpu(
-        uint256 gpuOut,
-        uint256 poolGpuOut,
-        uint256 issueGpuOut,
-        address payment,
-        uint256 maxPaid,
-        address to
-    ) internal returns (uint256 paid) {
+    function _buyGpu(uint256 gpuOut, address payment, uint256 maxPaid, address to)
+        internal
+        returns (uint256 paid)
+    {
         GpuRouter.BuyParams memory p = GpuRouter.BuyParams({
             gpuId: H100,
             gpuOut: gpuOut,
-            poolGpuOut: poolGpuOut,
-            issueGpuOut: issueGpuOut,
             payment: payment,
             maxPaid: maxPaid,
+            deadline: 0,
             sqrtLimitX96: 0,
             recipient: to
         });
@@ -216,7 +222,7 @@ contract E2ETest is Test, DeployPermit2 {
         returns (uint256 out)
     {
         GpuRouter.SellParams memory p = GpuRouter.SellParams({
-            gpuId: H100, gpuIn: gpuIn, payout: payout, minOut: minOut, sqrtLimitX96: 0, recipient: to
+            gpuId: H100, gpuIn: gpuIn, payout: payout, minOut: minOut, deadline: 0, sqrtLimitX96: 0, recipient: to
         });
         vm.startPrank(who);
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
@@ -226,69 +232,100 @@ contract E2ETest is Test, DeployPermit2 {
 
     // -------------------------------------------------------------- tests
 
-    /// @notice The whole M2 product chain, one test: every user flow is a
-    ///         single router call; protocol revenue flows to sgUSD.
+    /// @notice The C-max product chain, one test: every user flow is a
+    ///         single router call; the hook composes native LP flow, POL
+    ///         inventory and the in-swap issuance backstop; fee counters
+    ///         reconcile to the ledger to the wei.
     function test_fullProductChain() public {
-        // 1) genesis BUY: zero circulating supply, 100% issuance, no pool leg
+        // 1) genesis BUY: zero circulating supply, cold pool -> 100% in-swap
+        //    backstop at oracle + fees; principal capitalizes the vault as
+        //    bid capacity immediately
         uint256 ledger0 = gusd.balanceOf(address(ledger));
+        uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
         vm.prank(alice);
-        uint256 paid1 = _buyGpu(100e18, 0, 100e18, address(gusd), 300e6, alice);
-        assertEq(paid1, 251_250_000, "genesis cost 100x2.5x1.005");
+        uint256 paid1 = _buyGpu(100e18, address(gusd), 300e6, alice);
+        vm.stopPrank();
+        // charge 100 x 2.5 x 1.005 = 251_250_000 + hook fee 1_256_250
+        assertEq(paid1, 252_506_250, "genesis: backstop charge + hook fee");
         assertEq(gpu.balanceOf(alice), 100e18);
-        assertEq(pol.principalContributed(H100), 250_000_000, "principal");
-        assertEq(pol.pendingPrincipal(H100), 0, "router placed it at the anchor");
-        assertGt(pol.bidDepth(H100), 0, "bid band live");
+        assertEq(pol.principalContributed(H100), 250_000_000, "principal capitalized");
+        assertEq(pol.bidInventoryGusd(H100), 250_000_000, "principal is bid capacity");
+        assertEq(pol.askInventoryGpu(H100), 0, "no ask inventory yet");
+        assertEq(issuance.gpuConfig(H100).totalIssued - issued0, 100e18, "backstop minted");
+        assertEq(hook.totalHookFeesGusd(), 1_256_250, "hook fee counter");
+        assertEq(hook.totalPolFeesGusd(), 0, "no POL fills on a cold pool");
+        assertEq(gusd.balanceOf(address(ledger)) - ledger0, 2_506_250, "issuance + hook fee to ledger");
         assertEq(gusd.balanceOf(address(issuance)), 0, "issuance holds no gUSD");
-        assertEq(hook.totalTradingFeesAccrued(), 0, "no hook fee on genesis");
-        assertEq(gusd.balanceOf(address(ledger)) - ledger0, 1_250_000, "issuance fee");
         assertEq(gusd.balanceOf(address(router)), 0, "router empty");
+        assertEq(gusd.balanceOf(address(hook)), 0, "hook holds nothing at rest");
 
         // 2) external LP via PositionManager + Permit2
         uint256 tokenId = _lpAlice();
         assertGt(stateView.getLiquidity(poolId), 0, "pool liquid");
         assertEq(posm.ownerOf(tokenId), alice);
 
-        // 3) BUY 2 H100 via pool, USDC payment; quote == execution
-        (uint256 quotedIn,) = quoter.quoteExactOutputSingle(
-            IV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: gIsC0, exactAmount: 2e18, hookData: ""})
-        );
-        uint256 hookFees = hook.totalTradingFeesAccrued();
-        vm.prank(bob);
-        uint256 paid3 = _buyGpu(2e18, 2e18, 0, address(underlying), quotedIn, bob);
-        assertEq(paid3, quotedIn, "quote == execution");
+        // 3) BUY 2 H100 via pool, USDC payment; quote == execution, counters
+        //    reconcile against the quoted decomposition
+        GpuQuoter.QuoteResult memory q3 = gq.quoteBuyExactOut(key, 2e18);
+        assertEq(q3.gpuOut, 2e18);
+        assertGt(q3.gusdIn, 0);
+        uint256 hookFees3 = hook.totalHookFeesGusd();
+        uint256 polFees3 = hook.totalPolFeesGusd();
+        uint256 principal3 = pol.principalContributed(H100);
+        uint256 issued3 = issuance.gpuConfig(H100).totalIssued;
+        vm.startPrank(bob);
+        uint256 paid3 = _buyGpu(2e18, address(underlying), q3.gusdIn, bob);
+        vm.stopPrank();
+        assertEq(paid3, q3.gusdIn, "quote == execution");
         assertEq(gpu.balanceOf(bob), 2e18);
-        uint256 hookFeeBuy = hook.totalTradingFeesAccrued() - hookFees;
-        assertGt(hookFeeBuy, 0, "hook fee on buy");
-        // LP fee accrued on the gUSD (input) side; hook fee is separate
+        assertEq(hook.totalHookFeesGusd() - hookFees3, q3.hookFeeGusd, "hook fee counter == quote");
+        assertEq(hook.totalPolFeesGusd() - polFees3, q3.polFeeGusd, "POL fee counter == quote");
+        assertEq(pol.principalContributed(H100) - principal3, q3.issueBase, "backstop principal == quote");
+        assertEq(issuance.gpuConfig(H100).totalIssued - issued3, q3.backstopGpu, "backstop mint == quote");
+        // LP fee accrued on the gUSD (input) side of the native leg
         (uint256 fg0, uint256 fg1) = stateView.getFeeGrowthGlobals(poolId);
-        uint256 lpgusd = gIsC0 ? fg0 : fg1;
-        assertGt(lpgusd, 0, "LP gUSD fee accrued");
+        assertGt(gIsC0 ? fg0 : fg1, 0, "LP gUSD fee accrued");
 
-        // 4) mixed BUY 5 = 3 pool + 2 issuance
-        uint256 principal4 = pol.principalContributed(H100);
+        // 4) mixed BUY 5 = native + backstop; the ledger receives the
+        //    issuance fee plus the hook fee, exactly
         uint256 ledger4 = gusd.balanceOf(address(ledger));
-        vm.prank(bob);
-        _buyGpu(5e18, 3e18, 2e18, address(underlying), 20e6, bob);
+        uint256 hookFees4 = hook.totalHookFeesGusd();
+        uint256 principal4 = pol.principalContributed(H100);
+        uint256 issued4 = issuance.gpuConfig(H100).totalIssued; // step-3 buy already minted
+        vm.startPrank(bob);
+        _buyGpu(5e18, address(underlying), 20e6, bob);
+        vm.stopPrank();
         assertEq(gpu.balanceOf(bob), 7e18);
-        assertEq(pol.principalContributed(H100) - principal4, 5_000_000, "issuance principal 2x2.5");
-        assertEq(pol.pendingPrincipal(H100), 0, "router deployed the pending");
-        assertGt(pol.bidDepth(H100), 0, "bid band live");
-        assertEq(gusd.balanceOf(address(ledger)) - ledger4, 25_000, "issuance fee 0.5% of 5");
+        uint256 issued4Delta = issuance.gpuConfig(H100).totalIssued - issued4;
+        uint256 principal4Delta = pol.principalContributed(H100) - principal4;
+        assertGt(issued4Delta, 0, "backstop participated");
+        assertEq(
+            principal4Delta, Math.mulDiv(issued4Delta, 25_000, issuance.compositionDivisor(), Math.Rounding.Ceil),
+            "principal == ceil(base)"
+        );
+        uint256 ifee4 = Math.mulDiv(principal4Delta, 50, 10_000, Math.Rounding.Ceil);
+        assertEq(
+            gusd.balanceOf(address(ledger)) - ledger4, ifee4 + (hook.totalHookFeesGusd() - hookFees4),
+            "ledger gets issuance fee + hook fee"
+        );
 
-        // 5) SELL 1 H100 -> USDC: pure secondary, oracle untouched
+        // 5) SELL 1 H100 -> USDC: pure secondary; native bids + the vault's
+        //    bid inventory pay the seller, the vault acquires GPU at the bid
         uint256 bobUsdc = underlying.balanceOf(bob);
-        uint256 out5 = _sellGpu(bob, 1e18, address(underlying), 2e6, bob);
+        uint256 bid5 = pol.bidInventoryGusd(H100);
+        uint256 ask5 = pol.askInventoryGpu(H100);
+        uint256 hookFees5 = hook.totalHookFeesGusd();
+        uint256 out5 = _sellGpu(bob, 1e18, address(underlying), 2e6, bob); // helper pranks internally
         assertGe(out5, 2e6, "sell payout");
         assertEq(underlying.balanceOf(bob) - bobUsdc, out5, "sell payout delivered");
         assertEq(gpu.balanceOf(bob), 6e18);
-        assertGt(hook.totalTradingFeesAccrued(), hookFees + hookFeeBuy, "hook fee on sell");
-        assertEq(pol.principalContributed(H100), 255_000_000, "principal untouched by trades");
+        assertGt(hook.totalHookFeesGusd(), hookFees5, "hook fee on sell (gUSD, in-kind basis)");
+        assertEq(pol.principalContributed(H100), principal4 + principal4Delta, "principal untouched by sells");
+        assertLe(pol.bidInventoryGusd(H100), bid5, "bid capacity spent or refilled");
+        assertGt(pol.askInventoryGpu(H100), ask5, "vault acquired GPU at the bid edge");
 
-        // 6) harvest + distribute: hook fees -> ledger -> sgUSD vault/treasury
-        vm.prank(address(this));
-        hook.harvestTradingFees(poolId, 0);
-        assertEq(hook.pendingTradingFees(poolId), 0);
-        assertGt(hook.totalTradingFeesHarvested(), 0);
+        // 6) distribute: fees already flowed to the ledger during the swaps;
+        //    no harvest exists in C-max
         uint256 sgAssetsBefore = gusd.balanceOf(address(sg));
         uint256 treasuryBefore = gusd.balanceOf(treasury);
         ledger.distribute();
@@ -300,10 +337,11 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(underlying.balanceOf(address(gusd)), gusd.totalSupply(), "reserve == supply");
         assertEq(gusd.balanceOf(address(router)), 0, "router holds no gUSD");
         assertEq(gpu.balanceOf(address(router)), 0, "router holds no GPU");
-        assertEq(gusd.balanceOf(address(hook)), 0, "hook drained");
-        assertEq(pol.principalContributed(H100), 255_000_000, "principal final");
-        assertEq(pol.pendingPrincipal(H100), 0, "pending final");
-        assertEq(gusd.balanceOf(address(issuance)), 0, "issuance empty final");
+        assertEq(gusd.balanceOf(address(hook)), 0, "hook holds nothing at rest");
+        assertEq(gusd.balanceOf(address(issuance)), 0, "issuance empty");
+        assertGt(pol.principalContributed(H100), 250_000_000, "principal grew from backstop only");
+        assertGt(pol.bidInventoryGusd(H100), 0, "bid capacity exists");
+        assertGt(pol.askInventoryGpu(H100), 0, "ask inventory exists");
         assertGt(sg.convertToAssets(1e6), 1e6, "sgUSD share price up");
         assertEq(posm.balanceOf(address(router)), 0, "router holds no NFTs");
     }
@@ -324,112 +362,159 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(pol.principalContributed(H100), principal, "principal moved?");
     }
 
-    /// @notice Oversized pool BUY with an impact-capped sqrtLimit: the pool
-    ///         cannot fill the request -> router PoolShortfall, state rolls
-    ///         back, funds intact. (With a wide limit the swap instead drains
-    ///         the pool to MIN_SQRT and the hook's inside-swap fee take reverts
-    ///         on the PoolManager's physical balance first — the offchain
-    ///         quoting layer always caps impact, so PoolShortfall is the
-    ///         product surface.)
-    function test_oversizedBuy_poolShortfall() public {
-        _issueGpuTo(alice, 1_100e18);
+    /// @notice Oversized BUY on a cold-market-plus-LP rig: the native walk
+    ///         and POL ask inventory are tiny, so the in-swap issuance
+    ///         backstop mints the tail — elastic supply, quote == execution,
+    ///         principal capitalizes the vault. No PoolShortfall exists in
+    ///         C-max: capacity is structural (issuance), not a band.
+    function test_oversizedBuy_backstopFills() public {
+        _issueGpuTo(alice, 100e18); // full-range LP mint needs ~50 GPU
         _lpAlice();
-        _buyGusd(bob, 1_000_000e6);
-        vm.prank(bob);
+        _buyGusd(bob, 5_000_000e6);
+        vm.startPrank(bob);
         gusd.approve(address(router), type(uint256).max);
-        // cap impact at one tick-spacing step: the pool delivers far less
-        // than the requested 1000 GPU, so the all-or-nothing leg reverts
-        int24 curTick = gIsC0 ? int24(267_160) : int24(-267_160);
-        int24 limitTick = gIsC0 ? curTick - TICK_SPACING : curTick + TICK_SPACING;
-        uint160 sqrtLimit = TickMath.getSqrtPriceAtTick(limitTick);
-        GpuRouter.BuyParams memory p = GpuRouter.BuyParams({
-            gpuId: H100,
-            gpuOut: 1_000e18,
-            poolGpuOut: 1_000e18,
-            issueGpuOut: 0,
-            payment: address(gusd),
-            maxPaid: 1_000_000e6,
-            sqrtLimitX96: sqrtLimit,
-            recipient: bob
-        });
-        vm.prank(bob);
-        vm.expectRevert(GpuRouter.PoolShortfall.selector);
-        router.buy(p);
-        assertEq(gpu.balanceOf(bob), 0, "no tokens");
-        assertEq(gusd.balanceOf(bob), 1_000_000e6, "funds intact");
+        vm.stopPrank();
+
+        uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
+        uint256 principal0 = pol.principalContributed(H100); // alice's direct-issuance LP seed
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(key, 1_000e18);
+        assertEq(q.gpuOut, 1_000e18);
+        assertEq(q.polGpu, 0, "no ask inventory on this rig");
+        assertGt(q.backstopGpu, 0, "backstop covers the tail");
+
+        vm.startPrank(bob);
+        uint256 paid = _buyGpu(1_000e18, address(gusd), q.gusdIn, bob);
+        vm.stopPrank();
+        assertEq(paid, q.gusdIn, "quote == execution");
+        assertEq(gpu.balanceOf(bob), 1_000e18, "full demand filled");
+        assertEq(issuance.gpuConfig(H100).totalIssued - issued0, q.backstopGpu, "backstop minted the tail");
+        assertEq(pol.principalContributed(H100), principal0 + q.issueBase, "principal capitalized");
+        assertGt(pol.bidInventoryGusd(H100), 0, "bid capacity grew");
+        assertEq(gusd.balanceOf(address(router)), 0, "router dust-free");
     }
 
-    /// @notice Oversized SELL with an unreachable minOut reverts cleanly.
-    function test_oversizedSell_slippage() public {
-        _issueGpuTo(alice, 1_100e18);
-        _lpAlice();
-        // bob holds 1000 H100 (issued), pool yields ~119 gUSD for all of it
+    /// @notice Sell liquidity is honestly finite: the vault's bid inventory
+    ///         plus the native book is all there is. A sell larger than the
+    ///         merged book reverts InsufficientMarketCapacity; a finite sell
+    ///         fills at the bid edge and the vault acquires GPU.
+    function test_sell_honestBidLiquidity() public {
+        // genesis: alice buys 100 -> vault bid capacity 250 gUSD
         vm.startPrank(alice);
+        _buyGpu(100e18, address(gusd), 300e6, alice);
+        vm.stopPrank();
+        // bob acquires 1000 GPU via primary issuance, then tries to dump
+        _buyGusd(bob, 5_000_000e6);
+        vm.startPrank(bob);
         gusd.approve(address(issuance), type(uint256).max);
         issuance.issue(H100, 1_000e18, bob);
-        vm.stopPrank();
-        vm.startPrank(bob);
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
         vm.stopPrank();
-        GpuRouter.SellParams memory p = GpuRouter.SellParams({
-            gpuId: H100,
-            gpuIn: 1_000e18,
-            payout: address(gusd),
-            minOut: 200e6, // pool can only ever yield ~119 gUSD
-            sqrtLimitX96: 0,
-            recipient: bob
+        // price x4: the vault's fixed gUSD bid now buys ~277 GPU, so a
+        // 1,000-GPU dump exceeds the merged book (fresh issuance alone
+        // can never exhaust it -- bid < issue price per GPU)
+        oracle.setPrice(H100, 100_000, block.timestamp);
+
+        uint256 bid0 = pol.bidInventoryGusd(H100);
+        uint256 ask0 = pol.askInventoryGpu(H100);
+        uint256 principal0 = pol.principalContributed(H100);
+
+        // 1000 GPU exceeds the merged book: honest closed-market revert
+        GpuRouter.SellParams memory big = GpuRouter.SellParams({
+            gpuId: H100, gpuIn: 1_000e18, payout: address(gusd), minOut: 0, deadline: 0, sqrtLimitX96: 0, recipient: bob
         });
         vm.prank(bob);
-        vm.expectRevert(GpuRouter.Slippage.selector);
-        router.sell(p);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CustomRevert.WrappedError.selector,
+                address(hook),
+                IHooks.beforeSwap.selector,
+                abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector),
+                abi.encodePacked(Hooks.HookCallFailed.selector)
+            )
+        );
+        router.sell(big);
         assertEq(gpu.balanceOf(bob), 1_000e18, "tokens intact");
+        assertEq(pol.bidInventoryGusd(H100), bid0, "bid inventory untouched by revert");
+        assertEq(pol.askInventoryGpu(H100), ask0, "ask inventory untouched by revert");
+
+        // a finite size fills at the bid edge
+        GpuRouter.SellParams memory small = GpuRouter.SellParams({
+            gpuId: H100, gpuIn: 50e18, payout: address(gusd), minOut: 100e6, deadline: 0, sqrtLimitX96: 0, recipient: bob
+        });
+        vm.prank(bob);
+        uint256 out = router.sell(small);
+        vm.stopPrank();
+        assertGe(out, 400e6, "bid-edge payout (50 x ~9.94 = 497)");
+        assertLe(out, 520e6, "sell priced at/below the bid edge");
+        assertEq(pol.principalContributed(H100), principal0, "principal untouched by sells");
+        assertLt(pol.bidInventoryGusd(H100), bid0, "bid capacity spent");
+        assertGt(pol.askInventoryGpu(H100), ask0, "vault acquired GPU at the bid");
+        assertEq(gusd.balanceOf(address(router)), 0, "router dust-free");
     }
 
-    /// @notice buyExactIn full fill: quote == execution (hook-inclusive), the
-    ///         caller spends exactly gusdMaxIn, the router stays dust-free.
-    ///         (All-or-nothing PartialFillNotSupported is covered exhaustively
-    ///         in the unit rigs' narrow bands; a full-range pool always fully
-    ///         consumes exact-in amounts at practical sizes.)
+    /// @notice buyExactIn full fill: the GpuQuoter quote is execution-
+    ///         identical, the caller spends exactly gusdMaxIn, POL ask
+    ///         inventory fills beyond the edge, and the hook fee is charged
+    ///         IN-KIND in GPU (totalHookFeesGusd must not move on this shape).
     function test_buyExactIn_quoteParity() public {
-        _issueGpuTo(alice, 1_100e18);
-        _lpAlice();
+        // POL ask inventory: alice sells 50 GPU after a genesis buy
+        vm.startPrank(alice);
+        _buyGpu(100e18, address(gusd), 300e6, alice);
+        IERC20(address(gpu)).approve(address(router), type(uint256).max);
+        router.sell(
+            GpuRouter.SellParams({
+                gpuId: H100, gpuIn: 50e18, payout: address(gusd), minOut: 0, deadline: 0, sqrtLimitX96: 0,
+                recipient: alice
+            })
+        );
+        vm.stopPrank();
+        assertGt(pol.askInventoryGpu(H100), 0, "vault holds ask inventory");
+
         _buyGusd(bob, 1_000_000e6);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuy(key, 10e6);
+        assertGt(q.gpuOut, 0, "quote fills");
+        assertGt(q.polGpu, 0, "POL ask fills beyond the edge");
+
+        uint256 hookFees0 = hook.totalHookFeesGusd();
         vm.startPrank(bob);
         gusd.approve(address(router), type(uint256).max);
+        uint256 gpuOut = router.buyExactIn(H100, 10e6, q.gpuOut, 0, 0, bob);
         vm.stopPrank();
-
-        (uint256 quotedOut,) = quoter.quoteExactInputSingle(
-            IV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: gIsC0, exactAmount: 10e6, hookData: ""})
-        );
-        uint256 hookFees = hook.totalTradingFeesAccrued();
-        vm.prank(bob);
-        uint256 gpuOut = router.buyExactIn(H100, 10e6, quotedOut, 0, bob);
-        assertEq(gpuOut, quotedOut, "quote == execution");
-        assertGt(gpuOut, 0);
-        assertGt(hook.totalTradingFeesAccrued(), hookFees, "hook fee accrued");
+        assertEq(gpuOut, q.gpuOut, "quote == execution");
+        assertEq(q.hookFeeGusd, 0, "exactIn buy fee is in-kind, not gUSD");
+        assertEq(hook.totalHookFeesGusd(), hookFees0, "totalHookFeesGusd unchanged (fee taken in GPU)");
         assertEq(gusd.balanceOf(bob), 1_000_000e6 - 10e6, "exact spend");
         assertEq(gusd.balanceOf(address(router)), 0, "router dust-free");
     }
 
-    /// @notice Stale oracle: issuance legs revert; pool-only BUY + SELL work.
-    function test_staleOracle_poolFlowsStillWork() public {
+    /// @notice Stale oracle: the hook fills NOTHING — no POL, no backstop,
+    ///         no fees; small flows proceed pure-native through the LP book.
+    function test_staleOracle_hookInert() public {
         _issueGpuTo(alice, 1_100e18);
         _lpAlice();
         vm.warp(block.timestamp + 26 hours); // staleness window: 25 hours
 
-        // mixed BUY reverts on the issuance leg
-        vm.prank(alice);
-        vm.expectRevert(GPUIssuance.OracleStale.selector);
-        _buyGpu(3e18, 1e18, 2e18, address(gusd), 100e6, alice);
+        (, , , bool live,,) = hook.polState(H100);
+        assertFalse(live, "POL inert on stale oracle");
 
-        // pool-only BUY succeeds
-        vm.prank(alice);
-        uint256 paid = _buyGpu(1e18, 1e18, 0, address(gusd), 100e6, alice);
-        assertGt(paid, 0);
-        assertGt(hook.totalTradingFeesAccrued(), 0);
+        uint256 polFees0 = hook.totalPolFeesGusd();
+        uint256 hookFees0 = hook.totalHookFeesGusd();
+        uint256 principal0 = pol.principalContributed(H100);
+        uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
 
-        // SELL succeeds (never reads the oracle)
+        // small BUY proceeds pure-native (LPs only)
+        vm.startPrank(alice);
+        uint256 paid = _buyGpu(5e16, address(gusd), 200e6, alice);
+        vm.stopPrank();
+        assertGt(paid, 0, "native-only buy works");
+        assertEq(hook.totalPolFeesGusd(), polFees0, "no POL fee when stale");
+        assertEq(hook.totalHookFeesGusd(), hookFees0, "no hook fee when stale");
+        assertEq(pol.principalContributed(H100), principal0, "no backstop when stale");
+        assertEq(issuance.gpuConfig(H100).totalIssued, issued0, "no in-swap issuance when stale");
+
+        // SELL also proceeds (never fabricates bid liquidity)
         uint256 out = _sellGpu(alice, 5e17, address(gusd), 1, alice);
-        assertGt(out, 0);
+        assertGt(out, 0, "native-only sell works");
+        assertEq(hook.totalHookFeesGusd(), hookFees0, "sell also hook-free when stale");
     }
 }

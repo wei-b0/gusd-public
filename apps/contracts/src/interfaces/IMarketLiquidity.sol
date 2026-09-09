@@ -1,24 +1,41 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-/// @title IMarketLiquidity — the surface GPUIssuance calls into.
-/// @notice GPUIssuance forwards primary-buy principal to GPUMarketLiquidity,
-///         which capitalizes the canonical GPU market with bid-side liquidity
-///         around the oracle reference. The interface is intentionally
-///         narrow: `notePrincipal` is pure accounting and must never fail on
-///         v4 state, so a v4 problem can never take down primary issuance.
+/// @notice Narrow surface consumed by GPUHook and tooling.
 interface IMarketLiquidity {
-    /// @notice Accounting entry: `amount` gUSD of primary-buy principal has
-    ///         arrived for `gpuId` (physically transferred to this contract by
-    ///         GPUIssuance before the call). Records the principal as pending;
-    ///         placement into the pool is a separate, permissionless step
-    ///         (`deployPending`).
+    /// @notice Bookkeeping-only: issuance has already transferred `amount`
+    ///         gUSD to the vault. Books bid capacity + principal stat.
+    ///         Caller must be the issuance contract.
     function notePrincipal(bytes32 gpuId, uint256 amount) external;
 
-    /// @notice Places all pending principal for `gpuId` as a bid band in the
-    ///         canonical pool. Permissionless; returns false (no-op) when the
-    ///         pool does not exist yet, the reference is unplaceable right
-    ///         now, or the amount is too small — pending principal is state,
-    ///         not loss, and the next attempt retries.
-    function deployPending(bytes32 gpuId) external returns (bool placed);
+    /// @notice Bookkeeping-only: the hook has already taken `amount` GPU from
+    ///         the PoolManager directly to the vault (take's `to` param).
+    ///         Books ask-side inventory. Caller must be the hook.
+    function noteGpu(bytes32 gpuId, uint256 amount) external;
+
+    /// @notice Ask-side fill: move `amount` GPU from vault inventory to the
+    ///         PoolManager. Caller must be the hook.
+    function pullGpuToManager(bytes32 gpuId, uint256 amount) external;
+
+    /// @notice Bid-side fill: move `amount` gUSD from vault bid inventory to
+    ///         the PoolManager. Caller must be the hook.
+    function pullGusdToManager(bytes32 gpuId, uint256 amount) external;
+
+    /// @notice POL buy fills: the hook transfers gUSD proceeds to the vault
+    ///         and books them as bid capacity. Caller must be the hook.
+    function creditBidFromTrade(bytes32 gpuId, uint256 amount) external;
+
+    /// @notice Per-SKU spendable bid capacity (gUSD-wei).
+    function bidInventoryGusd(bytes32 gpuId) external view returns (uint256);
+
+    /// @notice Per-SKU sellable ask inventory (GPU-wei).
+    function askInventoryGpu(bytes32 gpuId) external view returns (uint256);
+
+    /// @notice Cumulative primary principal capitalized per SKU (provenance
+    ///         counter; never re-counted on recovery/migration).
+    function principalContributed(bytes32 gpuId) external view returns (uint256);
+
+    /// @notice The one address allowed to drive fills and in-swap issuance
+    ///         (the GPUHook). Zero until `setRefs` wires it — fail-closed.
+    function hook() external view returns (address);
 }

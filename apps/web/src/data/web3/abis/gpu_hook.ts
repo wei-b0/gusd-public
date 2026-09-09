@@ -14,6 +14,11 @@ export const GPU_HOOK_ABI = [
         "internalType": "address"
       },
       {
+        "name": "oracle_",
+        "type": "address",
+        "internalType": "contract IGPUPriceOracle"
+      },
+      {
         "name": "issuance_",
         "type": "address",
         "internalType": "contract IGPUIssuance"
@@ -33,6 +38,11 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "error",
+    "name": "DeltaTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "FeeExceedsSwap",
     "inputs": []
   },
@@ -43,7 +53,22 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "error",
+    "name": "GpuMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "HarvestExceedsPending",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientMarketCapacity",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidParams",
     "inputs": []
   },
   {
@@ -54,6 +79,11 @@ export const GPU_HOOK_ABI = [
   {
     "type": "error",
     "name": "NotPoolManager",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OraclePriceRange",
     "inputs": []
   },
   {
@@ -80,7 +110,7 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "error",
-    "name": "PartialFillNotSupported",
+    "name": "PolPaused",
     "inputs": []
   },
   {
@@ -100,6 +130,85 @@ export const GPU_HOOK_ABI = [
     ]
   },
   {
+    "type": "error",
+    "name": "SingleCurrencyPoolsOnly",
+    "inputs": []
+  },
+  {
+    "type": "event",
+    "name": "FeesHarvested",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "GpuFill",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "isBuy",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "gpuAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "gusdAmount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "protocolFee",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "source",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "event",
     "name": "HookFeeBpsSet",
     "inputs": [
@@ -114,6 +223,69 @@ export const GPU_HOOK_ABI = [
         "type": "uint16",
         "indexed": false,
         "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "HookSwap",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount0",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "amount1",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "swapFee",
+        "type": "uint24",
+        "indexed": false,
+        "internalType": "uint24"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MaxOracleStalenessSet",
+    "inputs": [
+      {
+        "name": "seconds_",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MaxWalkTicksSet",
+    "inputs": [
+      {
+        "name": "v",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -158,6 +330,94 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "event",
+    "name": "PolCapsSet",
+    "inputs": [
+      {
+        "name": "maxPolNotionalGusd",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "perBlockPolCapGusd",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolFeeCharged",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "gusdFee",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolParamsSet",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "askBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "bidBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "polFeeBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolPausedSet",
+    "inputs": [
+      {
+        "name": "paused",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PoolRegistered",
     "inputs": [
       {
@@ -176,58 +436,60 @@ export const GPU_HOOK_ABI = [
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "TradingFeeAccrued",
-    "inputs": [
+    "type": "function",
+    "name": "DEFAULT_MAX_ORACLE_STALENESS",
+    "inputs": [],
+    "outputs": [
       {
-        "name": "poolId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "PoolId"
-      },
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "isBuy",
-        "type": "bool",
-        "indexed": true,
-        "internalType": "bool"
-      },
-      {
-        "name": "gusdFee",
+        "name": "",
         "type": "uint256",
-        "indexed": false,
         "internalType": "uint256"
       }
     ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "TradingFeesHarvested",
-    "inputs": [
-      {
-        "name": "poolId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "PoolId"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
+    "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "DEFAULT_HOOK_FEE_BPS",
+    "name": "DEFAULT_MAX_POL_NOTIONAL_GUSD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEFAULT_MAX_WALK_TICKS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEFAULT_PER_BLOCK_POL_CAP_GUSD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_HOOK_FEE_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -240,7 +502,7 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "MAX_HOOK_FEE_BPS",
+    "name": "MAX_SPREAD_BPS",
     "inputs": [],
     "outputs": [
       {
@@ -427,7 +689,7 @@ export const GPU_HOOK_ABI = [
     "name": "afterInitialize",
     "inputs": [
       {
-        "name": "sender",
+        "name": "",
         "type": "address",
         "internalType": "address"
       },
@@ -464,12 +726,12 @@ export const GPU_HOOK_ABI = [
         ]
       },
       {
-        "name": "sqrtPriceX96",
+        "name": "",
         "type": "uint160",
         "internalType": "uint160"
       },
       {
-        "name": "tick",
+        "name": "",
         "type": "int24",
         "internalType": "int24"
       }
@@ -586,7 +848,7 @@ export const GPU_HOOK_ABI = [
     "name": "afterSwap",
     "inputs": [
       {
-        "name": "",
+        "name": "sender",
         "type": "address",
         "internalType": "address"
       },
@@ -1060,21 +1322,118 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "harvestTradingFees",
+    "name": "getEffectiveLiquidity",
     "inputs": [
       {
-        "name": "poolId",
-        "type": "bytes32",
-        "internalType": "PoolId"
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amount0",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
-        "name": "amount",
+        "name": "amount1",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getReserves",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "tuple",
+        "internalType": "struct PoolKey",
+        "components": [
+          {
+            "name": "currency0",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "currency1",
+            "type": "address",
+            "internalType": "Currency"
+          },
+          {
+            "name": "fee",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "tickSpacing",
+            "type": "int24",
+            "internalType": "int24"
+          },
+          {
+            "name": "hooks",
+            "type": "address",
+            "internalType": "contract IHooks"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amount0",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount1",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hook",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1098,6 +1457,58 @@ export const GPU_HOOK_ABI = [
         "name": "",
         "type": "address",
         "internalType": "contract IGPUIssuance"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxOracleStaleness",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxPolNotionalGusd",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxWalkTicks",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "oracle",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IGPUPriceOracle"
       }
     ],
     "stateMutability": "view"
@@ -1130,17 +1541,68 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "pendingTradingFees",
+    "name": "perBlockPolCapGusd",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "polPaused",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "polState",
     "inputs": [
       {
-        "name": "poolId",
+        "name": "gpuId",
         "type": "bytes32",
-        "internalType": "PoolId"
+        "internalType": "bytes32"
       }
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "askBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "bidBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "polFeeBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "live",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "askPrice",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "bidPrice",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1181,44 +1643,6 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "poolTradingFeesAccrued",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "PoolId"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "poolTradingFeesHarvested",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "PoolId"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
@@ -1252,7 +1676,111 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "totalTradingFeesAccrued",
+    "name": "setMaxOracleStaleness",
+    "inputs": [
+      {
+        "name": "seconds_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMaxWalkTicks",
+    "inputs": [
+      {
+        "name": "v",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPolCaps",
+    "inputs": [
+      {
+        "name": "maxPolNotionalGusd_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "perBlockPolCapGusd_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPolParams",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "askBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "bidBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "polFeeBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setPolPaused",
+    "inputs": [
+      {
+        "name": "paused",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "supportsInterface",
+    "inputs": [
+      {
+        "name": "interfaceId",
+        "type": "bytes4",
+        "internalType": "bytes4"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "totalHookFeesGusd",
     "inputs": [],
     "outputs": [
       {
@@ -1265,7 +1793,20 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "totalTradingFeesHarvested",
+    "name": "totalPolFeesGusd",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "totalPolNotionalGusd",
     "inputs": [],
     "outputs": [
       {

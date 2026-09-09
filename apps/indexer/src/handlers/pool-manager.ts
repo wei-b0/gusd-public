@@ -9,10 +9,11 @@
  * returns and emits the CALLER's delta): amount0/amount1 are the SWAPPER's
  * deltas, negative = the swapper paid that currency in. The swapper paid
  * gUSD ⇔ the pool received gUSD ⇔ the user bought GPU with gUSD (isBuy),
- * under either currency ordering via pools.gusdIsCurrency0. On a buy the
- * swapper's gUSD payment also funds the hook fee and the LP fee; raw
- * delta volume therefore includes them — the hook's own TradingFeeAccrued
- * (same tx, next log) nets the exact hook fee back out of volume.
+ * under either currency ordering via pools.gusdIsCurrency0. A swap the
+ * hook covers entirely (native leg fully absorbed) emits 0/0 deltas at an
+ * unchanged price — those rows land on the pm_swap tape with swapCount
+ * only; their economics arrive through GpuFill on the same tx (never
+ * double-counted here).
  */
 import { ponder } from "ponder:registry";
 import {
@@ -105,6 +106,10 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
     fee,
   });
 
+  // Fully hook-covered swap: core deltas are 0/0 at an unchanged price —
+  // tape row + swap counter only; GpuFill carries the economics.
+  const fullyCovered = event.args.amount0 === 0n && event.args.amount1 === 0n;
+
   const pool = await context.db.find(pools, {
     chainId: keys.chainId,
     poolId: id,
@@ -147,8 +152,9 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
     lpFeesGusdEst: pool.lpFeesGusdEst + lpFeeEst,
     lastSwapAtSec: keys.blockTimestamp,
     lastSwapBlockNumber: keys.blockNumber,
-    lastSwapIsBuy: isBuy,
   });
+
+  if (fullyCovered) return;
 
   await context.db
     .insert(protocolStats)
@@ -157,10 +163,10 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
       lpFeesGusdEst: row.lpFeesGusdEst + lpFeeEst,
     }));
 
-  // Hourly bucket: the same deltas the pool cumulatives just took. The hook
-  // fee is netted into the SAME bucket by the TradingFeeAccrued handler
+  // Hourly bucket: the same deltas the pool cumulatives just took. Hook-fill
+  // volume and fees land in the SAME bucket through the GpuFill handler
   // (same tx → same block timestamp → same bucket), so bucket sums
-  // reconcile with the fee-netted pool cumulatives.
+  // reconcile with the pool cumulatives.
   await bumpPoolHourBucket(
     context.db,
     keys.chainId,

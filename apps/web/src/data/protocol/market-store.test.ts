@@ -28,6 +28,9 @@ function gpuBody(canonicalPoolId: string | null = POOL) {
         issuanceProceedsGusd: "0",
         issuanceFeesGusd: "0",
         principalContributedGusd: "0",
+        polGusd: "0",
+        polGpu: "0",
+        polFeesGusd: "0",
         firstIssuedAtSec: null,
         lastIssuedAtSec: null,
         buyCount: 0,
@@ -83,10 +86,8 @@ function poolRow() {
     sellVolumeGusd: "0",
     hookFeesGusd: "0",
     lpFeesGusdEst: "0",
-    harvestedFeesGusd: "0",
     lastSwapAtSec: null,
     lastSwapBlockNumber: null,
-    lastSwapIsBuy: null,
     ammPriceGusd: null,
   };
 }

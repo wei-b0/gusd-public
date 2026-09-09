@@ -3,7 +3,12 @@
  * seeds the gpu_assets row (sku decoded from the ASCII gpuId; richer catalog
  * metadata is joined at the API from @gusd/gpu-catalog, never from chain).
  * Issued feeds the per-GPU primary-market cumulatives; the per-wallet cost
- * basis lands in the wallet projection (Phase 4).
+ * basis lands in the wallet projection. In-swap backstop mints (caller =
+ * the GPUHook — the hook mints to itself and delivers through the PoolManager)
+ * keep their gpu_issued tape row and market cumulatives but are NEVER
+ * user activity: the swapper's acquisition is attributed by the router's
+ * Buy (all-in cost), the same single-attribution rule as router-mediated
+ * issuance legs.
  */
 import { ponder } from "ponder:registry";
 import {
@@ -50,8 +55,9 @@ ponder.on("GPUIssuance:GpuCreated", async ({ event, context }) => {
       issuanceProceedsGusd: 0n,
       issuanceFeesGusd: 0n,
       principalContributedGusd: 0n,
-      marketFeesGusd: 0n,
-      marketFeesGpu: 0n,
+      polGusd: 0n,
+      polGpu: 0n,
+      polFeesGusd: 0n,
       buyCount: 0,
       sellCount: 0,
       volumeGusd: 0n,
@@ -86,14 +92,16 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
     fee,
   });
 
-  await recordUserEvent(context.db, {
-    keys,
-    contract: event.log.address,
-    event: "Issued",
-    user: event.args.to,
-    args: event.args,
-    txHash: eventTxHash(event),
-  });
+  if (!isInSwapBackstop(context, event)) {
+    await recordUserEvent(context.db, {
+      keys,
+      contract: event.log.address,
+      event: "Issued",
+      user: event.args.to,
+      args: event.args,
+      txHash: eventTxHash(event),
+    });
+  }
 
   const asset = await context.db.find(gpuAssets, {
     chainId: keys.chainId,
@@ -129,13 +137,18 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
   });
 
   // Cost basis: a direct issuance acquires at base+fee. A router-mediated
-  // issuance leg acquires via Buy instead (all-in cost = paid) — counting
-  // both would double-count the issuance leg of a router Buy.
+  // issuance leg (or the hook's in-swap backstop mint) acquires via Buy
+  // instead (all-in cost = paid) — counting both would double-count the
+  // issuance leg of a router Buy.
   const routerAddress = context.contracts.GpuRouter?.address;
   if (typeof routerAddress !== "string") {
     throw new Error("GpuRouter address missing from ponder config");
   }
-  if (event.args.caller.toLowerCase() !== routerAddress.toLowerCase()) {
+  const caller = event.args.caller.toLowerCase();
+  if (
+    caller !== routerAddress.toLowerCase() &&
+    !isInSwapBackstop(context, event)
+  ) {
     await recordGpuAcquisition(
       context.db,
       keys,
@@ -146,6 +159,21 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
     );
   }
 });
+
+/** True when this Issued event is the hook's in-swap backstop mint: the
+ *  GPUIssuance.issueCredited call inside a hook swap (caller = the hook,
+ *  recipient = the hook). Disambiguates gpu_issued rows for the plan's
+ *  cold-start shape (a genesis buy is 100% in-swap issuance). */
+function isInSwapBackstop(
+  context: { contracts: Record<string, { address: unknown }> },
+  event: { args: { caller: string } },
+): boolean {
+  const hookAddress = context.contracts.GPUHook?.address;
+  return (
+    typeof hookAddress === "string" &&
+    event.args.caller.toLowerCase() === hookAddress.toLowerCase()
+  );
+}
 
 ponder.on("GPUIssuance:MaxOracleStalenessSet", async ({ event, context }) => {
   const { seconds_ } = event.args;

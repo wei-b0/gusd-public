@@ -34,11 +34,11 @@ interface IWorld {
     function hookT() external view returns (address);
     function actors(uint256) external view returns (address);
     function swapRouterT() external view returns (address);
-    function marketLiquidityT() external view returns (address);
+    function marketLiquidity() external view returns (address);
     function poolKey() external view returns (PoolKey memory);
-    function recordIssuance(uint256 base, uint256 fee, uint256 minted) external;
-    function recordHarvest(uint256 amount) external;
-    function recordPolCollect(uint256 amount) external;
+    function recordIssuance(uint256 base, uint256 fee) external;
+    function recordMarketBase(uint256 amount) external;
+    function recordSwapInflow(uint256 amount) external;
 }
 
 error NotWorld();
@@ -124,43 +124,32 @@ contract HandlerIssuance is HandlerBase {
         vm.prank(actor);
         (uint256 base, uint256 fee) = iss.issue(H100Id.id(), amount, actor);
         // ghosts live on the world; the fuzzer never targets it
-        w.recordIssuance(base, fee, amount);
+        w.recordIssuance(base, fee);
     }
 }
 
-/// @notice Drives the POL's permissionless surface: deploy pending principal,
-///         recenter stale bands, collect fees. Every path is best-effort —
-///         the honest no-op outcomes (defer, NothingToRecenter, stale
-///         reference) revert or return false and the handler moves on.
-contract HandlerLiquidity is HandlerBase {
+/// @notice The vault has no permissionless surface in C-max (hook-gated
+///         custody only), so liquidity operations are covered by the market
+///         handlers' in-swap fills instead. Direct PoolManager swaps here are
+///         also the R3 actor: a caller that settles late leaves the PM short
+///         and the hook must degrade to native-only fills, never revert.
+contract HandlerMarket is HandlerBase {
     constructor(IWorld world) HandlerBase(world) {}
-
-    function deployPending() external {
-        try MarketLiquidityLike(w.marketLiquidityT()).deployPending(H100Id.id()) {} catch {}
-    }
-
-    function recenter(uint256 maxBands) external {
-        try MarketLiquidityLike(w.marketLiquidityT()).recenter(H100Id.id(), bound(maxBands, 1, 10)) {} catch {}
-    }
-
-    /// @notice Sweep LP fees: gUSD -> revenue ledger, GPU -> ask inventory.
-    ///         The world's revenue-conservation invariant tracks the ledger
-    ///         delta (exact even for fees swept inside the call).
-    function collect() external {
-        uint256 before = _ledgerReceived();
-        try MarketLiquidityLike(w.marketLiquidityT()).collect(H100Id.id()) {} catch {}
-        uint256 delta = _ledgerReceived() - before;
-        if (delta > 0) w.recordPolCollect(delta);
-    }
 
     function _ledgerReceived() internal view returns (uint256) {
         address l = w.ledger();
         return GusdLike(w.gusd()).balanceOf(l) + RevenueLedgerLike(l).totalToVault() + RevenueLedgerLike(l).totalToTreasury();
     }
-}
 
-contract HandlerMarket is HandlerBase {
-    constructor(IWorld world) HandlerBase(world) {}
+    /// @dev Records the swap's ledger inflow (POL fee + hook fee + backstop
+    ///      issuance fee, exact even when distributed mid-call) and the
+    ///      backstop principal the fill capitalized.
+    function _recordSwap(uint256 ledger0, uint256 principal0) internal {
+        uint256 delta = _ledgerReceived() - ledger0;
+        if (delta > 0) w.recordSwapInflow(delta);
+        uint256 principal1 = MarketLiquidityPrincipal(w.marketLiquidity()).principalContributed(H100Id.id());
+        if (principal1 > principal0) w.recordMarketBase(principal1 - principal0);
+    }
 
     function swapGusdForGpu(uint256 actorSeed, uint256 amount) external {
         address actor = _actor(actorSeed);
@@ -176,6 +165,8 @@ contract HandlerMarket is HandlerBase {
         }
         vm.startPrank(actor);
         GusdLike(w.gusd()).approve(w.swapRouterT(), type(uint256).max);
+        uint256 ledger0 = _ledgerReceived();
+        uint256 principal0 = MarketLiquidityPrincipal(w.marketLiquidity()).principalContributed(H100Id.id());
         PoolSwapTest(w.swapRouterT())
             .swap(
                 key,
@@ -188,6 +179,7 @@ contract HandlerMarket is HandlerBase {
                 ""
             );
         vm.stopPrank();
+        _recordSwap(ledger0, principal0);
     }
 
     function swapGpuForGusd(uint256 actorSeed, uint256 amount) external {
@@ -200,6 +192,8 @@ contract HandlerMarket is HandlerBase {
         amount = bound(amount, 1, have);
         vm.startPrank(actor);
         tok.approve(w.swapRouterT(), type(uint256).max);
+        uint256 ledger0 = _ledgerReceived();
+        uint256 principal0 = MarketLiquidityPrincipal(w.marketLiquidity()).principalContributed(H100Id.id());
         PoolSwapTest(w.swapRouterT())
             .swap(
                 key,
@@ -212,6 +206,7 @@ contract HandlerMarket is HandlerBase {
                 ""
             );
         vm.stopPrank();
+        _recordSwap(ledger0, principal0);
     }
 }
 
@@ -235,15 +230,10 @@ contract HandlerGovernance is HandlerBase {
         if (RevenueLedgerLike(w.ledger()).pendingRevenue() > 0) RevenueLedgerLike(w.ledger()).distribute();
     }
 
-    /// @notice Permissionless harvest of the canonical pool's accrued hook
-    ///         trading fees into the ledger (0 = all pending). The world's
-    ///         revenue-conservation invariant counts what moves here.
-    function harvest() external {
-        GPUHook h = GPUHook(w.hookT());
-        PoolId pid = w.poolKey().toId();
-        uint256 pending = h.pendingTradingFees(pid);
-        h.harvestTradingFees(pid, 0);
-        if (pending > 0) w.recordHarvest(pending);
+    /// @notice Fee posture is fuzzable: conservation invariants are
+    ///         delta-based, so any rate keeps the ledger identities intact.
+    function setHookFeeBps(uint256 bps) external {
+        GPUHook(w.hookT()).setHookFeeBps(uint16(bound(bps, 0, 1_000)));
     }
 }
 
@@ -255,10 +245,8 @@ interface RevenueLedgerLike {
     function totalToTreasury() external view returns (uint256);
 }
 
-interface MarketLiquidityLike {
-    function deployPending(bytes32) external returns (bool);
-    function recenter(bytes32, uint256) external returns (uint256);
-    function collect(bytes32) external;
+interface MarketLiquidityPrincipal {
+    function principalContributed(bytes32) external view returns (uint256);
 }
 
 interface OracleLike {

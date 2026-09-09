@@ -21,7 +21,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {HandlerMintRedeem, HandlerIssuance, HandlerLiquidity, HandlerMarket, HandlerGovernance, IWorld, NotWorld} from "./Handlers.t.sol";
+import {HandlerMintRedeem, HandlerIssuance, HandlerMarket, HandlerGovernance, IWorld, NotWorld} from "./Handlers.t.sol";
 
 /// @notice The invariant world AND the IWorld facade the handlers call into.
 contract InvariantTest is Test, Deployers, IWorld {
@@ -39,7 +39,6 @@ contract InvariantTest is Test, Deployers, IWorld {
 
     HandlerMintRedeem public hMintRedeem;
     HandlerIssuance public hIssuance;
-    HandlerLiquidity public hLiquidity;
     HandlerMarket public hMarket;
     HandlerGovernance public hGov;
 
@@ -49,15 +48,12 @@ contract InvariantTest is Test, Deployers, IWorld {
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
     );
     // issuance ghosts: only the issuance handler may bump them (see recordIssuance)
-    uint256 internal gMinted;
     uint256 internal gBase;
     uint256 internal gFee;
-    // harvested hook trading fees: only the governance handler may bump it
-    uint256 internal gHarvested;
-    // POL LP fees flushed to the ledger: only the liquidity handler may bump it
-    uint256 internal gPolCollected;
+    // ledger inflows from market swaps (POL fee + hook fee + backstop fee):
+    // only the market handler may bump it
+    uint256 internal gSwapInflow;
     uint256 internal initPrincipal;
-    uint256 internal initGpuSupply;
     uint256 internal initLedgerReceived;
 
     constructor() {
@@ -71,17 +67,17 @@ contract InvariantTest is Test, Deployers, IWorld {
         s_sg = new sgUSD(IERC20(address(s_gusd)), address(this));
         s_ledger = new RevenueLedger(IERC20(address(s_gusd)), address(this));
         s_oracle = new MockGPUPriceOracle(address(this));
-        s_pol = new GPUMarketLiquidity(manager, s_gusd, address(s_ledger), address(this));
+        s_pol = new GPUMarketLiquidity(IERC20(address(s_gusd)), address(manager), address(this));
         s_issuance = new GPUIssuance(
             IERC20(address(s_gusd)), IGPUPriceOracle(address(s_oracle)), address(s_ledger), address(s_pol), address(this)
         );
         bytes memory ctorArgs =
-            abi.encode(IPoolManager(address(manager)), address(s_gusd), s_issuance, address(s_ledger), address(this));
+            abi.encode(IPoolManager(address(manager)), address(s_gusd), s_oracle, s_issuance, address(s_ledger), address(this));
         (address hookAddr, bytes32 salt) =
             HookMiner.find(address(this), HOOK_FLAGS, type(GPUHook).creationCode, ctorArgs);
         hook = GPUHook(hookAddr);
         new GPUHook{salt: salt}(
-            IPoolManager(address(manager)), address(s_gusd), s_issuance, address(s_ledger), address(this)
+            IPoolManager(address(manager)), address(s_gusd), s_oracle, s_issuance, address(s_ledger), address(this)
         );
         s_pol.setRefs(address(s_issuance), address(hook));
 
@@ -93,7 +89,7 @@ contract InvariantTest is Test, Deployers, IWorld {
         s_gusd.mint(1e6, address(this));
         s_gusd.approve(address(s_sg), type(uint256).max);
         s_sg.seed(1e6);
-        s_issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
+        s_issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         s_issuance.setIssuanceEnabled(H100, true);
         s_h100 = GPUToken(s_issuance.tokenOf(H100));
         s_oracle.setPrice(H100, 25_000, block.timestamp);
@@ -104,17 +100,14 @@ contract InvariantTest is Test, Deployers, IWorld {
         _initCanonicalPool();
 
         initPrincipal = s_pol.principalContributed(H100);
-        initGpuSupply = s_h100.totalSupply();
         initLedgerReceived = s_ledger.totalToVault() + s_ledger.totalToTreasury() + s_gusd.balanceOf(address(s_ledger));
         hMintRedeem = new HandlerMintRedeem(IWorld(address(this)));
         hIssuance = new HandlerIssuance(IWorld(address(this)));
-        hLiquidity = new HandlerLiquidity(IWorld(address(this)));
         hMarket = new HandlerMarket(IWorld(address(this)));
         hGov = new HandlerGovernance(IWorld(address(this)));
 
         targetContract(address(hMintRedeem));
         targetContract(address(hIssuance));
-        targetContract(address(hLiquidity));
         targetContract(address(hMarket));
         targetContract(address(hGov));
     }
@@ -176,7 +169,7 @@ contract InvariantTest is Test, Deployers, IWorld {
         return address(swapRouter);
     }
 
-    function marketLiquidityT() external view override returns (address) {
+    function marketLiquidity() external view override returns (address) {
         return address(s_pol);
     }
 
@@ -191,10 +184,11 @@ contract InvariantTest is Test, Deployers, IWorld {
         assertEq(s_usdc.balanceOf(address(s_gusd)), s_gusd.totalSupply());
     }
 
-    /// @notice INVARIANT 2: GPU supply grows only via authorized s_issuance.
+    /// @notice INVARIANT 2: GPU supply == cumulative issuance exactly — every
+    ///         mint path (direct issue() and the in-swap issueCredited
+    ///         backstop) is the issuance contract's alone.
     function invariant_gpuSupplyOnlyViaIssuance() public view {
-        assertEq(s_h100.totalSupply(), initGpuSupply + gMinted);
-        assertLe(s_h100.totalSupply(), 200e18 + 4 * 1000 * 1_000e18); // sanity bound
+        assertEq(s_h100.totalSupply(), s_issuance.gpuConfig(H100).totalIssued, "supply != totalIssued");
     }
 
     /// @notice INVARIANT 3: issuance flow conservation — every wei that enters
@@ -208,7 +202,6 @@ contract InvariantTest is Test, Deployers, IWorld {
     ///         exactly by recorded issuance bases and by nothing else.
     function invariant_principalAccounting() public view {
         assertEq(s_pol.principalContributed(H100), initPrincipal + gBase, "principal drifted");
-        assertEq(s_pol.totalPrincipalContributed(), initPrincipal + gBase, "total drifted");
     }
 
     /// @notice INVARIANT 5: POL provenance — GPU supply grows only through
@@ -220,17 +213,18 @@ contract InvariantTest is Test, Deployers, IWorld {
         assertTrue(address(s_pol) != address(s_h100.issuer()), "POL is the issuer");
     }
 
-    /// @notice INVARIANT 6: POL custody — at rest every wei of the POL's gUSD
-    ///         is exactly accounted: pending principal, placement dust, or
-    ///         swept-but-uncollected fees. Structural: there is no withdrawal
-    ///         path, so custody can only move through these entries.
+    /// @notice INVARIANT 6: vault custody — every wei of the vault's gUSD is
+    ///         mapped bid capacity and every GPU is mapped ask inventory
+    ///         (notePrincipal/creditBidFromTrade/noteGpu are the only inflow
+    ///         paths; pull/push move both the balance and the counter).
+    ///         Structural: there is no withdrawal path to any EOA.
     function invariant_polCustody() public view {
         assertEq(
-            s_gusd.balanceOf(address(s_pol)),
-            s_pol.pendingPrincipal(H100) + s_pol.residualOf(H100) + s_pol.feesPendingGusd(H100),
-            "POL gUSD custody mismatch"
+            s_gusd.balanceOf(address(s_pol)), s_pol.bidInventoryGusd(H100), "vault gUSD custody mismatch"
         );
-        assertEq(IERC20(address(s_h100)).balanceOf(address(s_pol)), s_pol.gpuInventory(H100), "POL GPU custody mismatch");
+        assertEq(
+            IERC20(address(s_h100)).balanceOf(address(s_pol)), s_pol.askInventoryGpu(H100), "vault GPU custody mismatch"
+        );
     }
 
     /// @notice INVARIANT 7: no oracle-NAV redemption — oracle price changes
@@ -241,52 +235,46 @@ contract InvariantTest is Test, Deployers, IWorld {
     }
 
     /// @notice Revenue conservation across the s_ledger: everything it ever
-    ///         received (issuance fees + harvested hook trading fees) is still
-    ///         either sitting in it or already distributed.
+    ///         received (issuance fees from issue(), and POL fee + hook fee +
+    ///         backstop fee inflows recorded around market swaps) is still
+    ///         either sitting in it or already distributed. Fees flow DURING
+    ///         swaps in C-max — there is no harvest phase.
     function invariant_revenueConserved() public view {
         uint256 inLedger = s_gusd.balanceOf(address(s_ledger));
         assertEq(
             inLedger + s_ledger.totalToVault() + s_ledger.totalToTreasury(),
-            initLedgerReceived + gFee + gHarvested + gPolCollected
+            initLedgerReceived + gFee + gSwapInflow
         );
     }
 
-    /// @notice INVARIANT 7: every wei of gUSD the hook holds is a tracked
-    ///         trading fee — balance == accrued − harvested. gUSD only enters
-    ///         via the hook's inside-swap take (exactly `fee` per accrual) and
-    ///         leaves only via harvest (the tracked counter), so donations
-    ///         can never inflate harvestable revenue.
-    function invariant_hookFeeBalanceTrackedExactly() public view {
-        assertEq(
-            s_gusd.balanceOf(address(hook)),
-            hook.totalTradingFeesAccrued() - hook.totalTradingFeesHarvested(),
-            "hook balance != accrued - harvested"
-        );
+    /// @notice The hook settles everything in-lock and fees are forwarded to
+    ///         the ledger during the swap — the hook must hold nothing at
+    ///         rest (donations strand, never spendable).
+    function invariant_hookHoldsNothingAtRest() public view {
+        assertEq(s_gusd.balanceOf(address(hook)), 0, "hook holds gUSD at rest");
+        assertEq(IERC20(address(s_h100)).balanceOf(address(hook)), 0, "hook holds GPU at rest");
     }
 
-    function recordIssuance(uint256 base, uint256 fee, uint256 minted) external override {
+    function recordIssuance(uint256 base, uint256 fee) external override {
         if (msg.sender != address(hIssuance)) revert NotWorld();
         gBase += base;
         gFee += fee;
-        gMinted += minted;
     }
 
-    function recordHarvest(uint256 amount) external override {
-        if (msg.sender != address(hGov)) revert NotWorld();
-        gHarvested += amount;
+    function recordMarketBase(uint256 amount) external override {
+        if (msg.sender != address(hMarket)) revert NotWorld();
+        gBase += amount;
     }
 
-    function recordPolCollect(uint256 amount) external override {
-        if (msg.sender != address(hLiquidity)) revert NotWorld();
-        gPolCollected += amount;
+    function recordSwapInflow(uint256 amount) external override {
+        if (msg.sender != address(hMarket)) revert NotWorld();
+        gSwapInflow += amount;
     }
 
     // internal reset: the fuzzer can never reach this
     function afterInvariant() public {
-        gMinted = 0;
         gBase = 0;
         gFee = 0;
-        gHarvested = 0;
-        gPolCollected = 0;
+        gSwapInflow = 0;
     }
 }

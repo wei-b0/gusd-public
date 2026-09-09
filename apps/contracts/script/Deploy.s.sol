@@ -25,6 +25,7 @@ import {GPUIssuance} from "../src/GPUIssuance.sol";
 import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
+import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {StableRouter} from "../src/StableRouter.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
 import {IGPUPriceOracle} from "../src/oracle/IGPUPriceOracle.sol";
@@ -69,6 +70,7 @@ contract Deploy is Script {
         address permit2;
         address positionManager;
         address quoter;
+        address gpuQuoter;
         address weth;
         uint256 chainId;
     }
@@ -151,18 +153,20 @@ contract Deploy is Script {
         d.gusd = address(new GUSD(IERC20(d.underlying), deployer));
         d.sgusd = address(new sgUSD(IERC20(d.gusd), deployer));
         d.ledger = address(new RevenueLedger(IERC20(d.gusd), deployer));
-        d.marketLiquidity =
-            address(new GPUMarketLiquidity(IPoolManager(d.poolManager), GUSD(d.gusd), d.ledger, deployer));
+        d.marketLiquidity = address(new GPUMarketLiquidity(IERC20(d.gusd), d.poolManager, deployer));
         d.issuance = address(
             new GPUIssuance(IERC20(d.gusd), IGPUPriceOracle(d.oracle), d.ledger, d.marketLiquidity, deployer)
         );
 
         // 4) mine + deploy the 0x10CC hook against the CREATE2 proxy
-        bytes memory ctorArgs = abi.encode(IPoolManager(d.poolManager), d.gusd, d.issuance, d.ledger, deployer);
+        bytes memory ctorArgs =
+            abi.encode(IPoolManager(d.poolManager), d.gusd, IGPUPriceOracle(d.oracle), GPUIssuance(d.issuance), d.ledger, deployer);
         (address hookAddr, bytes32 salt) =
             HookMiner.find(CREATE2_PROXY, HOOK_FLAGS, type(GPUHook).creationCode, ctorArgs);
         d.hook = address(
-            new GPUHook{salt: salt}(IPoolManager(d.poolManager), d.gusd, GPUIssuance(d.issuance), d.ledger, deployer)
+            new GPUHook{salt: salt}(
+                IPoolManager(d.poolManager), d.gusd, IGPUPriceOracle(d.oracle), GPUIssuance(d.issuance), d.ledger, deployer
+            )
         );
         require(d.hook == hookAddr, "hook address mismatch");
         GPUMarketLiquidity(d.marketLiquidity).setRefs(d.issuance, d.hook);
@@ -171,6 +175,11 @@ contract Deploy is Script {
         d.router = address(
             new GpuRouter(IPoolManager(d.poolManager), GUSD(d.gusd), GPUIssuance(d.issuance), GPUHook(d.hook))
         );
+
+        // 5.4) executable-quote lens: runs the REAL hook inside a PoolManager
+        //      lock against a private float (revert-borne results). Floats are
+        //      funded by Deploy.full (buys consume gUSD float; sells GPU float).
+        d.gpuQuoter = address(new GpuQuoter(IPoolManager(d.poolManager), d.gusd, GPUIssuance(d.issuance), deployer));
 
         // 5.5) stable funding router: whitelisted stables -> underlying ->
         //      gUSD. The underlying is whitelisted at construction; STABLES
@@ -212,7 +221,7 @@ contract Deploy is Script {
         //    live at deploy time; genesis BUYs are 100% issuance until LPs add
         //    depth through the PositionManager.
         bytes32 h100Id = bytes32(bytes("H100_SXM_80GB"));
-        GPUIssuance(d.issuance).createGpu(h100Id, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
+        GPUIssuance(d.issuance).createGpu(h100Id, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         GPUIssuance(d.issuance).setIssuanceEnabled(h100Id, true);
         if (oracleDeployed) {
             // genesis seed via the owner hatch: works for any PUBLISHER value,
@@ -223,6 +232,10 @@ contract Deploy is Script {
             // from the live oracle: an external oracle must have published.
             console2.log("oracle external; pool initializes at the oracle's live price");
         }
+        // POL market-making params (ask/bid spread + POL fee, bps) — without
+        // them effAsk is 0 and the in-swap backstop's fee has no headroom:
+        // every dry-book buy reverts InsufficientMarketCapacity.
+        GPUHook(d.hook).setPolParams(h100Id, 50, 50, 10);
         _initializeCanonicalPool(d, h100Id);
 
         vm.stopBroadcast();
@@ -286,6 +299,7 @@ contract Deploy is Script {
         vm.serializeAddress(json, "permit2", d.permit2);
         vm.serializeAddress(json, "positionManager", d.positionManager);
         vm.serializeAddress(json, "quoter", d.quoter);
+        vm.serializeAddress(json, "gpuQuoter", d.gpuQuoter);
         vm.serializeAddress(json, "weth", d.weth);
         string memory out = vm.serializeUint(json, "chainId", block.chainid);
         // Indexer anchor: the simulation runs at the pre-broadcast block, so

@@ -192,7 +192,11 @@ export const gpuIssued = onchainTable(
   }),
 );
 
-/** GpuRouter.Buy — routed execution: pool leg + issuance leg + fees. */
+/** GpuRouter.Buy — routed execution filled by the hook's single composed
+ *  swap (native LP flow + POL inventory + issuance backstop). The source
+ *  decomposition lives in gpu_fill joined on tx hash; the fee fields are the
+ *  hook's counter deltas over the swap (0 on the genesis fallback path,
+ *  which still carries issuanceFee). */
 export const routerBuy = onchainTable(
   "router_buy",
   (t) => ({
@@ -202,10 +206,9 @@ export const routerBuy = onchainTable(
     payer: t.hex().notNull(),
     gpuOut: t.bigint().notNull(),
     paid: t.bigint().notNull(),
-    poolGpuOut: t.bigint().notNull(),
-    issueGpuOut: t.bigint().notNull(),
-    hookFee: t.bigint().notNull(),
-    issuanceFee: t.bigint().notNull(),
+    polFeeGusd: t.bigint("pol_fee_gusd").notNull(),
+    hookFeeGusd: t.bigint("hook_fee_gusd").notNull(),
+    issuanceFee: t.bigint("issuance_fee").notNull(),
   }),
   (table) => ({
     pk: eventPk(table),
@@ -222,7 +225,8 @@ export const routerBuy = onchainTable(
   }),
 );
 
-/** GpuRouter.Sell — routed disposal. */
+/** GpuRouter.Sell — routed disposal (hook fills at the bid edge; the POL
+ *  and gUSD hook fees come off the payout). */
 export const routerSell = onchainTable(
   "router_sell",
   (t) => ({
@@ -231,7 +235,8 @@ export const routerSell = onchainTable(
     recipient: t.hex().notNull(),
     gpuIn: t.bigint().notNull(),
     out: t.bigint().notNull(),
-    hookFee: t.bigint().notNull(),
+    polFeeGusd: t.bigint("pol_fee_gusd").notNull(),
+    hookFeeGusd: t.bigint("hook_fee_gusd").notNull(),
   }),
   (table) => ({
     pk: eventPk(table),
@@ -300,38 +305,65 @@ export const hookPoolRegistered = onchainTable(
   (table) => ({ pk: eventPk(table) }),
 );
 
-/** GPUHook.TradingFeeAccrued — gUSD fees captured by the hook. These are
- *  NOT part of the Swap deltas and are never summed with pool volume. */
-export const hookFeeAccrued = onchainTable(
-  "hook_fee_accrued",
+/** GPUHook.HookSwap (URC-2 shape) — one row per hook-contributing swap, in
+ *  swapper-view signed deltas (positive = the swapper received that
+ *  currency from hook fills). None on quotes/sims/reverts or pure-native
+ *  swaps. The in-lock `sender` is the PoolManager (the true swapper is not
+ *  identifiable without spoofable hookData) — join GpuFill to the core Swap
+ *  on tx hash for attribution. */
+export const hookSwap = onchainTable(
+  "hook_swap",
   (t) => ({
     ...eventColumns(),
     poolId: t.hex().notNull(),
-    gpuId: t.hex().notNull(),
-    /** Raw event field: the hook passes `exactIn` here, NOT the economic
-     *  direction — derive trade direction from pm_swap deltas instead. */
-    isBuy: t.boolean().notNull(),
-    gusdFee: t.bigint().notNull(),
+    sender: t.hex().notNull(),
+    amount0: t.bigint().notNull(),
+    amount1: t.bigint().notNull(),
+    swapFee: t.integer("swap_fee").notNull(),
   }),
   (table) => ({
     pk: eventPk(table),
-    hook_fee_accrued_gpu_idx: index("hook_fee_accrued_gpu_idx").on(
+    hook_swap_pool_idx: index("hook_swap_pool_idx").on(
       table.chainId,
-      table.gpuId,
+      table.poolId,
       table.blockNumber,
     ),
   }),
 );
 
-/** GPUHook.TradingFeesHarvested — permissionless fee sweep. */
-export const hookFeesHarvested = onchainTable(
-  "hook_fees_harvested",
+/** GPUHook.GpuFill — one row per protocol fill source inside a hook swap.
+ *  `source`: 0 = POL inventory, 1 = issuance backstop. `gusdAmount` is the
+ *  gUSD the hook took in (buy) or paid out (sell) for that fill, GROSS of
+ *  `protocolFee` (the POL/issuance fee on the fill; the buy-side in-kind
+ *  GPU fee is taken off the delivered GPU and never touches gUSD). `sender`
+ *  is the PoolManager — the router Buy/Sell events attribute the trade to
+ *  the wallet. */
+export const gpuFill = onchainTable(
+  "gpu_fill",
   (t) => ({
     ...eventColumns(),
     poolId: t.hex().notNull(),
-    amount: t.bigint().notNull(),
+    gpuId: t.hex().notNull(),
+    sender: t.hex().notNull(),
+    isBuy: t.boolean().notNull(),
+    gpuAmount: t.bigint("gpu_amount").notNull(),
+    gusdAmount: t.bigint("gusd_amount").notNull(),
+    protocolFee: t.bigint("protocol_fee").notNull(),
+    source: t.integer().notNull(),
   }),
-  (table) => ({ pk: eventPk(table) }),
+  (table) => ({
+    pk: eventPk(table),
+    gpu_fill_gpu_idx: index("gpu_fill_gpu_idx").on(
+      table.chainId,
+      table.gpuId,
+      table.blockNumber,
+    ),
+    gpu_fill_pool_idx: index("gpu_fill_pool_idx").on(
+      table.chainId,
+      table.poolId,
+      table.blockNumber,
+    ),
+  }),
 );
 
 /** GPUPriceOracle.PricePublished — transparency/health/comparison ONLY;
@@ -552,22 +584,17 @@ export const pools = onchainTable(
     sqrtPriceX96: t.bigint("sqrt_price_x96"),
     tick: t.integer("tick"),
     liquidity: t.bigint("liquidity"),
-    // cumulatives (gUSD raw 6-dec; hook fees only from TradingFeeAccrued)
+    // cumulatives (gUSD raw 6-dec). Volume = swapper gUSD moved through the
+    // native leg (pm_swap deltas) + hook-fill gUSD (GpuFill.gusdAmount,
+    // gross of the fill's protocol fee); hookFeesGusd = Σ GpuFill.protocolFee.
     swapCount: t.int8("swap_count", { mode: "number" }).notNull(),
     volumeGusd: t.bigint("volume_gusd").notNull(),
     buyVolumeGusd: t.bigint("buy_volume_gusd").notNull(),
     sellVolumeGusd: t.bigint("sell_volume_gusd").notNull(),
     hookFeesGusd: t.bigint("hook_fees_gusd").notNull(),
     lpFeesGusdEst: t.bigint("lp_fees_gusd_est").notNull(),
-    harvestedFeesGusd: t.bigint("harvested_fees_gusd").notNull(),
     lastSwapAtSec: t.int8("last_swap_at_sec", { mode: "number" }),
     lastSwapBlockNumber: t.integer("last_swap_block_number"),
-    /** Direction of the most recent swap, derived from the swapper's gUSD
-     *  delta (buy ⇔ swapper paid gUSD). Consumed by the TradingFeeAccrued
-     *  handler to net hook fees from the correct volume side — the hook
-     *  event's own isBuy flag carries `exactIn`, which is not the economic
-     *  direction across both specified-currency cases. */
-    lastSwapIsBuy: t.boolean("last_swap_is_buy"),
   }),
   (table) => ({
     pk: primaryKey({ columns: [table.chainId, table.poolId] }),
@@ -593,14 +620,19 @@ export const gpuAssets = onchainTable(
     issuedCount: t.int8("issued_count", { mode: "number" }).notNull(),
     issuanceProceedsGusd: t.bigint("issuance_proceeds_gusd").notNull(),
     issuanceFeesGusd: t.bigint("issuance_fees_gusd").notNull(),
-    // Cumulative primary principal capitalized into the POL (bid-side market
-    // liquidity) — an accounting STATISTIC, never a claim on present assets;
-    // once converted to GPU by trades it no longer corresponds to held gUSD.
+    // Cumulative primary principal capitalized into the market-making vault
+    // — an accounting STATISTIC, never a claim on present assets; once
+    // converted to GPU by trades it no longer corresponds to held gUSD.
     principalContributedGusd: t.bigint("principal_contributed_gusd").notNull(),
-    // POL FeesCollected: gUSD swept to the revenue ledger + GPU swept to ask
-    // inventory (cumulative per market).
-    marketFeesGusd: t.bigint("market_fees_gusd").notNull(),
-    marketFeesGpu: t.bigint("market_fees_gpu").notNull(),
+    // Protocol-owned market-making inventory (GPUMarketLiquidity vault),
+    // delta-tracked from the vault's GpuNoted/BidCredited/InventoryPulled
+    // events: polGusd = bid-side gUSD buying the next sell, polGpu = ask-side
+    // GPU inventory selling into the next buy. Executable sell depth is
+    // polGusd priced at the bid edge — honestly finite, per market.
+    polGusd: t.bigint("pol_gusd").notNull(),
+    polGpu: t.bigint("pol_gpu").notNull(),
+    // Σ GpuFill.protocolFee on this market (POL + issuance-backstop fees).
+    polFeesGusd: t.bigint("pol_fees_gusd").notNull(),
     firstIssuedAtSec: t.int8("first_issued_at_sec", { mode: "number" }),
     lastIssuedAtSec: t.int8("last_issued_at_sec", { mode: "number" }),
     // secondary market (routed executions)
@@ -610,34 +642,6 @@ export const gpuAssets = onchainTable(
     lastTradeAtSec: t.int8("last_trade_at_sec", { mode: "number" }),
   }),
   (table) => ({ pk: primaryKey({ columns: [table.chainId, table.gpuId] }) }),
-);
-
-/** POL market-liquidity bands around the oracle reference — one row per
- *  (pool, tick range). BandPlaced upserts (placementCount++, lastPlacedAtSec,
- *  removedAtSec cleared); BandRemoved marks the row historical. A live band
- *  is one with removedAtSec IS NULL. */
-export const liquidityBands = onchainTable(
-  "liquidity_bands",
-  (t) => ({
-    chainId: t.integer("chain_id").notNull(),
-    gpuId: t.hex("gpu_id").notNull(),
-    poolId: t.hex("pool_id").notNull(),
-    tickLower: t.integer("tick_lower").notNull(),
-    tickUpper: t.integer("tick_upper").notNull(),
-    bidSide: t.boolean("bid_side").notNull(),
-    gusdPlaced: t.bigint("gusd_placed").notNull(),
-    gpuPlaced: t.bigint("gpu_placed").notNull(),
-    placementCount: t.int8("placement_count", { mode: "number" }).notNull(),
-    firstPlacedAtSec: t.int8("first_placed_at_sec", { mode: "number" }),
-    lastPlacedAtSec: t.int8("last_placed_at_sec", { mode: "number" }),
-    removedAtSec: t.int8("removed_at_sec", { mode: "number" }),
-  }),
-  (table) => ({
-    pk: primaryKey({
-      columns: [table.chainId, table.poolId, table.tickLower, table.tickUpper],
-    }),
-    liquidity_bands_gpu_idx: index("liquidity_bands_gpu_idx").on(table.chainId, table.gpuId),
-  }),
 );
 
 /** Indexed oracle state — transparency/health/comparison only. */
@@ -854,7 +858,6 @@ export const protocolStats = onchainTable(
     // fees + revenue
     hookFeesGusd: t.bigint("hook_fees_gusd").notNull(),
     lpFeesGusdEst: t.bigint("lp_fees_gusd_est").notNull(),
-    harvestedFeesGusd: t.bigint("harvested_fees_gusd").notNull(),
     revenueDistributedGusd: t.bigint("revenue_distributed_gusd").notNull(),
     revenueToVaultGusd: t.bigint("revenue_to_vault_gusd").notNull(),
     revenueToTreasuryGusd: t.bigint("revenue_to_treasury_gusd").notNull(),

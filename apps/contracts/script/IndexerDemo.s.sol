@@ -19,18 +19,19 @@ import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {StateView} from "@uniswap/v4-periphery/lens/StateView.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
-import {IV4Quoter} from "@uniswap/v4-periphery/interfaces/IV4Quoter.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import {Actions} from "@uniswap/v4-periphery/libraries/Actions.sol";
 import {Planner, Plan} from "v4-periphery-test/shared/Planner.sol";
 import {GUSD} from "../src/GUSD.sol";
 import {GPUIssuance} from "../src/GPUIssuance.sol";
+import {GPUMarketLiquidity} from "../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../src/GPUToken.sol";
 import {RevenueLedger} from "../src/RevenueLedger.sol";
 import {sgUSD} from "../src/sgUSD.sol";
 import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
-import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
+import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
+import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -43,10 +44,9 @@ contract IndexerDemo is Script {
 
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
-        address deployer = vm.addr(pk);
         address alice = vm.addr(ALICE_PK);
         address bob = vm.addr(BOB_PK);
-        string memory json = vm.readFile("./deployments/31337.json");
+        string memory json = vm.readFile(string.concat("./deployments/", vm.toString(block.chainid), ".json"));
         address gusdAddr = vm.parseJsonAddress(json, ".gusd");
         address issuanceAddr = vm.parseJsonAddress(json, ".issuance");
         address hookAddr = vm.parseJsonAddress(json, ".hook");
@@ -57,34 +57,31 @@ contract IndexerDemo is Script {
         address routerAddr = vm.parseJsonAddress(json, ".router");
         address permit2Addr = vm.parseJsonAddress(json, ".permit2");
         address posmAddr = vm.parseJsonAddress(json, ".positionManager");
-        address quoterAddr = vm.parseJsonAddress(json, ".quoter");
+        address gpuQuoterAddr = vm.parseJsonAddress(json, ".gpuQuoter");
         address oracleAddr = vm.parseJsonAddress(json, ".oracle");
+        address polAddr = vm.parseJsonAddress(json, ".marketLiquidity");
 
         GUSD gusd = GUSD(gusdAddr);
         GPUIssuance issuance = GPUIssuance(issuanceAddr);
+        GPUMarketLiquidity pol = GPUMarketLiquidity(polAddr);
         GPUHook hook = GPUHook(hookAddr);
         RevenueLedger ledger = RevenueLedger(ledgerAddr);
         sgUSD sg = sgUSD(sgusdAddr);
         GpuRouter router = GpuRouter(routerAddr);
+        GpuQuoter gpuQuoter = GpuQuoter(gpuQuoterAddr);
         PositionManager posm;
         assembly ("memory-safe") {
             posm := posmAddr
         }
-        IV4Quoter quoter = IV4Quoter(quoterAddr);
         IERC20 underlying = IERC20(usdcAddr);
         GPUToken h100 = GPUToken(issuance.tokenOf(H100));
         StateView stateView = StateView(stateViewAddr);
 
-        bool gIsC0 = gusdAddr < address(h100);
-        PoolKey memory key;
-        key.currency0 = gIsC0 ? Currency.wrap(gusdAddr) : Currency.wrap(address(h100));
-        key.currency1 = gIsC0 ? Currency.wrap(address(h100)) : Currency.wrap(gusdAddr);
-        IGPUIssuance.PoolParams memory pp = issuance.poolParamsOf(H100);
-        key.fee = pp.fee;
-        key.tickSpacing = pp.tickSpacing;
-        key.hooks = hook;
+        // canonical pool (registered at deploy time)
+        PoolKey memory key = GpuPoolKey.canonical(gusdAddr, address(h100), issuance.poolParamsOf(H100), hook);
         PoolId poolId = key.toId();
         require(hook.poolGpuId(poolId) == H100, "pool not registered");
+        bool gIsC0 = gusdAddr < address(h100);
 
         // 2) EXTERNAL LP via POSM (alice; approvals are idempotent)
         vm.startBroadcast(ALICE_PK);
@@ -101,25 +98,42 @@ contract IndexerDemo is Script {
         vm.stopBroadcast();
         require(stateView.getLiquidity(poolId) > 0, "step2 pool liquidity");
 
-        // 3) BUY via pool (bob pays USDC)
+        // 3) BUY via pool (bob pays USDC; quote == execution via GpuQuoter)
         vm.startBroadcast(pk);
         MockERC20(usdcAddr).mint(bob, 1_000_000e6);
         vm.stopBroadcast();
         vm.startBroadcast(BOB_PK);
         underlying.approve(routerAddr, type(uint256).max);
-        (uint256 quotedIn,) = quoter.quoteExactOutputSingle(
-            IV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: gIsC0, exactAmount: 2e18, hookData: ""})
-        );
+        GpuQuoter.QuoteResult memory q3 = gpuQuoter.quoteBuyExactOut(key, 2e18);
+        require(q3.gpuOut == 2e18 && q3.gusdIn > 0, "step3 quote shape");
+        (uint256 f0, uint256 f1) = stateView.getFeeGrowthGlobals(poolId);
+        uint256 fgBuy = gIsC0 ? f0 : f1;
         GpuRouter.BuyParams memory b3 = GpuRouter.BuyParams({
-            gpuId: H100, gpuOut: 2e18, poolGpuOut: 2e18, issueGpuOut: 0, payment: usdcAddr, maxPaid: quotedIn, sqrtLimitX96: 0, recipient: bob
+            gpuId: H100,
+            gpuOut: 2e18,
+            payment: usdcAddr,
+            maxPaid: q3.gusdIn,
+            deadline: 0,
+            sqrtLimitX96: 0,
+            recipient: bob
         });
-        router.buy(b3);
+        uint256 paid3 = router.buy(b3);
         vm.stopBroadcast();
+        require(paid3 == q3.gusdIn, "step3 quote == execution");
+        require(h100.balanceOf(bob) >= 2e18, "step3 tokens");
+        (uint256 f0After, uint256 f1After) = stateView.getFeeGrowthGlobals(poolId);
+        require((gIsC0 ? f0After : f1After) > fgBuy, "step3 LP fee accrued on native leg");
 
-        // 4) BUY mixed legs
+        // 4) BUY mixed legs (native -> POL -> backstop composed in-swap)
         vm.startBroadcast(BOB_PK);
         GpuRouter.BuyParams memory b4 = GpuRouter.BuyParams({
-            gpuId: H100, gpuOut: 5e18, poolGpuOut: 3e18, issueGpuOut: 2e18, payment: usdcAddr, maxPaid: 20e6, sqrtLimitX96: 0, recipient: bob
+            gpuId: H100,
+            gpuOut: 5e18,
+            payment: usdcAddr,
+            maxPaid: 20e6,
+            deadline: 0,
+            sqrtLimitX96: 0,
+            recipient: bob
         });
         router.buy(b4);
         vm.stopBroadcast();
@@ -128,29 +142,41 @@ contract IndexerDemo is Script {
         vm.startBroadcast(BOB_PK);
         h100.approve(routerAddr, type(uint256).max);
         GpuRouter.SellParams memory s5 =
-            GpuRouter.SellParams({gpuId: H100, gpuIn: 1e18, payout: usdcAddr, minOut: 2e6, sqrtLimitX96: 0, recipient: bob});
+            GpuRouter.SellParams({gpuId: H100, gpuIn: 1e18, payout: usdcAddr, minOut: 2e6, deadline: 0, sqrtLimitX96: 0, recipient: bob});
         router.sell(s5);
         vm.stopBroadcast();
 
-        // 6) oracle reprice -> publish + repriced issuance buy paid in gUSD
+        // 6) oracle reprice -> instant, structural (polState + repriced buy)
         vm.startBroadcast(pk);
         GPUPriceOracle(oracleAddr).publish(H100, 30_000, block.timestamp);
         vm.stopBroadcast();
+        (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) = hook.polState(H100);
+        require(live6, "step6 hook live");
+        require(askPrice6 == 30_150 && bidPrice6 == 29_850, "step6 edges repriced in-swap");
         vm.startBroadcast(BOB_PK);
         underlying.approve(gusdAddr, type(uint256).max);
         gusd.mint(10e6, bob);
         gusd.approve(routerAddr, type(uint256).max);
+        GpuQuoter.QuoteResult memory q6 = gpuQuoter.quoteBuyExactOut(key, 1e18);
+        require(q6.gusdIn <= 3_015_000, "step6 blended at or below the new primary ask");
         GpuRouter.BuyParams memory b6 = GpuRouter.BuyParams({
-            gpuId: H100, gpuOut: 1e18, poolGpuOut: 0, issueGpuOut: 1e18, payment: gusdAddr, maxPaid: 5e6, sqrtLimitX96: 0, recipient: bob
+            gpuId: H100,
+            gpuOut: 1e18,
+            payment: gusdAddr,
+            maxPaid: q6.gusdIn,
+            deadline: 0,
+            sqrtLimitX96: 0,
+            recipient: bob
         });
-        router.buy(b6);
+        uint256 paid6 = router.buy(b6);
         vm.stopBroadcast();
+        require(paid6 == q6.gusdIn, "step6 quote == execution (repriced)");
 
-        // 7) harvest protocol revenue -> sgUSD
+        // 7) distribute protocol revenue (fees land on the ledger in-swap)
         vm.startBroadcast(pk);
-        hook.harvestTradingFees(poolId, 0);
         ledger.distribute();
         vm.stopBroadcast();
+        require(gusd.balanceOf(ledgerAddr) == 0, "step7 ledger drained");
 
         console2.log("indexer demo complete: alice", alice);
         console2.log("indexer demo complete: bob", bob);

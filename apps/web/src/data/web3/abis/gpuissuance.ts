@@ -63,7 +63,7 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "error",
-    "name": "InvalidBandTicks",
+    "name": "InsufficientSpend",
     "inputs": []
   },
   {
@@ -74,6 +74,11 @@ export const GPUISSUANCE_ABI = [
   {
     "type": "error",
     "name": "IssuanceDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotHook",
     "inputs": []
   },
   {
@@ -351,19 +356,6 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
-    "name": "MAX_BAND_TICKS",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "int24",
-        "internalType": "int24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "MAX_ISSUANCE_FEE_BPS",
     "inputs": [],
     "outputs": [
@@ -394,44 +386,6 @@ export const GPUISSUANCE_ABI = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "bandSpreadTicksOf",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "int24",
-        "internalType": "int24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "bandWidthOf",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "int24",
-        "internalType": "int24"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -477,16 +431,6 @@ export const GPUISSUANCE_ABI = [
       },
       {
         "name": "tickSpacing",
-        "type": "int24",
-        "internalType": "int24"
-      },
-      {
-        "name": "bandWidthTicks",
-        "type": "int24",
-        "internalType": "int24"
-      },
-      {
-        "name": "bandSpreadTicks",
         "type": "int24",
         "internalType": "int24"
       }
@@ -564,16 +508,6 @@ export const GPUISSUANCE_ABI = [
           },
           {
             "name": "tickSpacing",
-            "type": "int24",
-            "internalType": "int24"
-          },
-          {
-            "name": "bandWidthTicks",
-            "type": "int24",
-            "internalType": "int24"
-          },
-          {
-            "name": "bandSpreadTicks",
             "type": "int24",
             "internalType": "int24"
           },
@@ -656,6 +590,45 @@ export const GPUISSUANCE_ABI = [
         "name": "to",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "base",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "issueCredited",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "maxGusdSpend",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [
@@ -835,6 +808,40 @@ export const GPUISSUANCE_ABI = [
       },
       {
         "name": "totalPaid",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "quoteIssueCredited",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "base",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fee",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "total",
         "type": "uint256",
         "internalType": "uint256"
       }

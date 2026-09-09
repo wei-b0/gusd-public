@@ -92,11 +92,9 @@ export interface ExecutionDto {
   gpuAmount: string;
   /** Buy: paid all-in; sell: out proceeds. Raw gUSD (6-dec). */
   gUsdAmount: string;
-  /** Buy only — GPU acquired from the AMM pool leg. */
-  poolLegGpu: string | null;
-  /** Buy only — GPU acquired from the issuance leg. */
-  issuanceLegGpu: string | null;
-  /** Buy only — the issuance leg's fee, raw gUSD (6-dec). */
+  /** POL fee on the execution's hook fills, raw gUSD (6-dec). */
+  polFeeGusd: string;
+  /** Buy only — the genesis-fallback issuance fee, raw gUSD (6-dec). */
   issuanceFeeGusd: string | null;
   /** Hook trading fee attached to the execution, raw gUSD (6-dec). */
   hookFeeGusd: string;
@@ -131,10 +129,8 @@ export interface PoolDto {
   sellVolumeGusd: string;
   hookFeesGusd: string;
   lpFeesGusdEst: string;
-  harvestedFeesGusd: string;
   lastSwapAtSec: number | null;
   lastSwapBlockNumber: number | null;
-  lastSwapIsBuy: boolean | null;
   /** AMM EXECUTION STATE derived from sqrtPriceX96 — one of the four price
    *  notions; never a market or display price. Deliberately unconsumed in
    *  the web app (the depth figure comes from liquidity directly). */
@@ -216,6 +212,12 @@ export interface GpuAssetDto {
   issuanceProceedsGusd: string;
   issuanceFeesGusd: string;
   principalContributedGusd: string;
+  /** POL bid-side gUSD inventory (buyable sell depth, honestly finite). */
+  polGusd: string;
+  /** POL ask-side GPU inventory. */
+  polGpu: string;
+  /** Σ GpuFill.protocolFee on this market. */
+  polFeesGusd: string;
   firstIssuedAtSec: number | null;
   lastIssuedAtSec: number | null;
   buyCount: number;
@@ -248,7 +250,6 @@ export interface ProtocolStatsDto {
   sellVolumeGusd: string;
   hookFeesGusd: string;
   lpFeesGusdEst: string;
-  harvestedFeesGusd: string;
   revenueDistributedGusd: string;
   revenueToVaultGusd: string;
   revenueToTreasuryGusd: string;

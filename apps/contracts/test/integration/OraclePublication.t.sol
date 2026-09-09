@@ -35,11 +35,11 @@ contract OraclePublicationTest is Test {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new GPUPriceOracle(address(this), publisher, 0);
         manager = new PoolManager(address(this));
-        pol = new GPUMarketLiquidity(manager, gusd, ledger, address(this));
+        pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
         issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
-        pol.setRefs(address(issuance), address(0)); // hook-less rig: POL ops stay pending
+        pol.setRefs(address(issuance), makeAddr("hookless")); // hook-less rig: POL ops stay pending
         gusd.setRevenueSink(ledger);
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         issuance.setIssuanceEnabled(H100, true);
         // fund alice with gUSD
         underlying.mint(alice, 1_000_000e6);
@@ -147,7 +147,7 @@ contract OraclePublicationTest is Test {
 
     function test_unknownGpuPriceZero() public {
         bytes32 b200 = bytes32(bytes("B200_192GB"));
-        issuance.createGpu(b200, "B200 192GB GPU-hour", "B200", 50, 3000, 60, 600, 120);
+        issuance.createGpu(b200, "B200 192GB GPU-hour", "B200", 50, 3000, 60);
         issuance.setIssuanceEnabled(b200, true);
         // publisher never published B200: 0 = unknown, issuance fails closed
         vm.prank(alice);

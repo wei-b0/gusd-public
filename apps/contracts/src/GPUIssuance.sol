@@ -36,7 +36,6 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
 
     uint16 public constant MAX_ISSUANCE_FEE_BPS = 1_000; // 10%
     uint256 public constant PRICE_SCALE = 10_000; // 4-decimal fixed point (coordination-fixed)
-    int24 public constant MAX_BAND_TICKS = 100_000; // POL band geometry cap (int24-arithmetic safety)
 
     // 10^(gpusDecimals 18 + priceDecimals 4 - gusdDecimals 6), derived from
     // the oracle's PRICE_SCALE in the constructor (== 1e16 for 4 decimals)
@@ -48,8 +47,6 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         uint16 feeBps;
         uint24 fee; // canonical v4 pool fee
         int24 tickSpacing;
-        int24 bandWidthTicks; // POL band depth (multiple of tickSpacing, > spread)
-        int24 bandSpreadTicks; // gap between the ask edge and the bid zone
         uint256 totalIssued;
     }
 
@@ -75,7 +72,8 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     error ZeroAddress();
     error FeeTooLarge();
     error PriceScaleMismatch();
-    error InvalidBandTicks();
+    error InsufficientSpend();
+    error NotHook();
 
     event GpuCreated(bytes32 indexed gpuId, address token, uint16 feeBps, uint24 poolFee, int24 tickSpacing);
     event Issued(
@@ -111,25 +109,13 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         string calldata symbol,
         uint16 feeBps,
         uint24 fee,
-        int24 tickSpacing,
-        int24 bandWidthTicks,
-        int24 bandSpreadTicks
+        int24 tickSpacing
     ) external onlyOwner {
         GpuId.validate(gpuId);
         if (_gpus[gpuId].token != address(0)) revert GpuAlreadyExists();
         if (feeBps > MAX_ISSUANCE_FEE_BPS) revert FeeTooLarge();
-        _validateBandTicks(tickSpacing, bandWidthTicks, bandSpreadTicks);
         GPUToken token = new GPUToken{salt: gpuId}(address(this), gpuId, name, symbol);
-        _gpus[gpuId] = GpuConfig({
-            token: address(token),
-            enabled: false,
-            feeBps: feeBps,
-            fee: fee,
-            tickSpacing: tickSpacing,
-            bandWidthTicks: bandWidthTicks,
-            bandSpreadTicks: bandSpreadTicks,
-            totalIssued: 0
-        });
+        _gpus[gpuId] = GpuConfig({token: address(token), enabled: false, feeBps: feeBps, fee: fee, tickSpacing: tickSpacing, totalIssued: 0});
         _gpuIdOfToken[address(token)] = gpuId;
         _gpuIds.push(gpuId);
         emit GpuCreated(gpuId, address(token), feeBps, fee, tickSpacing);
@@ -205,6 +191,64 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         emit Issued(msg.sender, gpuId, to, amount, base, fee);
     }
 
+    /// @notice In-swap issuance backstop for GPUHook: pricing and guards are
+    ///         identical to `issue()`, paid by transferFrom from the caller
+    ///         (the hook, inside a PoolManager lock), minting to `to`.
+    ///         Reverts when `base + fee > maxGusdSpend` — the hook absorbs
+    ///         exactly what it plans to spend, so any divergence between the
+    ///         plan-time quote and this execution (e.g. an oracle move by
+    ///         reentrancy mid-swap) fails closed instead of bleeding capital.
+    ///         Zero v4 interaction.
+    function issueCredited(bytes32 gpuId, uint256 amount, address to, uint256 maxGusdSpend)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 base, uint256 fee)
+    {
+        // Hook-only mint authority: the in-swap backstop must be reachable
+        // exclusively from the market hook inside a PoolManager lock. The
+        // vault's hook ref is zero until setRefs — fail-closed either way.
+        if (msg.sender != IMarketLiquidity(marketLiquidity).hook()) revert NotHook();
+        if (amount == 0) revert ZeroAmount();
+        GpuConfig storage cfg = _gpus[gpuId];
+        if (cfg.token == address(0)) revert UnknownGpuId();
+        if (!cfg.enabled) revert IssuanceDisabled();
+
+        uint256 price = _oraclePrice(gpuId);
+
+        base = Math.mulDiv(amount, price, compositionDivisor, Math.Rounding.Ceil);
+        fee = Math.mulDiv(base, cfg.feeBps, 10_000, Math.Rounding.Ceil);
+        if ( base + fee > maxGusdSpend) revert InsufficientSpend();
+
+        _gpus[gpuId].totalIssued += amount;
+        gUSD.safeTransferFrom(msg.sender, address(this), base + fee);
+        if (fee > 0) gUSD.safeTransfer(revenueLedger, fee);
+        gUSD.safeTransfer(marketLiquidity, base);
+        IMarketLiquidity(marketLiquidity).notePrincipal(gpuId, base);
+        GPUToken(cfg.token).mint(to, amount);
+
+        emit Issued(msg.sender, gpuId, to, amount, base, fee);
+    }
+
+    /// @notice Guard-identical pre-flight of `issueCredited` for the hook's
+    ///         plan phase — the same guard set and math as `quoteIssue`
+    ///         (execution-identical quote doctrine).
+    function quoteIssueCredited(bytes32 gpuId, uint256 amount)
+        external
+        view
+        returns (uint256 base, uint256 fee, uint256 total)
+    {
+        // Same guard set and math as quoteIssue — execution-identical quote
+        // doctrine (external functions are not internally callable).
+        GpuConfig storage cfg = _gpus[gpuId];
+        if (cfg.token == address(0)) revert UnknownGpuId();
+        if (!cfg.enabled) revert IssuanceDisabled();
+        uint256 price = _oraclePrice(gpuId);
+        base = Math.mulDiv(amount, price, compositionDivisor, Math.Rounding.Ceil);
+        fee = Math.mulDiv(base, cfg.feeBps, 10_000, Math.Rounding.Ceil);
+        total = base + fee;
+    }
+
     // --------------------------------------------------------------- views
 
     /// @notice Execution-identical quote: applies every guard `issue()` applies
@@ -239,16 +283,6 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         return FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));
     }
 
-    function bandWidthOf(bytes32 gpuId) external view returns (int24) {
-        _requireKnown(gpuId);
-        return _gpus[gpuId].bandWidthTicks;
-    }
-
-    function bandSpreadTicksOf(bytes32 gpuId) external view returns (int24) {
-        _requireKnown(gpuId);
-        return _gpus[gpuId].bandSpreadTicks;
-    }
-
     function feeBpsOf(bytes32 gpuId) external view returns (uint16) {
         _requireKnown(gpuId);
         return _gpus[gpuId].feeBps;
@@ -266,15 +300,6 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
         uint256 sqrt = FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));
         if (sqrt > type(uint160).max) revert OraclePriceRange();
         return sqrt;
-    }
-
-    /// @dev POL band geometry must be well-formed: a positive multiple of the
-    ///      pool's tick spacing, spread < width (disjoint zones), capped for
-    ///      int24-arithmetic safety in the POL.
-    function _validateBandTicks(int24 tickSpacing, int24 width, int24 spread) internal pure {
-        if (width <= 0 || spread <= 0 || spread >= width) revert InvalidBandTicks();
-        if (width > MAX_BAND_TICKS) revert InvalidBandTicks();
-        if (width % tickSpacing != 0 || spread % tickSpacing != 0) revert InvalidBandTicks();
     }
 
     function gpuConfig(bytes32 gpuId) external view returns (GpuConfig memory) {

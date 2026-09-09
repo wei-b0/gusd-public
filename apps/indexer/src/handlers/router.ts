@@ -1,10 +1,11 @@
 /**
- * GpuRouter handlers — routed executions (rev 2: NEVER merged with the AMM
- * swap tape). One Buy = one pool leg + one issuance leg (+ fees) and
- * corresponds to one PoolManager.Swap, one Issued and one TradingFeeAccrued
- * across other tables — the endpoints present them separately. Routed
- * volume lands on gpu_assets/protocol_stats only; pool volume stays on the
- * Swap path exclusively.
+ * GpuRouter handlers — routed executions (NEVER merged with the AMM swap
+ * tape). One Buy/Sell = one PoolManager.Swap the hook fills from native LP
+ * flow, POL inventory and the issuance backstop (GpuFill rows on the same
+ * tx decompose the sources); the fee fields are the hook's counter deltas
+ * over the swap. Genesis-fallback Buys (unregistered pool) carry
+ * issuanceFee instead. Routed volume lands on gpu_assets/protocol_stats
+ * only; pool volume stays on the Swap + GpuFill path exclusively.
  */
 import { ponder } from "ponder:registry";
 import { gpuAssets, protocolStats, routerBuy, routerSell } from "ponder:schema";
@@ -25,9 +26,8 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
     payer,
     gpuOut,
     paid,
-    poolGpuOut,
-    issueGpuOut,
-    hookFee,
+    polFeeGusd,
+    hookFeeGusd,
     issuanceFee,
   } = event.args;
 
@@ -38,9 +38,8 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
     payer,
     gpuOut,
     paid,
-    poolGpuOut,
-    issueGpuOut,
-    hookFee,
+    polFeeGusd,
+    hookFeeGusd,
     issuanceFee,
   });
 
@@ -87,11 +86,11 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
 
 ponder.on("GpuRouter:Sell", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
-  const { gpuId, recipient, gpuIn, out, hookFee } = event.args;
+  const { gpuId, recipient, gpuIn, out, polFeeGusd, hookFeeGusd } = event.args;
 
   await context.db
     .insert(routerSell)
-    .values({ ...keys, gpuId, recipient, gpuIn, out, hookFee });
+    .values({ ...keys, gpuId, recipient, gpuIn, out, polFeeGusd, hookFeeGusd });
 
   await recordUserEvent(context.db, {
     keys,

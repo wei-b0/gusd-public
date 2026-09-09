@@ -9,13 +9,19 @@
  * pool outside the static filter" (gotcha #11): detectable by SQL
  * (canonical = true AND currency0 IS NULL), runbook = redeploy the indexer
  * with recomputed pool ids. No in-memory state here, ever.
+ *
+ * C-max fill accounting: GpuFill carries the hook's fills per swap (one row
+ * per fill source; `isBuy` IS the economic direction), and HookSwap carries
+ * the URC-2 swapper-view deltas for lens/conformance consumers. Pool volume
+ * = native-leg gUSD (the Swap handler) + Σ GpuFill.gusdAmount; hook fees =
+ * Σ GpuFill.protocolFee — no cross-handler netting pass, ever.
  */
 import { ponder } from "ponder:registry";
 import {
   gpuAssets,
-  hookFeeAccrued,
+  gpuFill,
   hookPoolRegistered,
-  hookFeesHarvested,
+  hookSwap,
   pools,
   protocolStats,
 } from "ponder:schema";
@@ -52,7 +58,6 @@ ponder.on("GPUHook:PoolRegistered", async ({ event, context }) => {
       sellVolumeGusd: 0n,
       hookFeesGusd: 0n,
       lpFeesGusdEst: 0n,
-      harvestedFeesGusd: 0n,
     })
     .onConflictDoUpdate({
       gpuId,
@@ -96,92 +101,80 @@ ponder.on("GPUHook:PoolRegistered", async ({ event, context }) => {
   }
 });
 
-ponder.on("GPUHook:TradingFeeAccrued", async ({ event, context }) => {
+ponder.on("GPUHook:GpuFill", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
-  const { poolId, gpuId, isBuy, gusdFee } = event.args;
+  const { poolId, gpuId, sender, isBuy, gpuAmount, gusdAmount, protocolFee, source } =
+    event.args;
+  // sender is the PoolManager in-lock — attribution rides the router's
+  // Buy/Sell events; the row documents it for the record.
+  void sender;
 
-  await context.db
-    .insert(hookFeeAccrued)
-    .values({ ...keys, poolId, gpuId, isBuy, gusdFee });
-
-  // The hook fee is funded by the swapper's gUSD input (v4 Swap deltas are
-  // the swapper's delta), so raw swap-delta volume includes it. The plan pins
-  // pool volume as fee-free: this event is the ONLY exact hook-fee source,
-  // and in log order it always follows its Swap within the same tx — so the
-  // netting here converges (delta-based, reorg-safe). Direction comes from
-  // the pool's lastSwapIsBuy (derived from the swapper delta by the Swap
-  // handler): the event's own isBuy flag carries the hook's `exactIn`, which
-  // is not the economic direction. Never net hook fees into lpFeesGusdEst.
-  const pool = await context.db.find(pools, { chainId: keys.chainId, poolId });
-  if (pool === null || pool === undefined) {
-    throw new Error(`TradingFeeAccrued for untracked pool ${poolId}`);
-  }
-  if (pool.lastSwapIsBuy === null || pool.lastSwapIsBuy === undefined) {
-    throw new Error(
-      `TradingFeeAccrued for pool ${poolId} with no preceding Swap — order invariant broken`,
-    );
-  }
-  const buySide = pool.lastSwapIsBuy;
-  await context.db.update(pools, { chainId: keys.chainId, poolId }).set({
-    hookFeesGusd: pool.hookFeesGusd + gusdFee,
-    volumeGusd: pool.volumeGusd - gusdFee,
-    buyVolumeGusd: buySide ? pool.buyVolumeGusd - gusdFee : pool.buyVolumeGusd,
-    sellVolumeGusd: buySide
-      ? pool.sellVolumeGusd
-      : pool.sellVolumeGusd - gusdFee,
+  await context.db.insert(gpuFill).values({
+    ...keys,
+    poolId,
+    gpuId,
+    sender,
+    isBuy,
+    gpuAmount,
+    gusdAmount,
+    protocolFee,
+    source,
   });
 
-  // Net the fee out of the same hour bucket its Swap filled (same tx → same
-  // block timestamp → same bucket) — pool volume stays fee-free in buckets
-  // exactly as it does in the cumulatives. Negative deltas are the designed
-  // mechanism here, not a hack.
-  await bumpPoolHourBucket(
-    context.db,
-    keys.chainId,
-    poolId,
-    keys.blockTimestamp,
-    {
-      volumeGusd: -gusdFee,
-      buyVolumeGusd: buySide ? -gusdFee : 0n,
-      sellVolumeGusd: buySide ? 0n : -gusdFee,
-      hookFeesGusd: gusdFee,
-    },
-  );
+  const pool = await context.db.find(pools, { chainId: keys.chainId, poolId });
+  if (pool === null || pool === undefined) {
+    throw new Error(`GpuFill for untracked pool ${poolId}`);
+  }
+  // gusdAmount is gross of the fill's protocol fee; volume keeps the gross
+  // gUSD the hook moved (the fee is counted separately, never netted back
+  // out with negative deltas).
+  const buySide = isBuy;
+  await context.db.update(pools, { chainId: keys.chainId, poolId }).set({
+    volumeGusd: pool.volumeGusd + gusdAmount,
+    buyVolumeGusd: buySide ? pool.buyVolumeGusd + gusdAmount : pool.buyVolumeGusd,
+    sellVolumeGusd: buySide ? pool.sellVolumeGusd : pool.sellVolumeGusd + gusdAmount,
+    hookFeesGusd: pool.hookFeesGusd + protocolFee,
+    lastSwapAtSec: keys.blockTimestamp,
+    lastSwapBlockNumber: keys.blockNumber,
+  });
+
+  await bumpPoolHourBucket(context.db, keys.chainId, poolId, keys.blockTimestamp, {
+    volumeGusd: gusdAmount,
+    buyVolumeGusd: buySide ? gusdAmount : 0n,
+    sellVolumeGusd: buySide ? 0n : gusdAmount,
+    hookFeesGusd: protocolFee,
+  });
 
   await context.db
     .insert(protocolStats)
     .values(zeroProtocolStats(keys.chainId))
     .onConflictDoUpdate((row) => ({
-      hookFeesGusd: row.hookFeesGusd + gusdFee,
+      hookFeesGusd: row.hookFeesGusd + protocolFee,
     }));
 
   await bumpDailyBucket(context.db, keys.chainId, keys.blockTimestamp, {
-    hookFeesGusd: gusdFee,
+    hookFeesGusd: protocolFee,
+  });
+
+  const asset = await context.db.find(gpuAssets, {
+    chainId: keys.chainId,
+    gpuId,
+  });
+  if (asset === null || asset === undefined) {
+    throw new Error(`GpuFill for untracked gpuId ${gpuId} — GpuCreated missing`);
+  }
+  await context.db.update(gpuAssets, { chainId: keys.chainId, gpuId }).set({
+    polFeesGusd: asset.polFeesGusd + protocolFee,
   });
 });
 
-ponder.on("GPUHook:TradingFeesHarvested", async ({ event, context }) => {
+ponder.on("GPUHook:HookSwap", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
-  const { poolId, amount } = event.args;
-
+  const { id, sender, amount0, amount1, swapFee } = event.args;
+  // Lens/conformance tape only — volume and fees come from GpuFill.
   await context.db
-    .insert(hookFeesHarvested)
-    .values({ ...keys, poolId, amount });
-
-  const pool = await context.db.find(pools, { chainId: keys.chainId, poolId });
-  if (pool === null || pool === undefined) {
-    throw new Error(`TradingFeesHarvested for untracked pool ${poolId}`);
-  }
-  await context.db
-    .update(pools, { chainId: keys.chainId, poolId })
-    .set({ harvestedFeesGusd: pool.harvestedFeesGusd + amount });
-
-  await context.db
-    .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
-    .onConflictDoUpdate((row) => ({
-      harvestedFeesGusd: row.harvestedFeesGusd + amount,
-    }));
+    .insert(hookSwap)
+    .values({ ...keys, poolId: id, sender, amount0, amount1, swapFee });
 });
 
 ponder.on("GPUHook:HookFeeBpsSet", async ({ event, context }) => {

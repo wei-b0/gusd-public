@@ -52,10 +52,12 @@ describe("canonical pool derivation", () => {
 
   it("the hook ABI the key points at carries the swap permissions surface", () => {
     // Sanity: the synced GPU hook ABI is the swap-bearing contract, not a
-    // stand-in — beforeSwap/afterSwap entries must exist.
+    // stand-in — beforeSwap/afterSwap entries must exist, plus a hook-market
+    // canary (fees route to the ledger in-swap now; there is no harvest).
     const names = GPU_HOOK_ABI.map((e) => ("name" in e ? e.name : ""));
     expect(names).toContain("beforeSwap");
     expect(names).toContain("afterSwap");
-    expect(names).toContain("harvestTradingFees");
+    expect(names).toContain("polState");
+    expect(names).not.toContain("harvestTradingFees");
   });
 });

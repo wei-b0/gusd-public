@@ -26,8 +26,7 @@ function execution(block: number, logIndex = 1): ExecutionDto {
     payer: null,
     gpuAmount: "2000000000000000000",
     gUsdAmount: "5000000",
-    poolLegGpu: "1500000000000000000",
-    issuanceLegGpu: "500000000000000000",
+    polFeeGusd: "0",
     issuanceFeeGusd: "10000",
     hookFeeGusd: "0",
   };

@@ -26,7 +26,6 @@ export function zeroProtocolStats(chainId: number): ProtocolStatsInsert {
     sellVolumeGusd: 0n,
     hookFeesGusd: 0n,
     lpFeesGusdEst: 0n,
-    harvestedFeesGusd: 0n,
     revenueDistributedGusd: 0n,
     revenueToVaultGusd: 0n,
     revenueToTreasuryGusd: 0n,

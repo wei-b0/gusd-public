@@ -11,24 +11,22 @@ import {WETH} from "solmate/src/tokens/WETH.sol";
 import {IWETH9} from "@uniswap/v4-periphery/interfaces/external/IWETH9.sol";
 import {PositionManager} from "@uniswap/v4-periphery/PositionManager.sol";
 import {PositionDescriptor} from "@uniswap/v4-periphery/PositionDescriptor.sol";
-import {V4Quoter} from "@uniswap/v4-periphery/lens/V4Quoter.sol";
-import {IV4Quoter} from "@uniswap/v4-periphery/interfaces/IV4Quoter.sol";
 import {Actions} from "@uniswap/v4-periphery/libraries/Actions.sol";
 import {Planner, Plan} from "v4-periphery-test/shared/Planner.sol";
 import {GpuRouter, GpuRouterTestBase} from "../unit/GpuRouter.t.sol";
+import {GpuQuoter} from "../../src/lens/GpuQuoter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice External-LP integration: production periphery (Permit2 -> Position
 ///         Manager) provisioning the canonical, hook-gated pool, plus quoter
 ///         parity. The hook has no liquidity permissions, so LP operations must
-///         never touch the trading-fee counters, and swaps must accrue LP pool
+///         never touch the hook's fill counters, and swaps must accrue LP pool
 ///         fees (direction-denominated) INDEPENDENTLY of the hook fee.
 abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 {
     using PoolIdLibrary for PoolKey;
 
     IAllowanceTransfer internal permit2;
     PositionManager internal lpm;
-    V4Quoter internal quoter;
     WETH internal weth;
 
     function _wantGusdIsCurrency0() internal view virtual override returns (bool);
@@ -41,7 +39,6 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         permit2 = IAllowanceTransfer(deployPermit2());
         PositionDescriptor descriptor = new PositionDescriptor(IPoolManager(address(manager)), address(weth), "ETH");
         lpm = new PositionManager(IPoolManager(address(manager)), permit2, 100_000, descriptor, IWETH9(address(weth)));
-        quoter = new V4Quoter(IPoolManager(address(manager)));
     }
 
     // ------------------------------------------------------------- helpers
@@ -109,7 +106,12 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         _approvePosm(alice, address(gpu));
         tokenId = lpm.nextTokenId();
         vm.startPrank(alice);
-        lpm.modifyLiquidities(_mintEncoded(_canonicalKey(), -120, 120, liquidity, alice), block.timestamp + 1);
+        // straddle the pool anchor (the pool initializes at the oracle
+        // reference tick, not 0): an out-of-range position adds no
+        // in-range liquidity and returns one-sided tokens
+        lpm.modifyLiquidities(
+            _mintEncoded(_canonicalKey(), initTick - 120, initTick + 120, liquidity, alice), block.timestamp + 1
+        );
         vm.stopPrank();
         assertEq(lpm.ownerOf(tokenId), alice);
     }
@@ -131,8 +133,8 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
 
     function test_lpOperations_doNotTouchHookCounters() public {
         uint256 tokenId = _setUpLpAlice(1e15);
-        uint256 totalBefore = hook.totalTradingFeesAccrued();
-        uint256 poolBefore = hook.poolTradingFeesAccrued(_poolId());
+        uint256 totalBefore = hook.totalHookFeesGusd();
+        uint256 polBefore = hook.totalPolFeesGusd();
 
         vm.startPrank(alice);
         lpm.modifyLiquidities(_increaseEncoded(tokenId, _canonicalKey(), 1e14), block.timestamp + 1);
@@ -140,26 +142,32 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         lpm.modifyLiquidities(_collectEncoded(tokenId, _canonicalKey()), block.timestamp + 1);
         vm.stopPrank();
 
-        assertEq(hook.totalTradingFeesAccrued(), totalBefore, "hook fee moved on LP op");
-        assertEq(hook.poolTradingFeesAccrued(_poolId()), poolBefore);
-        assertEq(hook.totalTradingFeesHarvested(), 0);
+        assertEq(hook.totalHookFeesGusd(), totalBefore, "hook fee moved on LP op");
+        assertEq(hook.totalPolFeesGusd(), polBefore, "POL fee moved on LP op");
     }
 
     function test_buy_accruesLpFeeInGusd_andHookFee_independently() public {
         uint256 tokenId = _setUpLpAlice(1e15);
-        uint256 hookBefore = hook.totalTradingFeesAccrued();
+        uint256 hookBefore = hook.totalHookFeesGusd();
         uint256 aliceGusdBefore = IERC20(address(gusd)).balanceOf(alice);
         uint256 aliceGpuBefore = IERC20(address(gpu)).balanceOf(alice);
 
-        _dealGusd(bob, 1_000_000e6);
+        // a buy far beyond the native book's edge: the native leg pays the
+        // LP fee, the backstop tail pays the hook fee — independently.
+        // (router pulls the full maxPaid up front: fund bob accordingly)
+        _dealGusd(bob, 10_000_000e6);
         vm.startPrank(bob);
         IERC20(address(gusd)).approve(address(router), type(uint256).max);
-        uint256 gpuOut = router.buyExactIn(GPU_ID, 1_000e6, 0, 0, bob);
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: GPU_ID, gpuOut: 100e18, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: bob
+            })
+        );
         vm.stopPrank();
-        assertGt(gpuOut, 0);
 
-        // protocol trading fee: gUSD-denominated, accrued to the hook
-        assertGt(hook.totalTradingFeesAccrued(), hookBefore);
+        // hook fee on the backstop fill: gUSD-denominated counter
+        assertGt(hook.totalHookFeesGusd(), hookBefore);
 
         // LP pool fee: accrued in gUSD (input currency on BUY), collectable via PM
         bytes memory collectCalls = _collectEncoded(tokenId, _canonicalKey());
@@ -171,16 +179,18 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
 
     function test_sell_accruesLpFeeInGpu_andHookFeeInGusd() public {
         uint256 tokenId = _setUpLpAlice(1e15);
-        uint256 hookBefore = hook.totalTradingFeesAccrued();
+        uint256 hookBefore = hook.totalHookFeesGusd();
         uint256 aliceGpuBefore = IERC20(address(gpu)).balanceOf(alice);
         uint256 aliceGusdBefore = IERC20(address(gusd)).balanceOf(alice);
 
+        // 100 GPU crosses the native bid edge: the native leg accrues the LP
+        // fee in GPU, the POL bid tail pays the hook fee (on net POL spend)
         GpuRouter.SellParams memory p = GpuRouter.SellParams({
-            gpuId: GPU_ID, gpuIn: 5e18, payout: address(gusd), minOut: 1, sqrtLimitX96: 0, recipient: bob
+            gpuId: GPU_ID, gpuIn: 100e18, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0, recipient: bob
         });
         vm.prank(bob);
         router.sell(p);
-        assertGt(hook.totalTradingFeesAccrued() - hookBefore, 0, "no hook fee on sell");
+        assertGt(hook.totalHookFeesGusd() - hookBefore, 0, "no hook fee on sell");
 
         // LP pool fee: accrued in GPU (input currency on SELL)
         bytes memory collectCalls = _collectEncoded(tokenId, _canonicalKey());
@@ -206,32 +216,24 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
 
     function test_quoter_buyExactIn_matchesExecutedSwap() public {
         _setUpLpAlice(1e15);
-        (uint256 quoted,) = quoter.quoteExactInputSingle(
-            IV4Quoter.QuoteExactSingleParams({
-                poolKey: _canonicalKey(), zeroForOne: gIsC0, exactAmount: 1_000e6, hookData: ""
-            })
-        );
-        assertGt(quoted, 0);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuy(_canonicalKey(), 1_000e6);
+        assertGt(q.gpuOut, 0);
 
         _dealGusd(bob, 1_000_000e6);
         vm.startPrank(bob);
         IERC20(address(gusd)).approve(address(router), type(uint256).max);
-        uint256 gpuOut = router.buyExactIn(GPU_ID, 1_000e6, quoted, 0, bob);
+        uint256 gpuOut = router.buyExactIn(GPU_ID, 1_000e6, q.gpuOut, 0, 0, bob);
         vm.stopPrank();
 
-        // the quoter runs the hook, so LP fee + hook fee are already inside
-        assertEq(gpuOut, quoted);
+        // the quoter runs the REAL hook, so LP fee + hook fee are inside
+        assertEq(gpuOut, q.gpuOut);
     }
 
     function test_quoter_buyExactOut_paidMatchesQuote() public {
         _setUpLpAlice(1e15);
         uint256 gpuWanted = 2e12; // raw gpu-wei
-        (uint256 quotedIn,) = quoter.quoteExactOutputSingle(
-            IV4Quoter.QuoteExactSingleParams({
-                poolKey: _canonicalKey(), zeroForOne: gIsC0, exactAmount: uint128(gpuWanted), hookData: ""
-            })
-        );
-        assertGt(quotedIn, 0);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuWanted);
+        assertGt(q.gusdIn, 0);
 
         _dealGusd(bob, 10_000_000e6);
         vm.startPrank(bob);
@@ -239,17 +241,16 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         GpuRouter.BuyParams memory p = GpuRouter.BuyParams({
             gpuId: GPU_ID,
             gpuOut: gpuWanted,
-            poolGpuOut: gpuWanted,
-            issueGpuOut: 0,
             payment: address(gusd),
-            maxPaid: quotedIn,
+            maxPaid: q.gusdIn,
+            deadline: 0,
             sqrtLimitX96: 0,
             recipient: bob
         });
         uint256 paid = router.buy(p);
         vm.stopPrank();
 
-        assertEq(paid, quotedIn, "executed cost != quoted cost");
+        assertEq(paid, q.gusdIn, "executed cost != quoted cost");
     }
 
     function test_mint_revertsWithoutPermit2Allowance() public {

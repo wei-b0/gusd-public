@@ -28,12 +28,12 @@ export const GPU_ROUTER_ABI = [
   },
   {
     "type": "error",
-    "name": "DustLeft",
+    "name": "DeadlinePassed",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "LegMismatch",
+    "name": "DustLeft",
     "inputs": []
   },
   {
@@ -49,11 +49,6 @@ export const GPU_ROUTER_ABI = [
   {
     "type": "error",
     "name": "NotPoolManager",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "PoolShortfall",
     "inputs": []
   },
   {
@@ -132,19 +127,13 @@ export const GPU_ROUTER_ABI = [
         "internalType": "uint256"
       },
       {
-        "name": "poolGpuOut",
+        "name": "polFeeGusd",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
       },
       {
-        "name": "issueGpuOut",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "hookFee",
+        "name": "hookFeeGusd",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -187,7 +176,13 @@ export const GPU_ROUTER_ABI = [
         "internalType": "uint256"
       },
       {
-        "name": "hookFee",
+        "name": "polFeeGusd",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "hookFeeGusd",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -215,22 +210,17 @@ export const GPU_ROUTER_ABI = [
             "internalType": "uint256"
           },
           {
-            "name": "poolGpuOut",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "issueGpuOut",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
             "name": "payment",
             "type": "address",
             "internalType": "address"
           },
           {
             "name": "maxPaid",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
             "type": "uint256",
             "internalType": "uint256"
           },
@@ -272,6 +262,11 @@ export const GPU_ROUTER_ABI = [
       },
       {
         "name": "minGpuOut",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "deadline",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -373,6 +368,11 @@ export const GPU_ROUTER_ABI = [
           },
           {
             "name": "minOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
             "type": "uint256",
             "internalType": "uint256"
           },

@@ -290,11 +290,11 @@ describe("buy plans", () => {
     expect(h.simReq?.args[0]).toEqual({
       gpuId: GPU_ID,
       gpuOut: parseGpuUnits(2),
-      poolGpuOut: parseGpuUnits(1.5),
-      issueGpuOut: parseGpuUnits(0.5),
       payment: GUSD,
       maxPaid: parseGusd(5.2525),
+      deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
+      recipient: OWNER,
     });
 
     const spec = plan.buildSpec();
@@ -340,7 +340,9 @@ describe("sell plans", () => {
       gpuIn: parseGpuUnits(2),
       payout: GUSD,
       minOut: parseGusd(1.9),
+      deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
+      recipient: OWNER,
     });
 
     const spec = plan.buildSpec();

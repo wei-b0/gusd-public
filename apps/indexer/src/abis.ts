@@ -40,10 +40,11 @@ export const gpuTokenAbi = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ]);
 
-/** GpuRouter — routed executions (pool leg + issuance leg). */
+/** GpuRouter — routed executions (one composed hook swap per trade; the
+ *  hook's GpuFill events decompose the fill sources on the same tx). */
 export const routerAbi = parseAbi([
-  "event Buy(bytes32 indexed gpuId, address indexed recipient, address indexed payer, uint256 gpuOut, uint256 paid, uint256 poolGpuOut, uint256 issueGpuOut, uint256 hookFee, uint256 issuanceFee)",
-  "event Sell(bytes32 indexed gpuId, address indexed recipient, uint256 gpuIn, uint256 out, uint256 hookFee)",
+  "event Buy(bytes32 indexed gpuId, address indexed recipient, address indexed payer, uint256 gpuOut, uint256 paid, uint256 polFeeGusd, uint256 hookFeeGusd, uint256 issuanceFee)",
+  "event Sell(bytes32 indexed gpuId, address indexed recipient, uint256 gpuIn, uint256 out, uint256 polFeeGusd, uint256 hookFeeGusd)",
 ]);
 
 /** StableRouter — stable funding flows into/out of gUSD. StableUpdated
@@ -60,24 +61,28 @@ export const ledgerAbi = parseAbi([
   "event RecipientsUpdated(address vault, address treasury)",
 ]);
 
-/** GPUHook — canonical pool registration + gUSD trading-fee capture. */
+/** GPUHook — the oracle-priced market maker. PoolRegistered is the
+ *  canonicality signal; HookSwap/GpuFill carry the hook's fills per swap
+ *  (URC-2 swapper-view deltas + per-source decomposition). PolFeeCharged and
+ *  FeesHarvested are declared on the contract but never emitted (fees ride
+ *  GpuFill.protocolFee and settle straight to the revenue ledger in-lock)
+ *  and are deliberately not fetched. */
 export const hookAbi = parseAbi([
   "event PoolRegistered(bytes32 indexed poolId, bytes32 indexed gpuId)",
-  "event TradingFeeAccrued(bytes32 indexed poolId, bytes32 indexed gpuId, bool indexed isBuy, uint256 gusdFee)",
-  "event TradingFeesHarvested(bytes32 indexed poolId, uint256 amount)",
+  "event HookSwap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint24 swapFee)",
+  "event GpuFill(bytes32 indexed poolId, bytes32 indexed gpuId, address indexed sender, bool isBuy, uint256 gpuAmount, uint256 gusdAmount, uint256 protocolFee, uint8 source)",
   "event HookFeeBpsSet(uint16 oldFeeBps, uint16 newFeeBps)",
 ]);
 
-/** GPUMarketLiquidity (POL) — oracle-anchored bid/ask bands funded by
- *  primary principal. RefsSet (one-shot wiring, no consumer) and
- *  PrincipalPending (redundant with Issued.base — the issuance handler
- *  already accumulates principalContributedGusd) are deliberately not
- *  fetched. */
+/** GPUMarketLiquidity — the market-making inventory vault (hook-only
+ *  custody). BidCredited/GpuNoted delta-track polGusd/polGpu on gpu_assets;
+ *  InventoryPulled carries the hook's draws. PrincipalNoted is redundant
+ *  with Issued.base (the issuance handler already accumulates
+ *  principalContributedGusd) and is deliberately not fetched. */
 export const marketLiquidityAbi = parseAbi([
-  "event BandPlaced(bytes32 indexed gpuId, bytes32 indexed poolId, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 gusdPlaced, uint256 gpuPlaced, bool bidSide)",
-  "event BandRemoved(bytes32 indexed gpuId, bytes32 indexed poolId, int24 tickLower, int24 tickUpper, uint256 recoveredGusd, uint256 recoveredGpu)",
-  "event Recentred(bytes32 indexed gpuId, uint256 bandsRemoved, uint256 gusdRecovered, uint256 gpuRecovered)",
-  "event FeesCollected(bytes32 indexed gpuId, uint256 gusdToLedger, uint256 gpuToInventory)",
+  "event BidCredited(bytes32 indexed gpuId, uint256 amount)",
+  "event GpuNoted(bytes32 indexed gpuId, uint256 amount)",
+  "event InventoryPulled(bytes32 indexed gpuId, address token, uint256 amount, bool isGusd)",
 ]);
 
 /** GPUPriceOracle — onchain publications (transparency/comparison only).

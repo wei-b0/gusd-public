@@ -4,17 +4,12 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
     "type": "constructor",
     "inputs": [
       {
-        "name": "poolManager_",
-        "type": "address",
-        "internalType": "contract IPoolManager"
-      },
-      {
         "name": "gUSD_",
         "type": "address",
-        "internalType": "contract GUSD"
+        "internalType": "contract IERC20"
       },
       {
-        "name": "revenueLedger_",
+        "name": "poolManager_",
         "type": "address",
         "internalType": "address"
       },
@@ -28,32 +23,32 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "error",
-    "name": "BandIndexOutOfRange",
+    "name": "AlreadySet",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "BandRangeInvalid",
+    "name": "CustodyBacked",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotIssuance",
+    "name": "InsufficientAskInventory",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotPoolManager",
+    "name": "InsufficientBidInventory",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NothingToRecenter",
+    "name": "OnlyHook",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "OraclePriceRange",
+    "name": "OnlyIssuance",
     "inputs": []
   },
   {
@@ -85,21 +80,6 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "error",
-    "name": "RefsAlreadySet",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "RefsIncomplete",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "RefsNotSet",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -111,12 +91,12 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "error",
-    "name": "UnexpectedDelta",
+    "name": "UnknownGpuId",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "UnknownGpuId",
+    "name": "ZeroAddress",
     "inputs": []
   },
   {
@@ -126,7 +106,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "event",
-    "name": "BandPlaced",
+    "name": "BidCredited",
     "inputs": [
       {
         "name": "gpuId",
@@ -135,114 +115,60 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
         "internalType": "bytes32"
       },
       {
-        "name": "poolId",
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "GpuNoted",
+    "inputs": [
+      {
+        "name": "gpuId",
         "type": "bytes32",
         "indexed": true,
-        "internalType": "PoolId"
+        "internalType": "bytes32"
       },
       {
-        "name": "tickLower",
-        "type": "int24",
+        "name": "amount",
+        "type": "uint256",
         "indexed": false,
-        "internalType": "int24"
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "InventoryPulled",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
       },
       {
-        "name": "tickUpper",
-        "type": "int24",
+        "name": "token",
+        "type": "address",
         "indexed": false,
-        "internalType": "int24"
+        "internalType": "address"
       },
       {
-        "name": "liquidity",
-        "type": "uint128",
-        "indexed": false,
-        "internalType": "uint128"
-      },
-      {
-        "name": "gusdPlaced",
+        "name": "amount",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
       },
       {
-        "name": "gpuPlaced",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "bidSide",
+        "name": "isGusd",
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "BandRemoved",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "poolId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "PoolId"
-      },
-      {
-        "name": "tickLower",
-        "type": "int24",
-        "indexed": false,
-        "internalType": "int24"
-      },
-      {
-        "name": "tickUpper",
-        "type": "int24",
-        "indexed": false,
-        "internalType": "int24"
-      },
-      {
-        "name": "recoveredGusd",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "recoveredGpu",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "FeesCollected",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "gusdToLedger",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "gpuToInventory",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -287,7 +213,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "event",
-    "name": "PrincipalPending",
+    "name": "PrincipalNoted",
     "inputs": [
       {
         "name": "gpuId",
@@ -305,56 +231,6 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "Recentred",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "bandsRemoved",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "gusdRecovered",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "gpuRecovered",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "RefsSet",
-    "inputs": [
-      {
-        "name": "issuance",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "hook",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
     "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
@@ -363,7 +239,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "function",
-    "name": "bandCount",
+    "name": "askInventoryGpu",
     "inputs": [
       {
         "name": "gpuId",
@@ -382,90 +258,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "function",
-    "name": "bandRange",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "index",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "tickLower",
-        "type": "int24",
-        "internalType": "int24"
-      },
-      {
-        "name": "tickUpper",
-        "type": "int24",
-        "internalType": "int24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "bandView",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "index",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "liquidity",
-        "type": "uint128",
-        "internalType": "uint128"
-      },
-      {
-        "name": "gusdHeld",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "gpuHeld",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "gusdPlaced",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "gpuPlaced",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeGrowthInside0X128",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeGrowthInside1X128",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "bidDepth",
+    "name": "bidInventoryGusd",
     "inputs": [
       {
         "name": "gpuId",
@@ -475,7 +268,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
     ],
     "outputs": [
       {
-        "name": "depth",
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -484,20 +277,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "function",
-    "name": "collect",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "collect",
+    "name": "creditBidFromTrade",
     "inputs": [
       {
         "name": "gpuId",
@@ -505,56 +285,13 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
         "internalType": "bytes32"
       },
       {
-        "name": "from",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "to",
+        "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "deployPending",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "placed",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "feesPendingGusd",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -564,26 +301,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
       {
         "name": "",
         "type": "address",
-        "internalType": "contract GUSD"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "gpuInventory",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "internalType": "contract IERC20"
       }
     ],
     "stateMutability": "view"
@@ -613,6 +331,24 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "noteGpu",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -660,156 +396,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "function",
-    "name": "pendingPrincipal",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "placeAskFromInventory",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "placed",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "poolManager",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IPoolManager"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "principalContributed",
-    "inputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "recenter",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "maxBands",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "force",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "recenter",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "maxBands",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "removed",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "renounceOwnership",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "residualOf",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "revenueLedger",
     "inputs": [],
     "outputs": [
       {
@@ -819,6 +406,68 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "principalContributed",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pullGpuToManager",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "pullGusdToManager",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "renounceOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -840,7 +489,7 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
   },
   {
     "type": "function",
-    "name": "totalPrincipalContributed",
+    "name": "totalBidGusd",
     "inputs": [],
     "outputs": [
       {
@@ -862,25 +511,6 @@ export const GPU_MARKET_LIQUIDITY_ABI = [
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "unlockCallback",
-    "inputs": [
-      {
-        "name": "data",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
     "stateMutability": "nonpayable"
   }
 ] as const;

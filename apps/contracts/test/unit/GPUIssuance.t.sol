@@ -34,13 +34,13 @@ contract GPUIssuanceTest is Test {
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         oracle = new MockGPUPriceOracle(address(this));
         poolManager = new PoolManager(address(this));
-        pol = new GPUMarketLiquidity(IPoolManager(address(poolManager)), gusd, ledger, address(this));
+        pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(poolManager), address(this));
         issuance = new GPUIssuance(
             IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this)
         );
         gusd.setRevenueSink(ledger); // any sink ok for tests
-        pol.setRefs(address(issuance), address(0)); // minimal rig: no hook
-        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60, 600, 120);
+        pol.setRefs(address(issuance), makeAddr("hookless")); // minimal rig: no hook calls
+        issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         issuance.setIssuanceEnabled(H100, true);
         oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         // fund alice with gUSD
@@ -60,9 +60,9 @@ contract GPUIssuanceTest is Test {
         // fee = ceil(250_000_000 * 50 / 10_000) = 1_250_000 = 1.25 gUSD
         assertEq(fee, 1_250_000);
         assertEq(GPUToken(issuance.tokenOf(H100)).balanceOf(alice), 100e18);
-        // principal -> POL custody: pending (no pool in this rig), counted
-        // as contributed on arrival; issuance holds zero gUSD at rest
-        assertEq(pol.pendingPrincipal(H100), 250_000_000);
+        // principal -> vault custody: bid capacity immediately (the staging
+        // phase is gone); issuance holds zero gUSD at rest
+        assertEq(pol.bidInventoryGusd(H100), 250_000_000);
         assertEq(pol.principalContributed(H100), 250_000_000);
         assertEq(gusd.balanceOf(address(pol)), 250_000_000);
         assertEq(gusd.balanceOf(ledger), 1_250_000);
@@ -149,7 +149,7 @@ contract GPUIssuanceTest is Test {
     function test_create2Determinism() public {
         address t1 = issuance.tokenOf(H100);
         vm.expectRevert(GPUIssuance.GpuAlreadyExists.selector);
-        issuance.createGpu(H100, "x", "x", 0, 3000, 60, 600, 120);
+        issuance.createGpu(H100, "x", "x", 0, 3000, 60);
         // salt == gpuId: recreated independently it would land at same address
         GPUToken tok = GPUToken(t1);
         assertEq(tok.issuer(), address(issuance));
@@ -182,8 +182,8 @@ contract GPUIssuanceTest is Test {
         uint256 custodyBefore = gusd.balanceOf(address(pol));
         vm.prank(alice);
         (uint256 base,) = issuance.issue(H100, amount, alice);
-        // cumulative accounting grows by exactly base; custody matches (no
-        // pool in this rig -> all principal stays pending on the POL)
+        // cumulative accounting grows by exactly base; custody matches (the
+        // principal sits in the vault as bid capacity in this minimal rig)
         assertEq(pol.principalContributed(H100), contributedBefore + base);
         assertEq(gusd.balanceOf(address(pol)), custodyBefore + base);
         assertEq(gusd.balanceOf(address(issuance)), 0);
@@ -210,7 +210,7 @@ contract GPUIssuanceTest is Test {
     // ------------------------------------- quoteIssue == issue guards
 
     function test_quoteIssue_revertsOnUnpublishedGpu() public {
-        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60, 600, 120);
+        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60);
         issuance.setIssuanceEnabled(H200, true);
         // known + enabled, but the oracle never published it: price 0
         vm.expectRevert(GPUIssuance.OraclePriceZero.selector);
@@ -268,9 +268,37 @@ contract GPUIssuanceTest is Test {
     }
 
     function test_oracleSqrtPriceX96_revertsOnUnpublishedGpu() public {
-        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60, 600, 120);
+        issuance.createGpu(H200, "H200 141GB GPU-hour", "H200", 50, 3000, 60);
         vm.expectRevert(GPUIssuance.OraclePriceZero.selector);
         issuance.oracleSqrtPriceX96(H200);
+    }
+
+    // ------------------------------------- in-swap backstop entry points
+
+    function test_quoteIssueCredited_matchesQuoteIssue() public view {
+        (uint256 b1, uint256 f1, uint256 t1) = issuance.quoteIssueCredited(H100, 100e18);
+        (uint256 b2, uint256 f2, uint256 t2) = issuance.quoteIssue(H100, 100e18);
+        assertEq(b1, b2);
+        assertEq(f1, f2);
+        assertEq(t1, t2);
+    }
+
+    function test_issueCredited_isHookOnly() public {
+        vm.prank(alice);
+        vm.expectRevert(); // the hook is address(0) in this minimal rig
+        issuance.issueCredited(H100, 1e18, alice, 3_000_000);
+    }
+
+    function test_quoteIssueCredited_revertsWhenDisabled() public {
+        issuance.setIssuanceEnabled(H100, false);
+        vm.expectRevert(GPUIssuance.IssuanceDisabled.selector);
+        issuance.quoteIssueCredited(H100, 1e18);
+    }
+
+    function test_quoteIssueCredited_revertsOnStaleOracle() public {
+        oracle.setPrice(H100, 25_000, block.timestamp - issuance.maxOracleStaleness() - 1);
+        vm.expectRevert(GPUIssuance.OracleStale.selector);
+        issuance.quoteIssueCredited(H100, 1e18);
     }
 
     function Math__mulDiv(uint256 a, uint256 b, uint256 d) internal pure returns (uint256) {
