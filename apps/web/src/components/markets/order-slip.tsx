@@ -1,28 +1,41 @@
 "use client";
 
 /**
- * OrderSlip — the trade furniture inside the Trade panel. Quotes come from
- * the router stack itself (the contract's own quoteIssue and the
- * hook-aware V4Quoter — the same pricing path execution runs); execution
- * re-quotes fresh at submit and runs through the action runner, so every
- * submit walks quote → approval → signature → confirmation as one visible
- * action, bounded by the signed max/min rather than the displayed numbers.
- * The reference price stays the one price the desk displays; when the data
- * layer asserts none, the slip goes dormant rather than quoting against
- * nothing. The quote ledger prints at ledger grade (fixed 4 decimals) so
- * its rows visibly close, and it carries only the execution's own
- * arithmetic — estimate, proceeds, signed bound.
+ * OrderSlip — the trade furniture inside the Trade panel. Every order
+ * names its basis: money-first (the default — type the gUSD to spend on a
+ * buy, or the gUSD to receive on a sell, and see the approx units) or
+ * size-first (type the units). Quotes come from the router stack itself
+ * (the contract's own quoteIssue and the hook-aware GpuQuoter — the same
+ * pricing path execution runs); execution re-quotes fresh at submit and
+ * runs through the action runner, so every submit walks quote → approval →
+ * signature → confirmation as one visible action, bounded by the signed
+ * limits rather than the displayed numbers. Money-first buys pull the
+ * typed spend exactly — nothing is refunded — so their cap row reads the
+ * typed amount and the guarantee is the minimum-units floor; money-first
+ * sells sign a payout floor. Pricing has one authoritative source on the
+ * frontend: the API. Every figure the ledger prints derives from that
+ * one price — the Price row restates it verbatim, and the ~ rows are
+ * the typed order run through it — so hero, chart, feed, and ticket all
+ * quote the same number and the eye never catches a second truth. The
+ * chain oracle refines only the bound rows, and only on its favorable
+ * side: a lower oracle lifts a receive floor, a higher one raises a pay
+ * cap; otherwise the bound stays on the anchor. What the contracts
+ * actually fill is signed fresh at submit from a live quote — any gap
+ * between the anchored ledger and the fill is slippage, read in the
+ * receipt, never a second displayed price. When the data layer asserts
+ * no reference price, the slip goes dormant rather than quoting against
+ * nothing.
  *
  * Unavailable markets speak in place: an unregistered asset, a closed
  * issuance, or an empty pool each get their own honest voice — never a
  * silent dead button.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ActionRecord } from "@/domain/actions";
-import type { TradeAvailability, TradeQuote, TradeSide } from "@/domain/types";
+import type { TradeAvailability, TradeQuote, TradeRequest, TradeSide } from "@/domain/types";
 import { parseAssetId } from "@/domain/types";
-import { fmtGusdLedger, fmtUnits } from "@/domain/format";
+import { fmtGusdLedger, fmtUnits, fmtUnitsLedger } from "@/domain/format";
 import { Pair } from "@/components/ui/pair";
 import { ActionStatus } from "@/components/ui/action-status";
 import { WalletlessNote } from "@/components/ui/walletless-note";
@@ -38,13 +51,27 @@ export interface OrderSlipProps {
 /** Debounce for the async quote calls — one per settled input, not one per keystroke. */
 const QUOTE_DEBOUNCE_MS = 250;
 
+/** The gUSD-value presets in money-first mode, and the unit presets in
+ *  size-first mode — each sized to the orders that basis invites. */
+const GUSD_PRESETS = [10, 50, 100] as const;
+const UNIT_PRESETS = [1, 4, 10] as const;
+
+/** MAX writes the exact holding into the input — a rounded-up max would
+ *  fail its own pre-flight. Balances arrive at 6-decimals grain; a sell's
+ *  position is floored to that grain before it ever reaches the input. */
+function maxText(value: number): string {
+  return value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
   const session = useWalletSession();
   const active = useActiveAction("trade");
   const [side, setSide] = useState<TradeSide>("buy");
-  const [sizeText, setSizeText] = useState("1");
+  const [mode, setMode] = useState<"gusd" | "units">("gusd");
+  const [unitsText, setUnitsText] = useState("1");
+  const [gusdText, setGusdText] = useState("10");
   const [toleranceBps, setToleranceBps] = useState(DEFAULT_TOLERANCE_BPS);
   const [availability, setAvailability] = useState<TradeAvailability | null | undefined>(undefined);
   /** undefined = quoting, null = the chain can't quote this order, else the quote. */
@@ -52,8 +79,12 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const size = Number(sizeText);
-  const validSize = Number.isFinite(size) && size > 0;
+  // Per-mode text survives toggles and side switches — switching basis
+  // never throws away what the user already typed there.
+  const activeText = mode === "gusd" ? gusdText : unitsText;
+  const activeValue = Number(activeText);
+  const validInput = Number.isFinite(activeValue) && activeValue > 0;
+  const setActiveText = mode === "gusd" ? setGusdText : setUnitsText;
   const asset = parseAssetId(assetId);
   const connected = session.status === "connected" && account.connected;
 
@@ -80,15 +111,19 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   // marks the in-flight window so the "can't quote" voice only speaks
   // once the chain has actually answered.
   useEffect(() => {
-    if (!asset || !validSize || referencePrice === null) {
+    if (!asset || !validInput || referencePrice === null) {
       setQuote(null);
       return;
     }
     let alive = true;
     setQuote(undefined);
     const timer = setTimeout(() => {
+      const request: TradeRequest =
+        mode === "gusd"
+          ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
+          : { asset, side, basis: "units", size: activeValue, toleranceBps };
       trading
-        .quote({ asset, side, size, toleranceBps })
+        .quote(request)
         .then((q) => {
           if (alive) setQuote(q);
         })
@@ -100,14 +135,26 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       alive = false;
       clearTimeout(timer);
     };
-  }, [trading, asset, side, size, validSize, toleranceBps, referencePrice, settled]);
+  }, [trading, asset, side, mode, activeValue, validInput, toleranceBps, referencePrice, settled]);
 
   const position = account.positions.find((p) => p.asset === assetId);
 
   // Keep the receipt visible; reset to idle when the user changes inputs.
   useEffect(() => {
     setSettled((s) => (s ? null : s));
-  }, [sizeText, side, toleranceBps]);
+  }, [unitsText, gusdText, side, toleranceBps]);
+
+  // The wallet context row — what this side draws on, with MAX where the
+  // basis can consume it: the whole balance in money-first buys, the
+  // whole holding in size-first sells. A buy in units mode or a sell in
+  // money-first mode shows the figure without a key (there is no exact
+  // inversion to fill).
+  const context =
+    connected && side === "buy"
+      ? { label: `balance ${fmtGusdLedger(account.gUsdBalance)} gUSD`, max: account.gUsdBalance, canMax: mode === "gusd" }
+      : connected && position && position.size > 0
+        ? { label: `holding ${fmtUnits(position.size)} ${assetId}`, max: Math.floor(position.size * 1e6) / 1e6, canMax: mode === "units" }
+        : null;
 
   // The availability gate, in the design system's amber voice. Undefined
   // is "still checking", null is "the chain has no such market".
@@ -119,7 +166,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       gate = "No secondary depth yet — sells open when the pool holds liquidity.";
     } else if (side === "buy" && !availability.issuanceEnabled && !availability.poolRegistered) {
       gate = "Neither issuance nor a market is open for this asset yet — orders wait for the operator.";
-    } else if (side === "sell" && quote === null && referencePrice !== null && validSize) {
+    } else if (side === "sell" && quote === null && referencePrice !== null && validInput) {
       // Registered but unquotable — at genesis that's an empty pool. The
       // dashes say "no numbers"; this says why.
       gate = "Nothing to quote this sell against yet — the pool holds no depth.";
@@ -132,14 +179,18 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       setError("Connect a wallet to trade — nothing signs without one.");
       return;
     }
-    if (!validSize) {
-      setError("Enter a size greater than zero.");
+    if (!validInput) {
+      setError(mode === "gusd" ? "Enter a gUSD amount greater than zero." : "Enter a size greater than zero.");
       return;
     }
     if (gate) return;
     setError(null);
     try {
-      const record = await trading.execute({ asset, side, size, toleranceBps });
+      const request: TradeRequest =
+        mode === "gusd"
+          ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
+          : { asset, side, basis: "units", size: activeValue, toleranceBps };
+      const record = await trading.execute(request);
       setSettled(record);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The order didn't go through. Try again in a moment.");
@@ -147,13 +198,84 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   }
 
   // Ledger terms, each printed at 4 decimals so the rows visibly close.
-  // No quote → no ledger rows: sizing an order against nothing would
-  // fabricate the one number the ledger exists to show.
-  //
-  // The estimate and the bound are different numbers on purpose: "You
-  // pay ~" is what the quote expects to move; "Max you pay" is the cap
-  // the user signs and the router refunds from. The tolerance control
-  // changes the bound, never the quoted price.
+  // Every figure is anchored arithmetic off the API price — the same
+  // reference the desk hero and the chart stand on — never a
+  // quote-derived all-in number, which would read as a second, competing
+  // truth a few decimals away. The ~ rows are the typed order run
+  // through the anchor; the bound rows take the chain oracle when it
+  // moves the bound in the user's favor (a lower oracle lifts a receive
+  // floor, a higher one raises a pay cap) and stay on the anchor
+  // otherwise. Execution signs its own fresh bounds at submit; a gap
+  // between this ledger and the fill is slippage, not a second price.
+
+  // The anchor and its oracle-refined bounds. Null anchor → no rows, the
+  // dashes speak.
+  const oraclePrice = availability?.oraclePrice ?? null;
+
+  let ledgerRows: ReactNode = null;
+  if (referencePrice !== null && referencePrice > 0 && validInput && quote !== null) {
+    const g = activeValue;
+    // Bounds: the oracle enters only on its favorable side — a lower
+    // oracle lifts a receive floor, a higher one raises a pay cap.
+    const minBoundPrice =
+      oraclePrice !== null && oraclePrice <= referencePrice ? oraclePrice : referencePrice;
+    const maxBoundPrice =
+      oraclePrice !== null && oraclePrice >= referencePrice ? oraclePrice : referencePrice;
+    if (side === "buy") {
+      ledgerRows =
+        mode === "gusd" ? (
+          <>
+            <LedgerRow
+              label="You receive"
+              value={`~${fmtUnitsLedger(g / referencePrice)} ${assetId}`}
+              strong
+            />
+            <LedgerRow
+              label="Min you receive"
+              value={`${fmtUnitsLedger(g / minBoundPrice)} ${assetId}`}
+            />
+            <LedgerRow label="Max you pay" value={`${fmtGusdLedger(g)} gUSD`} />
+          </>
+        ) : (
+          <>
+            <LedgerRow
+              label="You pay"
+              value={`~${fmtGusdLedger(g * referencePrice)} gUSD`}
+              strong
+            />
+            <LedgerRow label="Max you pay" value={`${fmtGusdLedger(g * maxBoundPrice)} gUSD`} />
+          </>
+        );
+    } else {
+      ledgerRows =
+        mode === "gusd" ? (
+          <>
+            <LedgerRow
+              label="You sell"
+              value={`~${fmtUnitsLedger(g / referencePrice)} ${assetId}`}
+              strong
+            />
+            <LedgerRow
+              label="Max you pay"
+              value={`${fmtUnitsLedger(g / maxBoundPrice)} ${assetId}`}
+            />
+            <LedgerRow label="Min you receive" value={`${fmtGusdLedger(g)} gUSD`} />
+          </>
+        ) : (
+          <>
+            <LedgerRow
+              label="You receive"
+              value={`~${fmtGusdLedger(g * referencePrice)} gUSD`}
+              strong
+            />
+            <LedgerRow
+              label="Min you receive"
+              value={`${fmtGusdLedger(g * minBoundPrice)} gUSD`}
+            />
+          </>
+        );
+    }
+  }
 
   return (
     <div className="space-y-3.5 p-3.5">
@@ -179,29 +301,66 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         ))}
       </div>
 
+      {/* Basis — what the input means. gUSD-first is the default flow;
+          size-first stays one toggle away. */}
       <div className="flex items-baseline justify-between">
-        <span className="slug text-dim">Size · units</span>
-        {connected && position && position.size > 0 ? (
-          <span className="num text-[10.5px] text-dim">
-            holding {fmtUnits(position.size)}
-          </span>
-        ) : null}
+        <span className="slug text-dim">
+          {mode === "gusd" ? (side === "buy" ? "Spend · gUSD" : "Receive · gUSD") : "Size · units"}
+        </span>
+        <div className="flex items-baseline" role="group" aria-label="Order basis">
+          {(["gusd", "units"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              onClick={() => setMode(m)}
+              className={`num border-b px-2 py-0.5 text-[11px] transition-colors ${
+                mode === m
+                  ? "border-amber text-amber"
+                  : "border-transparent text-dim hover:text-data"
+              }`}
+            >
+              {m === "gusd" ? "gUSD" : "UNITS"}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {context && (
+        <div className="flex items-baseline justify-between">
+          <span className="num text-[10.5px] text-dim">{context.label}</span>
+          <button
+            type="button"
+            onClick={() => setActiveText(maxText(context.max))}
+            disabled={!context.canMax || context.max <= 0}
+            className="num border-b border-rule px-1.5 text-[10.5px] text-dim transition-colors hover:text-amber disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-dim"
+          >
+            MAX
+          </button>
+        </div>
+      )}
+
       <div className="flex items-stretch border border-rule-strong bg-ground focus-within:border-amber">
         <input
           type="text"
           inputMode="decimal"
-          value={sizeText}
-          onChange={(e) => setSizeText(e.target.value.replace(/[^0-9.]/g, ""))}
-          aria-label={`Order size in ${assetId} units`}
+          value={activeText}
+          onChange={(e) => setActiveText(e.target.value.replace(/[^0-9.]/g, ""))}
+          aria-label={
+            mode === "gusd"
+              ? side === "buy"
+                ? "Order spend in gUSD"
+                : "Order proceeds in gUSD"
+              : `Order size in ${assetId} units`
+          }
           className="num w-full bg-transparent px-3 py-2.5 text-[15px] text-data outline-none"
         />
         <div className="flex items-stretch border-l border-rule">
-          {[1, 4, 10].map((preset) => (
+          {(mode === "gusd" ? GUSD_PRESETS : UNIT_PRESETS).map((preset) => (
             <button
               key={preset}
               type="button"
-              onClick={() => setSizeText(String(preset))}
+              onClick={() => setActiveText(String(preset))}
               className="num border-l border-rule px-2.5 text-[11px] text-dim first:border-l-0 hover:text-amber"
             >
               {preset}
@@ -210,9 +369,12 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         </div>
       </div>
 
-      {/* Slippage tolerance — buys sign a spend cap, sells a payout floor */}
+      {/* Slippage tolerance — the bound each cell signs: a spend cap for
+          size-first buys, a receipt floor everywhere else. */}
       <div className="flex items-baseline justify-between">
-        <span className="slug text-dim">{side === "buy" ? "Max spend slip" : "Min receipt slip"}</span>
+        <span className="slug text-dim">
+          {side === "buy" && mode === "units" ? "Max spend slip" : "Min receipt slip"}
+        </span>
         <div className="flex items-baseline" role="group" aria-label="Slippage tolerance">
           {TOLERANCE_PRESETS_BPS.map((bps) => (
             <button
@@ -232,28 +394,32 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         </div>
       </div>
 
-      {/* Quote ledger — the execution's own arithmetic: what a fill is
-          expected to move and the bound it actually signs against the
-          contracts. The desk's price line above the panel carries the
-          reference; the ticket doesn't restate it. */}
+      {/* The ticket's ledger — one price, the API's. The Price row
+          restates it; every other row is the typed order run through
+          that anchor, with the bounds oracle-refined in the user's
+          favor. Rows render from the anchor the moment the input moves;
+          they go to dashes only when the anchor is missing or the chain
+          says it can't price the order at all. */}
       <dl className="space-y-1.5 text-[12.5px]">
         <LedgerRow
-          label="Est. price"
-          value={quote ? fmtGusdLedger(quote.price) : "—"}
+          label="Price"
+          value={referencePrice !== null && referencePrice > 0 ? fmtGusdLedger(referencePrice) : "—"}
         />
-        <LedgerRow
-          label={side === "buy" ? "You pay" : "You receive"}
-          value={quote ? `~${fmtGusdLedger(quote.notional)} gUSD` : "—"}
-          strong
-        />
-        <LedgerRow
-          label={side === "buy" ? "Max you pay" : "Min you receive"}
-          value={
-            quote
-              ? `${fmtGusdLedger(side === "buy" ? quote.maxPaid : quote.minOut)} gUSD`
-              : "—"
-          }
-        />
+        {ledgerRows ?? (
+          <LedgerRow
+            label={
+              side === "buy"
+                ? mode === "gusd"
+                  ? "You receive"
+                  : "You pay"
+                : mode === "gusd"
+                  ? "You sell"
+                  : "You receive"
+            }
+            value="—"
+            strong
+          />
+        )}
       </dl>
 
       {availability === undefined && (
@@ -294,7 +460,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         type="button"
         onClick={onSubmit}
         disabled={
-          active !== null || !validSize || !quote || gate !== null || referencePrice === null
+          active !== null || !validInput || !quote || gate !== null || referencePrice === null
         }
         className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
           side === "buy" ? "rev-g hover:opacity-90" : "rev-d hover:opacity-90"

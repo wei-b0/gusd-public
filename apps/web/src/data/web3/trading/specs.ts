@@ -1,9 +1,13 @@
 /**
  * Trade action builders — the contract-facing half of the order slip.
- * Buys go through `router.buy` (exact-out GPU, one composed hook swap —
- * native book → POL → issuance backstop — refunding the spend cap); sells
- * through `router.sell` (exact-in GPU, payout floor). The structs mirror
- * GpuRouter.sol's BuyParams/SellParams one-to-one; all amounts are raw
+ * Size-first buys go through `router.buy` (exact-out GPU, one composed
+ * hook swap — native book → POL → issuance backstop — refunding the spend
+ * cap); money-first buys go through `router.buyExactIn` (spend-exact: the
+ * router pulls exactly `gusdMaxIn` — nothing is refunded — and delivers ≥
+ * `minGpuOut` units; pool-only, so genesis buys stay on `router.buy` under
+ * their refundable cap); sells through `router.sell` (exact-in GPU, payout
+ * floor). Buy/sell params mirror GpuRouter.sol's BuyParams/SellParams
+ * one-to-one; the exact-in buy takes flat args. All amounts are raw
  * onchain units.
  */
 
@@ -79,6 +83,44 @@ export function sellSpec(params: Omit<SellParams, "recipient">, recipient: Addre
         abi: GPU_ROUTER_ABI,
         functionName: "sell",
         args: [{ ...params, recipient }],
+        account: wallet.account ?? null,
+        chain: null,
+      });
+      return { hash };
+    },
+  };
+}
+
+/** Flat args of GpuRouter.buyExactIn — no params struct on this entrypoint. */
+export interface BuyExactInParams {
+  gpuId: `0x${string}`;
+  /** gUSD pulled from the buyer — spent in full, no refund (6-dec raw). */
+  gusdMaxIn: bigint;
+  /** Minimum GPU the recipient must receive (18-dec raw, ledger-grain). */
+  minGpuOut: bigint;
+  /** Unix seconds; the router reverts after it (0 = no deadline). */
+  deadline: bigint;
+  sqrtLimitX96: bigint;
+  /** 0 = msg.sender; the desk always names the session wallet. */
+  recipient: Address;
+}
+
+/** Buy GPU spend-exact: pulls exactly `gusdMaxIn` gUSD, delivers ≥
+ *  `minGpuOut` GPU. Pool-only — the router reverts NotCanonicalPool
+ *  without one, so genesis buys never ride this spec. */
+export function buyExactInSpec(
+  params: Omit<BuyExactInParams, "recipient">,
+  recipient: Address,
+): TxSpec {
+  return {
+    origin: "trade",
+    kind: "trade-buy",
+    async execute(wallet) {
+      const hash = await wallet.writeContract({
+        address: getContracts().addresses.router,
+        abi: GPU_ROUTER_ABI,
+        functionName: "buyExactIn",
+        args: [params.gpuId, params.gusdMaxIn, params.minGpuOut, params.deadline, params.sqrtLimitX96, recipient],
         account: wallet.account ?? null,
         chain: null,
       });

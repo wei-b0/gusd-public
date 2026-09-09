@@ -75,8 +75,10 @@ export interface ContractReads {
   /** Protocol trading fee, bps (display + sell net math). */
   hookFeeBps(): Promise<number>;
   /** Oracle freshness for a market (execution input; never a display price).
-   *  Staleness judged by issuance's own limit — the constraint issue() enforces. */
-  oracleUpdatedAt(gpuId: `0x${string}`): Promise<{ price: number; updatedAt: number; isStale: boolean }>;
+   *  `rawPrice` is the oracle's own 4-decimal fixed point (product price ×
+   *  10_000) — the scale issuance's math runs at. Staleness judged by
+   *  issuance's own limit — the constraint issue() enforces. */
+  oracleUpdatedAt(gpuId: `0x${string}`): Promise<{ rawPrice: bigint; updatedAt: number; isStale: boolean }>;
 }
 
 /**
@@ -180,7 +182,7 @@ export function contractReads(): ContractReads {
       const now = Math.floor(Date.now() / 1000);
       const age = now - Number(updatedAtRaw);
       return {
-        price: formatGusdRaw(rawPrice),
+        rawPrice,
         updatedAt: Number(updatedAtRaw),
         isStale: rawPrice === 0n || age > Number(maxStaleness),
       };

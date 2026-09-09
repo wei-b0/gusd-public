@@ -94,6 +94,13 @@ export function fmtGusdLedger(value: number): string {
   return plain4Fixed.format(value);
 }
 
+/** Ledger-grade unit sizes, fixed at 4 decimals to match the gUSD ledger
+ *  grain: 2.0000. Callers pass values already quantized to this grain
+ *  (signed floors arrive pre-quantized from the quote layer). */
+export function fmtUnitsLedger(value: number): string {
+  return plain4Fixed.format(value);
+}
+
 /** gUSD amounts, compact for dense columns: 3.60M / 842.1K / 34.163 */
 export function fmtGusdCompact(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;

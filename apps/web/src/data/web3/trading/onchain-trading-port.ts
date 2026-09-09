@@ -5,11 +5,19 @@
  * ActionPlan: the balance pre-flight (a short wallet is refused before any
  * signature is requested), the gUSD or GPU approval when the allowance is
  * short, a pre-signature simulation of the exact calldata, and
- * reconciliation of the account store on confirmation. Quote and execution run the same
- * protocol pricing path and math; the signed caps (`maxPaid`/`minOut`)
- * bound the fill if state moves between quote and inclusion. The account
- * view projects the interim onchain account store (the Ponder successor
- * lands later) — never demo capital, never invented cost basis.
+ * reconciliation of the account store on confirmation.
+ *
+ * Money-first requests execute on the basis they quote: spend-exact buys
+ * ride `buyExactIn` — the typed gUSD is pulled in full with no refund, so
+ * the units guarantee is the signed `minSize` floor — while an all-issuance
+ * fill (genesis, or a pool fill the backstop covered entirely) rides
+ * `buy` under the refundable typed-spend cap; proceeds-first sells ride
+ * `sell` with the units the inverse quote derived, under the payout floor.
+ * Quote and execution run the same protocol pricing path and math; the
+ * signed limits (`maxPaid`/`minOut`/`minSize`) bound the fill if state
+ * moves between quote and inclusion. The account view projects the interim
+ * onchain account store (the Ponder successor lands later) — never demo
+ * capital, never invented cost basis.
  */
 
 import type { Address } from "viem";
@@ -22,7 +30,7 @@ import type {
   TradeQuote,
   TradeRequest,
 } from "@/domain/types";
-import { fmtAddress, fmtGusdLedger, fmtUnits } from "@/domain/format";
+import { fmtAddress, fmtGusdLedger, fmtUnits, fmtUnitsLedger } from "@/domain/format";
 import { legUnits } from "@/domain/types";
 import { formatGpuUnits, formatGusdRaw, parseGpuUnits, parseGusd } from "@/domain/units";
 import { GPU_ROUTER_ABI } from "../abis/gpu_router";
@@ -38,7 +46,7 @@ import {
   type QuoteDeps,
   defaultQuoteDeps,
 } from "./quotes";
-import { TRADE_DEADLINE_SECS, buySpec, sellSpec } from "./specs";
+import { TRADE_DEADLINE_SECS, buyExactInSpec, buySpec, sellSpec } from "./specs";
 
 export interface OnChainTradingPortDeps {
   /** The session source — the port refuses to act without one. */
@@ -96,13 +104,7 @@ export class OnChainTradingPort implements TradingPort {
   }
 
   async quote(request: TradeRequest): Promise<TradeQuote | null> {
-    return quoteAsset(
-      request.asset,
-      request.side,
-      request.size,
-      request.toleranceBps ?? DEFAULT_TOLERANCE_BPS,
-      this.quoteDeps,
-    );
+    return quoteAsset(request, this.quoteDeps);
   }
 
   async execute(request: TradeRequest): Promise<ActionRecord> {
@@ -116,31 +118,53 @@ export class OnChainTradingPort implements TradingPort {
     if (!quote) throw new Error(NO_QUOTE);
 
     const gpuId = gpuIdForAsset(request.asset);
-    const sizeRaw = parseGpuUnits(request.size);
     const approvals: ApprovalNeed[] = [];
+
+    // The units this order moves, raw: units-basis trades move the typed
+    // size; money-first trades move what the fresh quote derived (the
+    // proceeds-first sell's gross units; the spend-exact buy's derived
+    // size — its signed guarantee is the minSize floor, not that size).
+    const sizeRaw =
+      request.basis === "units" ? parseGpuUnits(request.size) : parseGpuUnits(quote.size);
+    const spendRaw = parseGusd(quote.maxPaid);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + TRADE_DEADLINE_SECS);
+
+    // A money-first buy with any pool leg executes spend-exact through
+    // `buyExactIn`; an all-issuance fill — genesis, or a pool fill the
+    // backstop covered entirely — rides `buy` under the typed-spend cap,
+    // tail refunded. Both pre-flight against the same typed spend.
+    const exactPullBuy =
+      request.side === "buy" &&
+      request.basis === "gusd" &&
+      quote.legs.some((leg) => leg.kind === "pool");
+
     if (request.side === "buy") {
-      // Balance pre-flight, before any signature is requested: the router
-      // pulls the full signed cap up front (change refunded), so the
-      // wallet must hold the cap — a short wallet is refused here rather
+      // Balance pre-flight, before any signature is requested: the wallet
+      // must hold the full spend — a short wallet is refused here rather
       // than asked to approve an order that can't fill. Mint and earn
-      // gate their balances the same way.
-      const capRaw = parseGusd(quote.maxPaid);
+      // gate their balances the same way. Voice follows the pull: the
+      // spend-exact path takes it all (no refund), every other buy signs
+      // a refundable cap.
       const heldRaw = await this.quoteDeps.reads.balanceOf(
         getContracts().addresses.gusd as Address,
         owner,
       );
-      if (heldRaw < capRaw) {
+      if (heldRaw < spendRaw) {
         throw new Error(
-          `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy needs up to ${fmtGusdLedger(quote.maxPaid)} gUSD. Mint gUSD from the reserve asset first.`,
+          exactPullBuy
+            ? `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy spends ${fmtGusdLedger(quote.maxPaid)} gUSD in full. Mint gUSD from the reserve asset first.`
+            : `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy needs up to ${fmtGusdLedger(quote.maxPaid)} gUSD. Mint gUSD from the reserve asset first.`,
         );
       }
+      // The exact-pull approval is the typed spend itself; the capped one
+      // is the same number — the tolerance-padded cap in units mode.
       const need = await planApproval(
         getContracts().addresses.gusd as Address,
         "gUSD",
         getContracts().addresses.router as Address,
         "router",
         owner,
-        capRaw,
+        spendRaw,
       );
       if (need) approvals.push(need);
     } else {
@@ -150,7 +174,7 @@ export class OnChainTradingPort implements TradingPort {
       const heldRaw = await this.quoteDeps.reads.balanceOf(reg.token, owner);
       if (heldRaw < sizeRaw) {
         throw new Error(
-          `This wallet holds ${fmtUnits(formatGpuUnits(heldRaw))} ${request.asset} — this sell needs ${fmtUnits(request.size)} ${request.asset}.`,
+          `This wallet holds ${fmtUnits(formatGpuUnits(heldRaw))} ${request.asset} — this sell needs ${fmtUnits(quote.size)} ${request.asset}.`,
         );
       }
       const need = await planApproval(
@@ -168,8 +192,8 @@ export class OnChainTradingPort implements TradingPort {
       gpuId,
       gpuOut: sizeRaw,
       payment: getContracts().addresses.gusd as Address,
-      maxPaid: parseGusd(quote.maxPaid),
-      deadline: BigInt(Math.floor(Date.now() / 1000) + TRADE_DEADLINE_SECS),
+      maxPaid: spendRaw,
+      deadline,
       sqrtLimitX96: 0n,
       recipient: owner,
     });
@@ -178,7 +202,7 @@ export class OnChainTradingPort implements TradingPort {
       gpuIn: sizeRaw,
       payout: getContracts().addresses.gusd as Address,
       minOut: parseGusd(quote.minOut),
-      deadline: BigInt(Math.floor(Date.now() / 1000) + TRADE_DEADLINE_SECS),
+      deadline,
       sqrtLimitX96: 0n,
       recipient: owner,
     });
@@ -186,9 +210,13 @@ export class OnChainTradingPort implements TradingPort {
     const plan: ActionPlan = {
       origin: "trade",
       label:
-        request.side === "buy"
-          ? `Buy ${fmtUnits(request.size)} ${request.asset}`
-          : `Sell ${fmtUnits(request.size)} ${request.asset}`,
+        request.basis === "gusd"
+          ? request.side === "buy"
+            ? `Buy ~${fmtUnitsLedger(quote.size)} ${request.asset} · ${fmtGusdLedger(quote.maxPaid)} gUSD`
+            : `Sell ~${fmtUnitsLedger(quote.size)} ${request.asset} · ~${fmtGusdLedger(quote.notional)} gUSD`
+          : request.side === "buy"
+            ? `Buy ${fmtUnits(request.size)} ${request.asset}`
+            : `Sell ${fmtUnits(request.size)} ${request.asset}`,
       quote: tradeSnapshot(quote),
       approvals,
       simulate: async () => {
@@ -196,16 +224,25 @@ export class OnChainTradingPort implements TradingPort {
         const result = await simulateWrite({
           address: router.address,
           abi: GPU_ROUTER_ABI,
-          functionName: request.side === "buy" ? "buy" : "sell",
-          args: request.side === "buy" ? [buyStruct()] : [sellStruct()],
+          functionName: exactPullBuy ? "buyExactIn" : request.side === "buy" ? "buy" : "sell",
+          args: exactPullBuy
+            ? [gpuId, spendRaw, parseGpuUnits(quote.minSize), deadline, 0n, owner]
+            : request.side === "buy"
+              ? [buyStruct()]
+              : [sellStruct()],
           account: owner,
         });
         return result.ok ? result : { ok: false, error: result.error.voice };
       },
       buildSpec: () =>
-        request.side === "buy"
-          ? buySpec(buyStruct(), owner)
-          : sellSpec(sellStruct(), owner),
+        exactPullBuy
+          ? buyExactInSpec(
+              { gpuId, gusdMaxIn: spendRaw, minGpuOut: parseGpuUnits(quote.minSize), deadline, sqrtLimitX96: 0n },
+              owner,
+            )
+          : request.side === "buy"
+            ? buySpec(buyStruct(), owner)
+            : sellSpec(sellStruct(), owner),
       reconcile: this.deps.reconcile,
     };
 
@@ -223,6 +260,7 @@ function tradeSnapshot(quote: TradeQuote): QuoteSnapshot {
             size: quote.size,
             maxPaid: quote.maxPaid,
             notional: quote.notional,
+            minUnits: quote.minSize,
             poolLeg: legUnits(quote, "pool"),
             issuanceLeg: legUnits(quote, "issuance"),
           }

@@ -444,16 +444,31 @@ export interface TxSpec {
   execute(wallet: WalletClient): Promise<{ hash: Hex }>;
 }
 
-export interface TradeRequest {
+export interface TradeRequestBase {
   asset: AssetId;
   side: TradeSide;
-  size: number;
   /**
-   * Slippage tolerance, bps — buys sign `maxPaid` (quote × (1 + tol)),
-   * sells sign `minOut` (quote × (1 − tol)). Default 50 (0.5%).
+   * Slippage tolerance, bps — size-first buys sign `maxPaid` (quote × (1 + tol));
+   * every other cell signs a floor: `minOut` for sells, `minSize` for spend-first
+   * buys (which pull exactly, so the tolerance only moves the minimum).
+   * Default 50 (0.5%).
    */
   toleranceBps?: number;
 }
+
+export type TradeRequest = TradeRequestBase &
+  (
+    | {
+        /** Size-first: the order sizes `size` GPU units (exact-out buy / exact-in sell). */
+        basis: "units";
+        size: number;
+      }
+    | {
+        /** Money-first: buys spend `gusd` gUSD exactly (`buyExactIn`); sells target `gusd` gUSD of proceeds. */
+        basis: "gusd";
+        gusd: number;
+      }
+  );
 
 /** Fees one leg actually incurs, gUSD. A pool leg's LP fee rides inside the
  *  swap's own all-in price — observable there, not decomposable pre-trade —
@@ -495,25 +510,40 @@ export function quoteFees(quote: TradeQuote): number {
 
 /**
  * One trade quote — the execution stack the order signs against: the
- * router's own quoteIssue for the issuance leg, the hook-aware V4Quoter
- * for the pool leg. Quote and execution run the same protocol pricing
+ * router's own quoteIssue for the issuance leg, the hook-aware GpuQuoter
+ * for the pool legs. Quote and execution run the same protocol pricing
  * path and math; the fill is bounded by the user's signed limits — buys
  * are exact-out (`maxPaid` is the gUSD spend cap the router pulls and
- * refunds from), sells are exact-in (`minOut` is the payout floor). All
- * gUSD figures are product units.
+ * refunds from) or spend-first exact-in (pulls exactly, bounded by the
+ * `minSize` units floor), sells are exact-in (`minOut` is the payout
+ * floor). All gUSD figures are product units.
  */
 export interface TradeQuote {
   asset: AssetId;
   side: TradeSide;
+  /**
+   * The order's GPU units — the typed size for size-first requests, the
+   * derived count (units received / units sold) for money-first ones.
+   */
   size: number;
   /** Effective gUSD per unit — buys: quote total / size; sells: net proceeds / size. */
   price: number;
   /** gUSD total pre-tolerance: spend for buys, proceeds for sells. */
   notional: number;
-  /** Buys: the signed spend cap — notional × (1 + tolerance). */
+  /**
+   * Buys: the signed spend cap. Size-first: notional × (1 + tolerance),
+   * refundable. Spend-first: the typed spend exactly — `buyExactIn` pulls
+   * it all (no refund), so the tolerance never pads this.
+   */
   maxPaid: number;
   /** Sells: the signed payout floor — notional × (1 − tolerance). */
   minOut: number;
+  /**
+   * Spend-first buys: the signed minimum-units floor in product units,
+   * quantized to the 4-decimal ledger grain (the displayed floor IS the
+   * signed floor). Every other cell carries 0 — its bound is gUSD.
+   */
+  minSize: number;
   /** The execution legs this quote priced, in fill order. */
   legs: readonly TradeLeg[];
   /** Tolerance the cap/floor carry, bps. */
@@ -539,6 +569,9 @@ export interface TradeAvailability {
   hookFeeBps: number;
   /** This market's primary issuance fee, bps. */
   issuanceFeeBps: number;
+  /** The chain oracle's live publication, gUSD per unit — the bound
+   *  rows' execution reference. Null when nothing fresh is published. */
+  oraclePrice: number | null;
 }
 
 export interface TradeReceipt {

@@ -28,8 +28,8 @@ const h = vi.hoisted(() => ({
     address: "0x00000000000000000000000000000000000000aa",
   } as { status: string; address: Address | null },
   quote: null as TradeQuote | null,
-  /** (asset, side, size, toleranceBps, deps) captured per quote call. */
-  quoteArgs: null as unknown[] | null,
+  /** The request object captured per quote call. */
+  quoteRequest: null as unknown,
   availability: null as unknown,
   allowance: 0n as bigint,
   /** Raw balances the fake ERC-20 read hands back per token flavor. */
@@ -41,7 +41,7 @@ const h = vi.hoisted(() => ({
   sim: { ok: true } as { ok: true } | { ok: false; error: { voice: string } },
   simReq: null as
     | null
-    | { address: Address; functionName: string; args: readonly [Record<string, unknown>] },
+    | { address: Address; functionName: string; args: readonly unknown[] },
 }));
 
 vi.mock("./quotes", () => ({
@@ -49,8 +49,8 @@ vi.mock("./quotes", () => ({
   TOLERANCE_PRESETS_BPS: [10, 50, 100],
   defaultQuoteDeps: () => ({}),
   describeAsset: async () => h.availability,
-  quoteAsset: async (...args: unknown[]) => {
-    h.quoteArgs = args;
+  quoteAsset: async (request: unknown) => {
+    h.quoteRequest = request;
     return h.quote;
   },
 }));
@@ -80,6 +80,7 @@ const BUY_QUOTE: TradeQuote = {
   notional: 5,
   maxPaid: 5.2525,
   minOut: 0,
+  minSize: 0,
   legs: [
     { kind: "pool", gpuUnits: 1.5, gUsd: 4, fees: { protocol: 0.02 } },
     { kind: "issuance", gpuUnits: 0.5, gUsd: 1, fees: { issuance: 0.01 } },
@@ -96,7 +97,40 @@ const SELL_QUOTE: TradeQuote = {
   notional: 3.8,
   maxPaid: 0,
   minOut: 1.9,
+  minSize: 0,
   legs: [{ kind: "pool", gpuUnits: 2, gUsd: 3.8, fees: { protocol: 0.02 } }],
+};
+
+/** A money-first buy on the pool — the cap is the typed spend itself and
+ *  the guarantee is the units floor. */
+const SPEND_QUOTE: TradeQuote = {
+  ...BUY_QUOTE,
+  size: 7.96,
+  price: 10 / 7.96,
+  notional: 10,
+  maxPaid: 10,
+  minSize: 7.9202,
+};
+
+/** The same spend on a pool-less market — every leg is issuance, so the
+ *  plan must ride the exact-out buy under the refundable spend cap. */
+const GENESIS_SPEND_QUOTE: TradeQuote = {
+  ...SPEND_QUOTE,
+  size: 7.9601,
+  price: 9.999876 / 7.9601,
+  notional: 9.999876,
+  minSize: 7.9601,
+  legs: [
+    { kind: "issuance", gpuUnits: 7.9601, gUsd: 9.999876, fees: { issuance: 0.049751 } },
+  ],
+};
+
+/** A proceeds-first sell — the units are what the inverse quote derived. */
+const PROCEEDS_SELL_QUOTE: TradeQuote = {
+  ...SELL_QUOTE,
+  size: 2.002,
+  price: 3.8 / 2.002,
+  minOut: 3.781,
 };
 
 class FakeActions implements ActionPort {
@@ -182,12 +216,12 @@ function makePort() {
   return { port, actions, store };
 }
 
-const BUY_REQUEST = { asset: "H100", side: "buy", size: 2, toleranceBps: 50 } as const;
+const BUY_REQUEST = { asset: "H100", side: "buy", basis: "units", size: 2, toleranceBps: 50 } as const;
 
 beforeEach(() => {
   h.session = { status: "connected", address: OWNER };
   h.quote = BUY_QUOTE;
-  h.quoteArgs = null;
+  h.quoteRequest = null;
   h.allowance = 0n;
   h.gusdBalance = 10_000_000n;
   h.gpuBalance = 10n ** 19n;
@@ -197,16 +231,18 @@ beforeEach(() => {
 });
 
 describe("quote / describeAsset", () => {
-  it("passes the request through with the resolved tolerance", async () => {
+  it("passes the request through to the quote layer untouched", async () => {
     const { port } = makePort();
-    await port.quote({ asset: "H100", side: "buy", size: 2, toleranceBps: 10 });
-    expect(h.quoteArgs?.slice(0, 4)).toEqual(["H100", "buy", 2, 10]);
+    const request = { asset: "H100", side: "buy", basis: "gusd", gusd: 10, toleranceBps: 10 } as const;
+    await port.quote(request);
+    expect(h.quoteRequest).toBe(request); // verbatim — no defaulting here
   });
 
-  it("defaults the tolerance to 50 bps", async () => {
+  it("forwards an omitted tolerance — the quote layer owns the default", async () => {
     const { port } = makePort();
-    await port.quote({ asset: "H100", side: "buy", size: 2 });
-    expect(h.quoteArgs?.[3]).toBe(50);
+    const request = { asset: "H100", side: "sell", basis: "units", size: 2 } as const;
+    await port.quote(request);
+    expect("toleranceBps" in (h.quoteRequest as Record<string, unknown>)).toBe(false);
   });
 
   it("describes assets through the quote layer", async () => {
@@ -254,7 +290,7 @@ describe("execute gates", () => {
     h.quote = SELL_QUOTE;
     h.gpuBalance = parseGpuUnits(1);
     const { port, actions } = makePort();
-    await expect(port.execute({ asset: "H100", side: "sell", size: 2 })).rejects.toThrow(
+    await expect(port.execute({ asset: "H100", side: "sell", basis: "units", size: 2 })).rejects.toThrow(
       "This wallet holds 1.000 H100 — this sell needs 2.000 H100.",
     );
     expect(actions.plans).toHaveLength(0);
@@ -280,6 +316,7 @@ describe("buy plans", () => {
       size: 2,
       maxPaid: 5.2525,
       notional: 5,
+      minUnits: 0,
       poolLeg: 1.5,
       issuanceLeg: 0.5,
     });
@@ -321,7 +358,7 @@ describe("sell plans", () => {
   it("plans the sell with the GPU approval and the sell struct", async () => {
     h.quote = SELL_QUOTE;
     const { port, actions } = makePort();
-    await port.execute({ asset: "H100", side: "sell", size: 2 });
+    await port.execute({ asset: "H100", side: "sell", basis: "units", size: 2 });
     const plan = actions.plans[0]!;
     expect(plan.label).toBe("Sell 2.000 H100");
     expect(plan.approvals).toHaveLength(1);
@@ -347,6 +384,123 @@ describe("sell plans", () => {
 
     const spec = plan.buildSpec();
     expect(spec.kind).toBe("trade-sell");
+  });
+
+  it("plans a proceeds-first sell against the quote's derived units", async () => {
+    h.quote = PROCEEDS_SELL_QUOTE;
+    const { port, actions } = makePort();
+    await port.execute({ asset: "H100", side: "sell", basis: "gusd", gusd: 3.8, toleranceBps: 50 });
+    const plan = actions.plans[0]!;
+    expect(plan.label).toBe("Sell ~2.0020 H100 · ~3.8000 gUSD");
+    // The approval is the derived gross units, not the typed proceeds.
+    expect(plan.approvals[0]).toMatchObject({ token: GPU_TOKEN, amount: parseGpuUnits(2.002) });
+    expect(plan.quote?.totals).toEqual({ size: 2.002, minOut: 3.781, notional: 3.8 });
+
+    await plan.simulate?.();
+    expect(h.simReq?.functionName).toBe("sell");
+    expect(h.simReq?.args[0]).toEqual({
+      gpuId: GPU_ID,
+      gpuIn: parseGpuUnits(2.002),
+      payout: GUSD,
+      minOut: parseGusd(3.781),
+      deadline: expect.any(BigInt),
+      sqrtLimitX96: 0n,
+      recipient: OWNER,
+    });
+    const spec = plan.buildSpec();
+    expect(spec.kind).toBe("trade-sell");
+  });
+
+  it("refuses a proceeds-first sell of more units than the wallet holds", async () => {
+    h.quote = PROCEEDS_SELL_QUOTE;
+    h.gpuBalance = parseGpuUnits(2);
+    const { port, actions } = makePort();
+    await expect(
+      port.execute({ asset: "H100", side: "sell", basis: "gusd", gusd: 3.8, toleranceBps: 50 }),
+    ).rejects.toThrow("This wallet holds 2.000 H100 — this sell needs 2.002 H100.");
+    expect(actions.plans).toHaveLength(0);
+  });
+});
+
+describe("spend-first buy plans", () => {
+  const SPEND_REQUEST = { asset: "H100", side: "buy", basis: "gusd", gusd: 10, toleranceBps: 50 } as const;
+
+  it("plans the exact-pull buy through buyExactIn with the typed spend", async () => {
+    h.quote = SPEND_QUOTE;
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    const plan = actions.plans[0]!;
+    expect(plan.label).toBe("Buy ~7.9600 H100 · 10.0000 gUSD");
+    // The approval is the typed spend — nothing padded, nothing refundable.
+    expect(plan.approvals[0]).toMatchObject({
+      token: GUSD,
+      spender: ROUTER,
+      amount: parseGusd(10),
+    });
+    expect(plan.quote?.totals).toEqual({
+      size: 7.96,
+      maxPaid: 10,
+      notional: 10,
+      minUnits: 7.9202,
+      poolLeg: 1.5,
+      issuanceLeg: 0.5,
+    });
+
+    await plan.simulate?.();
+    expect(h.simReq?.functionName).toBe("buyExactIn");
+    expect(h.simReq?.args).toEqual([
+      GPU_ID,
+      parseGusd(10),
+      parseGpuUnits(7.9202),
+      expect.any(BigInt),
+      0n,
+      OWNER,
+    ]);
+
+    const spec = plan.buildSpec();
+    expect(spec.kind).toBe("trade-buy");
+  });
+
+  it("preflights the exact pull against the full spend, in its own voice", async () => {
+    h.quote = SPEND_QUOTE;
+    h.gusdBalance = parseGusd(9);
+    const { port, actions } = makePort();
+    await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
+      "This wallet holds 9.0000 gUSD — this buy spends 10.0000 gUSD in full. Mint gUSD from the reserve asset first.",
+    );
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("rides the exact-out buy under the typed-spend cap when every leg is issuance", async () => {
+    h.quote = GENESIS_SPEND_QUOTE;
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    const plan = actions.plans[0]!;
+    expect(plan.label).toBe("Buy ~7.9601 H100 · 10.0000 gUSD");
+    expect(plan.approvals[0]).toMatchObject({ token: GUSD, amount: parseGusd(10) });
+
+    await plan.simulate?.();
+    expect(h.simReq?.functionName).toBe("buy");
+    expect(h.simReq?.args[0]).toEqual({
+      gpuId: GPU_ID,
+      gpuOut: parseGpuUnits(7.9601),
+      payment: GUSD,
+      maxPaid: parseGusd(10),
+      deadline: expect.any(BigInt),
+      sqrtLimitX96: 0n,
+      recipient: OWNER,
+    });
+    const spec = plan.buildSpec();
+    expect(spec.kind).toBe("trade-buy");
+  });
+
+  it("speaks the refundable-cap voice on the genesis route", async () => {
+    h.quote = GENESIS_SPEND_QUOTE;
+    h.gusdBalance = parseGusd(9);
+    const { port } = makePort();
+    await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
+      "This wallet holds 9.0000 gUSD — this buy needs up to 10.0000 gUSD. Mint gUSD from the reserve asset first.",
+    );
   });
 });
 

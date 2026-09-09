@@ -14,6 +14,16 @@ export const SGUSD_DECIMALS = 6;
 /** GPU positions are 18-decimal ERC-20 units (one unit = one GPU-hour). */
 export const GPU_TOKEN_DECIMALS = 18;
 
+/** The order ledger prints GPU units at 4 decimals — signed floors are
+ *  quantized to this raw grain (1e-4 units) so the displayed figure IS
+ *  the signed figure. */
+export const GPU_LEDGER_GRAIN = 10n ** (BigInt(GPU_TOKEN_DECIMALS) - 4n);
+
+/** Floor a raw 18-dec unit amount to the ledger grain. */
+export function floorToLedgerGrain(raw: bigint): bigint {
+  return (raw / GPU_LEDGER_GRAIN) * GPU_LEDGER_GRAIN;
+}
+
 /** Product gUSD number → 6-decimal wei-scale integer. */
 export function parseGusd(amount: number): bigint {
   return parseScaled(amount, GUSD_DECIMALS);

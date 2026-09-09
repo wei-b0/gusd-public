@@ -81,6 +81,14 @@ const WIDGET_BASE = {
     "paneProperties.backgroundType": "solid",
     "paneProperties.vertGridProperties.color": "rgba(26, 43, 32, 0.55)",
     "paneProperties.horzGridProperties.color": "rgba(26, 43, 32, 0.55)",
+    // Headroom for the legend chip. The legend overlays the pane's top-left;
+    // without reserved space autoscaled highs run beneath it and the upper
+    // wicks disappear behind the banner. Units are PERCENT of pane height
+    // (this build's stock default: topMargin 10, bottomMargin 8 — verified
+    // against TradingView.defaultProperties in the bundle), applied to the
+    // series only: the right axis still labels the full height. 20 clears
+    // the two-row chip on the desk's shorter panes.
+    "paneProperties.topMargin": 20,
     "paneProperties.crossHairProperties.color": "#3a6a4a",
     "paneProperties.crossHairProperties.style": 2,
     "paneProperties.crossHairProperties.width": 1,

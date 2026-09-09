@@ -1,13 +1,25 @@
 /**
- * Trade quotes — the execution stack the order slip signs against. Buys
- * are exact-out through `router.buy`: one composed hook swap that fills
- * from the native CL book, then POL inventory, then the issuance backstop.
- * Sells are exact-in through `router.sell` (native + POL bid — no synthetic
- * redemption). Both quote through the float-seeded GpuQuoter, which runs
- * the pool's real hook inside an eth_call — the same pricing path
- * execution runs — and the signed limits (`maxPaid` / `minOut`) bound the
- * fill. Neither quote pre-commits it: state can move between eth_call and
- * inclusion, so execution is bounded by the signed limits, not the quote.
+ * Trade quotes — the execution stack the order slip signs against. Every
+ * request names its basis: size-first (`units`) or money-first (`gusd`).
+ *
+ * Size-first buys are exact-out through `router.buy`: one composed hook
+ * swap filling the native CL book, then POL inventory, then the issuance
+ * backstop, refunding the spend cap. Money-first buys are exact-in through
+ * `router.buyExactIn` (pool-only): they spend exactly the typed gUSD —
+ * nothing is refunded — and are bounded by the `minSize` units floor
+ * instead of a spend cap. Sells are always exact-in through `router.sell`
+ * (native + POL bid — no synthetic redemption); money-first sells derive
+ * the units from the proceeds-first quote and execute under the payout
+ * floor. On a pool-less market a money-first buy inverts the typed spend
+ * against the contract's own quoteIssue (see ./genesis) and rides the
+ * exact-out path under the typed-spend cap.
+ *
+ * All of it quotes through the float-seeded GpuQuoter, which runs the
+ * pool's real hook inside an eth_call — the same pricing path execution
+ * runs — and the signed limits (`maxPaid` / `minOut` / `minSize`) bound
+ * the fill. Neither quote pre-commits it: state can move between eth_call
+ * and inclusion, so execution is bounded by the signed limits, not the
+ * quote.
  *
  * Honesty rules the math keeps: the quoter already runs the hook, so its
  * number IS all-in — protocol fees are split out for display only, and LP
@@ -19,13 +31,27 @@
  */
 
 import type { Address } from "viem";
-import type { AssetId, TradeAvailability, TradeLeg, TradeQuote } from "@/domain/types";
-import { applyBps, formatGpuUnits, parseGpuUnits } from "@/domain/units";
+import type {
+  AssetId,
+  TradeAvailability,
+  TradeLeg,
+  TradeQuote,
+  TradeRequest,
+} from "@/domain/types";
+import {
+  applyBps,
+  floorToLedgerGrain,
+  formatGpuUnits,
+  GPU_LEDGER_GRAIN,
+  parseGpuUnits,
+  parseGusd,
+} from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
 import { canonicalPoolKey } from "../pool";
 import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { contractReads, type ContractReads } from "../reads";
+import { issueUnitsForSpend } from "./genesis";
 
 /** Slippage tolerance the slip offers, bps (the presets row). */
 export const TOLERANCE_PRESETS_BPS = [10, 50, 100] as const;
@@ -116,8 +142,14 @@ export interface GpuQuoteResult {
 }
 
 export interface GpuQuoterRead {
+  /** Exact-out buy: units demanded → gUSD spent. */
   quoteBuyExactOut(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  /** Exact-in buy: gUSD spent → net units received. */
+  quoteBuy(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  /** Exact-in sell: units sold → net gUSD received. */
   quoteSell(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  /** Exact-out sell: gUSD proceeds demanded → gross units to sell. */
+  quoteSellExactOut(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
 }
 
 /** GpuQuoter's PoolKey parameter — same fields as the v4 pool key. */
@@ -148,6 +180,7 @@ export async function describeAsset(
     return null;
   }
   const reg = await deps.reads.registration(gpuId);
+  const oracle = reg ? await deps.reads.oracleUpdatedAt(gpuId) : null;
   const value = reg
     ? {
         issuanceEnabled: reg.issuanceEnabled,
@@ -157,6 +190,12 @@ export async function describeAsset(
         poolFeeBps: Number(reg.poolParams.fee) / 100,
         hookFeeBps: await deps.reads.hookFeeBps(),
         issuanceFeeBps: reg.issuanceFeeBps,
+        // The oracle's own 4-decimal fixed point → gUSD per unit. A
+        // stale or empty publication is no reference at all.
+        oraclePrice:
+          oracle && !oracle.isStale && oracle.rawPrice > 0n
+            ? Number(oracle.rawPrice) / 10_000
+            : null,
       }
     : null;
   availabilityCache.set(asset, { at: Date.now(), value });
@@ -209,6 +248,7 @@ export async function quoteBuy(
       notional: Number(total) / 1e6,
       maxPaid: Number(maxPaidRaw) / 1e6,
       minOut: 0,
+      minSize: 0,
       legs: [
         {
           kind: "issuance",
@@ -274,6 +314,7 @@ export async function quoteBuy(
     notional: Number(r.gusdIn) / 1e6,
     maxPaid: Number(maxPaidRaw) / 1e6,
     minOut: 0,
+    minSize: 0,
     legs,
     toleranceBps,
     quotedAtMs: deps.now(),
@@ -331,6 +372,7 @@ export async function quoteSell(
     notional: Number(r.gusdOut) / 1e6,
     maxPaid: 0,
     minOut: Number(minOutRaw) / 1e6,
+    minSize: 0,
     legs: [
       {
         kind: "pool",
@@ -345,14 +387,217 @@ export async function quoteSell(
   };
 }
 
-export async function quoteAsset(
+/** Money-first buy: exact-in on the pool — the swapper spends exactly the
+ *  typed gUSD (`buyExactIn` pulls it all, nothing is refunded), so the
+ *  spend cap IS the typed amount and the tolerance only moves the minimum
+ *  units floor (`minSize`). Genesis pools have no pool to exact-in against:
+ *  the spend inverts against primary issuance instead (see ./genesis) and
+ *  rides the exact-out path under the typed-spend cap. */
+export async function quoteBuyBySpend(
   asset: AssetId,
-  side: "buy" | "sell",
-  size: number,
+  gusd: number,
   toleranceBps: number = DEFAULT_TOLERANCE_BPS,
   deps: QuoteDeps = defaultQuoteDeps(),
 ): Promise<TradeQuote | null> {
-  return side === "buy"
-    ? quoteBuy(asset, size, toleranceBps, deps)
-    : quoteSell(asset, size, toleranceBps, deps);
+  if (!Number.isFinite(gusd) || gusd <= 0) return null;
+  let gpuId: `0x${string}`;
+  try {
+    gpuId = gpuIdForAsset(asset);
+  } catch {
+    return null;
+  }
+  const reg = await deps.reads.registration(gpuId);
+  if (!reg) return null;
+  const spendRaw = parseGusd(gusd);
+  if (spendRaw === 0n || spendRaw > UINT128_MAX) return null;
+
+  const blockNumber = await deps.getBlockNumber();
+
+  if (!reg.poolRegistered) {
+    // Genesis: solve the largest ledger-grain unit count the spend covers,
+    // quoted on the contract's own math. No publication or a stale oracle
+    // means issue() would revert — the honest "can't quote".
+    if (!reg.issuanceEnabled) return null;
+    const oracle = await deps.reads.oracleUpdatedAt(gpuId);
+    if (oracle.isStale || oracle.rawPrice === 0n) return null;
+    const solved = await issueUnitsForSpend(spendRaw, oracle.rawPrice, reg.issuanceFeeBps, (amountRaw) => {
+      const q = deps.contracts.issuance.read.quoteIssue([gpuId, amountRaw]);
+      return q.then(([base, fee, total]) => ({ base, fee, total }));
+    });
+    if (!solved) return null;
+
+    const size = formatGpuUnits(solved.units);
+    const notional = Number(solved.quote.total) / 1e6;
+    return {
+      asset,
+      side: "buy",
+      size,
+      price: notional / size,
+      notional,
+      // Exact-out under a refundable cap: the typed spend bounds it, the
+      // tail comes back. The floor is the solved size itself.
+      maxPaid: gusd,
+      minOut: 0,
+      minSize: size,
+      legs: [
+        {
+          kind: "issuance",
+          gpuUnits: size,
+          gUsd: notional,
+          fees: { issuance: Number(solved.quote.fee) / 1e6 },
+        },
+      ],
+      toleranceBps,
+      quotedAtMs: deps.now(),
+      blockNumber,
+    };
+  }
+
+  const { addresses } = deps.contracts;
+  const poolKey = canonicalPoolKey(
+    addresses.gusd as Address,
+    reg.token,
+    reg.poolParams,
+    addresses.hook as Address,
+  );
+
+  let r: GpuQuoteResult;
+  try {
+    r = await gpuQuoterRead(deps).quoteBuy([poolKey, spendRaw]);
+  } catch {
+    return null; // the market cannot absorb this spend — the honest "can't quote"
+  }
+  // The exact-in quoter must spend exactly what was typed and deliver a
+  // fillable size; anything else is dust or a degenerate pool. The signed
+  // floor must reach one ledger grain — below it the minimum can't print
+  // and the order would sign floor-less.
+  const minSizeRaw = floorToLedgerGrain(applyBps(r.gpuOut, toleranceBps, "down"));
+  if (r.gusdIn !== spendRaw || r.gpuOut === 0n || minSizeRaw === 0n) return null;
+
+  // Legs decompose exactly like the size-first quote — the backstop's
+  // principal+fee is the issuance share, the rest is the market leg. The
+  // hook fee is taken in-kind in GPU on exact-in buys, so hookFeeGusd
+  // reads 0 here: the fee rides inside the all-in price, not beside it.
+  const legs: TradeLeg[] = [];
+  const marketGpu = r.nativeGpu + r.polGpu;
+  const backstopGusd = r.issueBase + r.issueFee;
+  if (marketGpu > 0n) {
+    legs.push({
+      kind: "pool",
+      gpuUnits: formatGpuUnits(marketGpu),
+      gUsd: Number(r.gusdIn - backstopGusd) / 1e6,
+      fees: { protocol: Number(r.polFeeGusd + r.hookFeeGusd) / 1e6 },
+    });
+  }
+  if (r.backstopGpu > 0n) {
+    legs.push({
+      kind: "issuance",
+      gpuUnits: formatGpuUnits(r.backstopGpu),
+      gUsd: Number(backstopGusd) / 1e6,
+      fees: { issuance: Number(r.issueFee) / 1e6 },
+    });
+  }
+
+  const size = formatGpuUnits(r.gpuOut);
+  const notional = Number(r.gusdIn) / 1e6;
+
+  return {
+    asset,
+    side: "buy",
+    size,
+    price: notional / size,
+    notional,
+    maxPaid: gusd,
+    minOut: 0,
+    minSize: formatGpuUnits(minSizeRaw),
+    legs,
+    toleranceBps,
+    quotedAtMs: deps.now(),
+    blockNumber,
+  };
+}
+
+/** Money-first sell: proceeds-first. The quoter solves the gross units
+ *  whose net payout is the typed demand (seller fees ride inside those
+ *  units), and execution is the ordinary exact-in `router.sell` — sell the
+ *  derived units under the payout floor. The pool is the only sell depth. */
+export async function quoteSellByProceeds(
+  asset: AssetId,
+  gusd: number,
+  toleranceBps: number = DEFAULT_TOLERANCE_BPS,
+  deps: QuoteDeps = defaultQuoteDeps(),
+): Promise<TradeQuote | null> {
+  if (!Number.isFinite(gusd) || gusd <= 0) return null;
+  let gpuId: `0x${string}`;
+  try {
+    gpuId = gpuIdForAsset(asset);
+  } catch {
+    return null;
+  }
+  const reg = await deps.reads.registration(gpuId);
+  if (!reg || !reg.poolRegistered) return null; // sells need secondary depth
+  const proceedsRaw = parseGusd(gusd);
+  if (proceedsRaw === 0n || proceedsRaw > UINT128_MAX) return null;
+
+  const { addresses } = deps.contracts;
+  const poolKey = canonicalPoolKey(
+    addresses.gusd as Address,
+    reg.token,
+    reg.poolParams,
+    addresses.hook as Address,
+  );
+
+  const blockNumber = await deps.getBlockNumber();
+  let r: GpuQuoteResult;
+  try {
+    r = await gpuQuoterRead(deps).quoteSellExactOut([poolKey, proceedsRaw]);
+  } catch {
+    return null; // no depth for this payout — the honest "can't quote"
+  }
+  // The exact-out sell must deliver exactly the typed demand and cost a
+  // fillable size — below one ledger grain the units can't even print.
+  if (r.gusdOut !== proceedsRaw || r.gpuIn < GPU_LEDGER_GRAIN) return null;
+
+  const size = formatGpuUnits(r.gpuIn);
+  const notional = Number(r.gusdOut) / 1e6;
+  const minOutRaw = applyBps(r.gusdOut, toleranceBps, "down");
+
+  return {
+    asset,
+    side: "sell",
+    size,
+    price: notional / size,
+    notional,
+    maxPaid: 0,
+    minOut: Number(minOutRaw) / 1e6,
+    minSize: 0,
+    legs: [
+      {
+        kind: "pool",
+        gpuUnits: formatGpuUnits(r.gpuIn),
+        gUsd: Number(r.gusdOut) / 1e6,
+        fees: { protocol: Number(r.polFeeGusd + r.hookFeeGusd) / 1e6 },
+      },
+    ],
+    toleranceBps,
+    quotedAtMs: deps.now(),
+    blockNumber,
+  };
+}
+
+/** The slip's single quoting seam — dispatches on the request's basis and
+ *  side. Every basis executes under the limits its quote signed. */
+export async function quoteAsset(
+  request: TradeRequest,
+  deps: QuoteDeps = defaultQuoteDeps(),
+): Promise<TradeQuote | null> {
+  const toleranceBps = request.toleranceBps ?? DEFAULT_TOLERANCE_BPS;
+  if (request.basis === "gusd") {
+    return request.side === "buy"
+      ? quoteBuyBySpend(request.asset, request.gusd, toleranceBps, deps)
+      : quoteSellByProceeds(request.asset, request.gusd, toleranceBps, deps);
+  }
+  return request.side === "buy"
+    ? quoteBuy(request.asset, request.size, toleranceBps, deps)
+    : quoteSell(request.asset, request.size, toleranceBps, deps);
 }
