@@ -9,33 +9,31 @@
  * pricing path execution runs); execution re-quotes fresh at submit and
  * runs through the action runner, so every submit walks quote → approval →
  * signature → confirmation as one visible action, bounded by the signed
- * limits rather than the displayed numbers. Money-first buys pull the
- * typed spend exactly — nothing is refunded — so their cap row reads the
- * typed amount and the guarantee is the minimum-units floor; money-first
- * sells sign a payout floor. Pricing has one authoritative source on the
- * frontend: the API. Every figure the ledger prints derives from that
- * one price — the Price row restates it verbatim, and the ~ rows are
- * the typed order run through it — so hero, chart, feed, and ticket all
- * quote the same number and the eye never catches a second truth. The
- * chain oracle refines only the bound rows, and only on its favorable
- * side: a lower oracle lifts a receive floor, a higher one raises a pay
- * cap; otherwise the bound stays on the anchor. What the contracts
- * actually fill is signed fresh at submit from a live quote — any gap
- * between the anchored ledger and the fill is slippage, read in the
- * receipt, never a second displayed price. When the data layer asserts
- * no reference price, the slip goes dormant rather than quoting against
- * nothing.
+ * limits rather than the displayed numbers. The ledger rows render from
+ * the live quote — the same pricing path execution will sign — so the
+ * ticket and the fill speak one truth: buys price the signed spend cap
+ * (maxPaid, refundable on exact-out) and their units floor (minSize on
+ * money-first), sells price the signed payout floor (minOut) over the
+ * units actually sold. While the quote is in flight the rows fall back
+ * to anchor arithmetic off the API price — the same reference the desk
+ * hero and the chart stand on — display only; the submit button stays
+ * gated on the quote itself, and a gap between the fallback ledger and
+ * the fill is slippage, never a second displayed price. The chain oracle
+ * refines the fallback bounds only on their favorable side: a lower
+ * oracle lifts a receive floor, a higher one raises a pay cap. When the
+ * data layer asserts no reference price, the slip goes dormant rather
+ * than quoting against nothing.
  *
  * Unavailable markets speak in place: an unregistered asset, a closed
  * issuance, or an empty pool each get their own honest voice — never a
  * silent dead button.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ActionRecord } from "@/domain/actions";
 import type { TradeAvailability, TradeQuote, TradeRequest, TradeSide } from "@/domain/types";
 import { parseAssetId } from "@/domain/types";
-import { fmtGusdLedger, fmtUnits, fmtUnitsLedger } from "@/domain/format";
+import { fmtGusdLedger, fmtUnitsLedger, fmtUnitsMax } from "@/domain/format";
 import { Pair } from "@/components/ui/pair";
 import { ActionStatus } from "@/components/ui/action-status";
 import { WalletlessNote } from "@/components/ui/walletless-note";
@@ -56,13 +54,6 @@ const QUOTE_DEBOUNCE_MS = 250;
 const GUSD_PRESETS = [10, 50, 100] as const;
 const UNIT_PRESETS = [1, 4, 10] as const;
 
-/** MAX writes the exact holding into the input — a rounded-up max would
- *  fail its own pre-flight. Balances arrive at 6-decimals grain; a sell's
- *  position is floored to that grain before it ever reaches the input. */
-function maxText(value: number): string {
-  return value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-}
-
 export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
@@ -78,6 +69,11 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const [quote, setQuote] = useState<TradeQuote | null | undefined>(undefined);
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The MAX click on a money-first sell quotes the full holding live —
+  // busy state + request counter discard stale responses (same debounce
+  // doctrine as the quote effect).
+  const [maxBusy, setMaxBusy] = useState(false);
+  const maxReq = useRef(0);
 
   // Per-mode text survives toggles and side switches — switching basis
   // never throws away what the user already typed there.
@@ -139,21 +135,24 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
 
   const position = account.positions.find((p) => p.asset === assetId);
 
-  // Keep the receipt visible; reset to idle when the user changes inputs.
+  // Keep the receipt visible; reset to idle and clear a stale pre-flight
+// refusal when the user changes inputs.
   useEffect(() => {
     setSettled((s) => (s ? null : s));
+    setError(null);
   }, [unitsText, gusdText, side, toleranceBps]);
 
-  // The wallet context row — what this side draws on, with MAX where the
-  // basis can consume it: the whole balance in money-first buys, the
-  // whole holding in size-first sells. A buy in units mode or a sell in
-  // money-first mode shows the figure without a key (there is no exact
-  // inversion to fill).
+  // The wallet context row — what this side draws on, with MAX wherever a
+  // concrete figure can fill the input: the whole balance in money-first
+  // buys, the whole holding in size-first sells — and, on money-first
+  // sells, the holding quoted live with its net proceeds filling the
+  // input. The label prints the 6-dec grain so a typed-back figure
+  // visibly differs from the exact holding.
   const context =
     connected && side === "buy"
       ? { label: `balance ${fmtGusdLedger(account.gUsdBalance)} gUSD`, max: account.gUsdBalance, canMax: mode === "gusd" }
       : connected && position && position.size > 0
-        ? { label: `holding ${fmtUnits(position.size)} ${assetId}`, max: Math.floor(position.size * 1e6) / 1e6, canMax: mode === "units" }
+        ? { label: `holding ${fmtUnitsMax(position.size)} ${assetId}`, max: Math.floor(position.size * 1e6) / 1e6, canMax: true }
         : null;
 
   // The availability gate, in the design system's amber voice. Undefined
@@ -171,6 +170,36 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       // dashes say "no numbers"; this says why.
       gate = "Nothing to quote this sell against yet — the pool holds no depth.";
     }
+  }
+
+  // MAX fills the input with an exact figure. Everywhere the input IS the
+  // balance/holding (money-first buys, size-first sells) that's the direct
+  // max. On money-first sells the input is the proceeds, so the click
+  // quotes the entire holding and fills the net proceeds, floored to the
+  // 6-dec grain — the follow-up re-quote then derives units within the
+  // holding, so its pre-flight passes on its own.
+  async function onMax() {
+    if (!asset || context === null) return;
+    if (side === "sell" && mode === "gusd") {
+      const req = ++maxReq.current;
+      setMaxBusy(true);
+      try {
+        const q = await trading.quote({
+          asset,
+          side: "sell",
+          basis: "units",
+          size: context!.max,
+          toleranceBps,
+        });
+        if (q !== null && maxReq.current === req) setGusdText(fmtUnitsMax(q.notional));
+      } catch {
+        // The chain can't price the full holding — leave the input alone.
+      } finally {
+        if (maxReq.current === req) setMaxBusy(false);
+      }
+      return;
+    }
+    setActiveText(fmtUnitsMax(context!.max));
   }
 
   async function onSubmit() {
@@ -198,22 +227,78 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   }
 
   // Ledger terms, each printed at 4 decimals so the rows visibly close.
-  // Every figure is anchored arithmetic off the API price — the same
-  // reference the desk hero and the chart stand on — never a
-  // quote-derived all-in number, which would read as a second, competing
-  // truth a few decimals away. The ~ rows are the typed order run
-  // through the anchor; the bound rows take the chain oracle when it
-  // moves the bound in the user's favor (a lower oracle lifts a receive
-  // floor, a higher one raises a pay cap) and stay on the anchor
-  // otherwise. Execution signs its own fresh bounds at submit; a gap
-  // between this ledger and the fill is slippage, not a second price.
+  // Source of truth is the live quote — the same pricing path execution
+  // signs at submit — so the ticket and the fill can't disagree: buys
+  // price the signed spend cap (maxPaid; the typed spend itself on
+  // money-first, exact-pull with no refund) and their units floor
+  // (minSize on money-first), sells price the signed payout floor
+  // (minOut) over the units actually sold. While the quote is in flight
+  // the rows fall back to anchor arithmetic off the API price — the same
+  // reference the desk hero and the chart stand on — with the bounds
+  // oracle-refined on their favorable side (a lower oracle lifts a
+  // receive floor, a higher one raises a pay cap). A gap between the
+  // fallback ledger and the fill is slippage, not a second price; submit
+  // stays gated on the quote.
 
-  // The anchor and its oracle-refined bounds. Null anchor → no rows, the
-  // dashes speak.
+  // The anchor's oracle-refinement input. Null when the API publishes no
+  // oracle figure — the fallback rows then stand on the anchor alone.
   const oraclePrice = availability?.oraclePrice ?? null;
 
   let ledgerRows: ReactNode = null;
-  if (referencePrice !== null && referencePrice > 0 && validInput && quote !== null) {
+  if (quote !== null && quote !== undefined && quote.asset === asset && quote.side === side && validInput) {
+    if (side === "buy") {
+      ledgerRows =
+        mode === "gusd" ? (
+          <>
+            <LedgerRow
+              label="You receive"
+              value={`~${fmtUnitsLedger(quote.size)} ${assetId}`}
+              strong
+            />
+            <LedgerRow
+              label="Min you receive"
+              value={`${fmtUnitsLedger(quote.minSize)} ${assetId}`}
+            />
+            <LedgerRow label="Max you pay" value={`${fmtGusdLedger(quote.maxPaid)} gUSD`} />
+          </>
+        ) : (
+          <>
+            <LedgerRow
+              label="You pay"
+              value={`~${fmtGusdLedger(quote.notional)} gUSD`}
+              strong
+            />
+            <LedgerRow label="Max you pay" value={`${fmtGusdLedger(quote.maxPaid)} gUSD`} />
+          </>
+        );
+    } else {
+      ledgerRows =
+        mode === "gusd" ? (
+          <>
+            <LedgerRow
+              label="You sell"
+              value={`~${fmtUnitsLedger(quote.size)} ${assetId}`}
+              strong
+            />
+            <LedgerRow label="Min you receive" value={`${fmtGusdLedger(quote.minOut)} gUSD`} />
+          </>
+        ) : (
+          <>
+            <LedgerRow
+              label="You receive"
+              value={`~${fmtGusdLedger(quote.notional)} gUSD`}
+              strong
+            />
+            <LedgerRow
+              label="Min you receive"
+              value={`${fmtGusdLedger(quote.minOut)} gUSD`}
+            />
+          </>
+        );
+    }
+  } else if (quote === undefined && referencePrice !== null && referencePrice > 0 && validInput) {
+    // Fallback while the quote is in flight: anchor arithmetic off the API
+    // price. Display only — the submit button stays gated on the quote.
     const g = activeValue;
     // Bounds: the oracle enters only on its favorable side — a lower
     // oracle lifts a receive floor, a higher one raises a pay cap.
@@ -232,7 +317,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
             />
             <LedgerRow
               label="Min you receive"
-              value={`${fmtUnitsLedger(g / minBoundPrice)} ${assetId}`}
+              value={`${fmtUnitsLedger(g / maxBoundPrice)} ${assetId}`}
             />
             <LedgerRow label="Max you pay" value={`${fmtGusdLedger(g)} gUSD`} />
           </>
@@ -254,10 +339,6 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
               label="You sell"
               value={`~${fmtUnitsLedger(g / referencePrice)} ${assetId}`}
               strong
-            />
-            <LedgerRow
-              label="Max you pay"
-              value={`${fmtUnitsLedger(g / maxBoundPrice)} ${assetId}`}
             />
             <LedgerRow label="Min you receive" value={`${fmtGusdLedger(g)} gUSD`} />
           </>
@@ -331,11 +412,11 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           <span className="num text-[10.5px] text-dim">{context.label}</span>
           <button
             type="button"
-            onClick={() => setActiveText(maxText(context.max))}
-            disabled={!context.canMax || context.max <= 0}
+            onClick={onMax}
+            disabled={!context.canMax || context.max <= 0 || maxBusy}
             className="num border-b border-rule px-1.5 text-[10.5px] text-dim transition-colors hover:text-amber disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-dim"
           >
-            MAX
+            {maxBusy ? "…" : "MAX"}
           </button>
         </div>
       )}
@@ -395,11 +476,11 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       </div>
 
       {/* The ticket's ledger — one price, the API's. The Price row
-          restates it; every other row is the typed order run through
-          that anchor, with the bounds oracle-refined in the user's
-          favor. Rows render from the anchor the moment the input moves;
-          they go to dashes only when the anchor is missing or the chain
-          says it can't price the order at all. */}
+          restates the anchor; the term rows render from the live quote
+          (execution's own pricing path) the moment it lands, falling
+          back to anchor arithmetic only while the quote is in flight.
+          They go to dashes when the anchor is missing or the chain says
+          it can't price the order at all. */}
       <dl className="space-y-1.5 text-[12.5px]">
         <LedgerRow
           label="Price"

@@ -1,7 +1,7 @@
 /**
  * Post-confirmation reconciliation — the runner's default reconcile hook.
  *
- * Two distinct things happen when an action confirms, in order:
+ * Three distinct things happen when an action confirms, in order:
  *
  *   1. stores — the account store re-reads every balance and position from
  *      the contracts (always); then the indexed wallet-activity and market
@@ -13,12 +13,22 @@
  *      what draws the confirmed-vs-indexed distinction in the ledgers;
  *      until the indexer catches up, ledgers keep "this session"
  *      provenance. Indexing lag is not a failure and never renders as one.
+ *   3. follow — when the first pass saw fewer hashes than the action
+ *      confirmed, the result carries a bounded backoff (1s/3s/8s/15s) the
+ *      runner starts: it re-checks the indexer and re-pulls the activity
+ *      store as evidence grows, so CONFIRMED flips to INDEXED within
+ *      seconds of the indexer catching up — no reload. The timers live
+ *      here, scoped to this one action, and die with the budget.
  */
 
 import type { IndexerPort } from "@/domain/indexer";
 import { INDEXED_EVENT_NAMES } from "@/domain/indexer";
 import type { TxPort } from "@/domain/ports";
 import type { OnChainAccountStore } from "./account-store";
+
+/** The follow-up backoff, ms between re-checks: ~27s of budget before the
+ *  reconciler gives up and ledgers keep "this session" provenance. */
+const FOLLOW_UP_DELAYS_MS = [1_000, 3_000, 8_000, 15_000] as const;
 
 export interface ReconciliationResult {
   /** The account store finished its contract re-read. */
@@ -28,6 +38,15 @@ export interface ReconciliationResult {
    * or it hasn't caught up yet: ledgers keep "this session" provenance.
    */
   indexed: readonly string[] | null;
+  /**
+   * The follow-up check, present only when the first pass was incomplete —
+   * null evidence, or fewer hashes than the action confirmed: a bounded
+   * backoff re-reads the indexer (1s/3s/8s/15s) and calls `onUpdate` with
+   * the grown evidence until every hash is indexed or the budget runs out —
+   * indexing lag resolves in the ledgers without a reload. Fire-and-forget
+   * from the runner's side; it never throws.
+   */
+  follow?: (onUpdate: (indexed: readonly string[] | null) => void) => void;
 }
 
 export interface ReconcilerDeps {
@@ -119,13 +138,60 @@ export function makeReconciler(
     }
     if (fromBlock === null) return { balances, indexed: null };
 
-    const events = await indexer.getUserEvents(snap.address, {
-      fromBlock,
-      events: INDEXED_EVENT_NAMES,
-    });
-    if (!events) return { balances, indexed: null };
+    const address = snap.address;
 
-    const seen = new Set(events.map((e) => e.txHash.toLowerCase()));
-    return { balances, indexed: hashes.filter((h) => seen.has(h.toLowerCase())) };
+    // The evidence read, shared by the first pass and the follow-up: which
+    // of the action's hashes the indexer reflects so far (null on failure).
+    const fetchIndexed = async (
+      from: number,
+    ): Promise<readonly string[] | null> => {
+      try {
+        const events = await indexer.getUserEvents(address, {
+          fromBlock: from,
+          events: INDEXED_EVENT_NAMES,
+        });
+        if (!events) return null;
+        const seen = new Set(events.map((e) => e.txHash.toLowerCase()));
+        return hashes.filter((h) => seen.has(h.toLowerCase()));
+      } catch {
+        return null;
+      }
+    };
+
+    const indexed = await fetchIndexed(fromBlock);
+    if (indexed !== null && indexed.length >= hashes.length) {
+      return { balances, indexed };
+    }
+
+    // Incomplete first pass — null evidence (the indexer answered nothing
+    // usable) or fewer hashes than the action confirmed. Same treatment:
+    // lag, not failure. The result carries a bounded backoff the runner
+    // starts: it re-checks until every hash is seen or the budget runs out
+    // (~27s), re-pulling the activity store as the evidence grows so
+    // ledgers flip to "indexed" without a reload. Best-effort and never
+    // throwing; the first-pass evidence already stands in the result.
+    const follow = (onUpdate: (indexed: readonly string[] | null) => void): void => {
+      void (async () => {
+        let latest: readonly string[] = indexed ?? [];
+        for (const delayMs of FOLLOW_UP_DELAYS_MS) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          const next = await fetchIndexed(fromBlock);
+          if (next !== null && next.length > latest.length) {
+            latest = next;
+            if (deps.activity) {
+              try {
+                await deps.activity.refresh();
+              } catch {
+                // The store's own refresh logs failures.
+              }
+            }
+            onUpdate(latest);
+            if (latest.length >= hashes.length) return;
+          }
+        }
+      })();
+    };
+
+    return { balances, indexed, follow };
   };
 }

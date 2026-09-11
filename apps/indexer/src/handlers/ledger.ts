@@ -20,7 +20,12 @@ ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({
+      ...zeroProtocolStats(keys.chainId),
+      revenueDistributedGusd: amount,
+      revenueToVaultGusd: toVault,
+      revenueToTreasuryGusd: toTreasury,
+    })
     .onConflictDoUpdate((row) => ({
       revenueDistributedGusd: row.revenueDistributedGusd + amount,
       revenueToVaultGusd: row.revenueToVaultGusd + toVault,
@@ -29,7 +34,7 @@ ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
 
   await context.db
     .insert(sgusdVault)
-    .values(zeroSgusdVault(keys.chainId))
+    .values({ ...zeroSgusdVault(keys.chainId), revenueGusd: toVault })
     .onConflictDoUpdate((row) => ({
       revenueGusd: row.revenueGusd + toVault,
     }));

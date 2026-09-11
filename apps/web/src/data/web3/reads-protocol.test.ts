@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   stableBalance: 1_500_000n as bigint,
   gusdPaused: false,
   convertToAssets: 1_000_000n as bigint,
+  convertToAssetsError: null as Error | null,
   seeded: true,
 }));
 
@@ -38,6 +39,7 @@ vi.mock("./contracts", () => ({
       read: {
         convertToAssets: async () => {
           h.rpcCalls.push("sgusd.convertToAssets");
+          if (h.convertToAssetsError !== null) throw h.convertToAssetsError;
           return h.convertToAssets;
         },
         seeded: async () => {
@@ -379,7 +381,32 @@ describe("gusdState", () => {
 });
 
 describe("sgusdState", () => {
-  it("derives the share price from vault aggregates, caps stay on RPC", async () => {
+  it("prices the share on-chain — convertToAssets(1e6) is primary", async () => {
+    // The rate is execution-adjacent (it prices stake/unstake), so it rides
+    // the RPC; the vault mirror backs it only when the direct read fails.
+    // Caps stay direct reads either way.
+    h.fetchResponder = () =>
+      json(200, {
+        stats: { mintFeeBps: 0, redeemFeeBps: 0, hookFeeBps: 50 },
+        vault: {
+          seededGusd: "1000000",
+          depositsGusd: "500000",
+          withdrawsGusd: "0",
+          sharesMinted: "1500000",
+          sharesBurned: "500000",
+          revenueGusd: "25000",
+        },
+      });
+    h.convertToAssets = 1_525_000n; // the aggregate WOULD also derive 1.525 — RPC wins
+    const r = reads.contractReadsWithIndexer();
+    const out = await r.sgusdState(OWNER);
+    expect(out.rate).toBe(1.525);
+    expect(h.rpcCalls).toContain("sgusd.convertToAssets");
+    expect(h.rpcCalls).toContain("sgusd.maxDeposit");
+    expect(h.rpcCalls).toContain("sgusd.maxWithdraw");
+  });
+
+  it("derives the rate from vault aggregates when the RPC read fails", async () => {
     // sgUSD shares are 6-dec (1:1 genesis, same as the gUSD asset), so all
     // six vault aggregates are raw6 and the per-1-sgUSD rate is
     // (10^6 × assets) / shares, both sides raw6.
@@ -398,16 +425,15 @@ describe("sgusdState", () => {
           revenueGusd: "25000",
         },
       });
-    h.convertToAssets = 1_525_000n; // what the contract WOULD answer — must not be asked
+    h.convertToAssetsError = new Error("rpc down");
     const r = reads.contractReadsWithIndexer();
     const out = await r.sgusdState(OWNER);
     expect(out.rate).toBe(1.525);
-    expect(h.rpcCalls).not.toContain("sgusd.convertToAssets");
+    expect(h.rpcCalls).toContain("sgusd.convertToAssets"); // tried, failed
     expect(h.rpcCalls).toContain("sgusd.maxDeposit");
-    expect(h.rpcCalls).toContain("sgusd.maxWithdraw");
   });
 
-  it("asks the contract for the price when the vault has zero shares", async () => {
+  it("falls back to RPC when the vault has zero shares and the RPC read fails", async () => {
     h.fetchResponder = () =>
       json(200, {
         stats: { mintFeeBps: 0, redeemFeeBps: 0, hookFeeBps: 50 },
@@ -420,11 +446,10 @@ describe("sgusdState", () => {
           revenueGusd: "0",
         },
       });
-    h.convertToAssets = 777_000n; // convertToAssets(1e6 shares) raw6
+    h.convertToAssetsError = new Error("rpc down");
     const r = reads.contractReadsWithIndexer();
-    const out = await r.sgusdState(OWNER);
-    expect(out.rate).toBe(0.777);
-    expect(h.rpcCalls).toContain("sgusd.convertToAssets");
+    await r.sgusdState(OWNER);
+    expect(h.rpcCalls).toContain(`rpc.sgusdState:${OWNER}`);
   });
 
   it("falls back to RPC when the vault mirror is unpublished", async () => {

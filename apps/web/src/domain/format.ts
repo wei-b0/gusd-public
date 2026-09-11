@@ -143,6 +143,16 @@ export function fmtUnits(value: number): string {
   return value.toFixed(digits);
 }
 
+/** Ledger-max grain, 6 decimals, floored and trimmed: 6.933849 / 1.519804 /
+ *  0.005146. The holding/balance label grain — what you see parses back
+ *  exactly, so a typed-back figure never silently exceeds the real raw. */
+export function fmtUnitsMax(value: number): string {
+  return (Math.floor(Math.abs(value) * 1e6) / 1e6)
+    .toFixed(6)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
+}
+
 /** gUSD notional, full with separators: 1,242,380 */
 export function fmtFull(value: number): string {
   return int.format(Math.round(value));

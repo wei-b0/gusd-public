@@ -7,6 +7,7 @@ import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { approveSpec } from "../approvals";
 import { contractReads } from "../reads";
+import { contractReadsWithIndexer } from "../reads-protocol";
 import { mintSpec, planMintApproval } from "../gusd/actions";
 import { depositSpec, planEarnApproval, withdrawSpec } from "./actions";
 
@@ -126,6 +127,21 @@ d("sGUSD stake/unstake against the deployed protocol", () => {
     expect(state.seeded).toBe(true);
     const rateRaw = await contracts.sgusd.read.convertToAssets([1_000_000n]);
     expect(state.rate).toBe(Number(rateRaw) / 1e6);
+  }, 30_000);
+
+  it("the indexed read seam prices the share identically to the direct reads", async () => {
+    // The rate is execution-adjacent (it prices stake/unstake), so the
+    // indexed seam reads it on-chain via convertToAssets — the same RPC
+    // call the pure path makes. The two implementations must agree to the
+    // last raw unit; the vault aggregate behind them only backs a failed
+    // RPC read. Inert without NEXT_PUBLIC_INDEXER_URL (no fetch, no call).
+    if (!process.env.NEXT_PUBLIC_INDEXER_URL) return;
+    const [direct, indexed] = await Promise.all([
+      contractReads().sgusdState(owner),
+      contractReadsWithIndexer().sgusdState(owner),
+    ]);
+    expect(indexed.rate).toBe(direct.rate);
+    expect(indexed.seeded).toBe(direct.seeded);
   }, 30_000);
 
   it("grows the share price through the ledger, then unstakes assets-denominated", async () => {

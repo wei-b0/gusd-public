@@ -45,11 +45,23 @@ ponder.on("sgUSD:Deposit", async ({ event, context }) => {
   // Stake position basis: assets in for shares minted (WAC in gUSD terms).
   await recordVaultDeposit(context.db, keys, owner, assets, shares);
 
+  // The seed's Deposit (owner = this sgUSD contract, emitted before Seeded)
+  // contributes its SHARES but not its assets — seededGusd counts those once
+  // via Seeded. The event's own delta rides the insert VALUES too: Ponder
+  // inserts `values` verbatim on first sight, so an all-zero insert silently
+  // drops the first event's delta.
+  const isSeedDeposit = owner.toLowerCase() === event.log.address.toLowerCase();
+  const depositsDelta = isSeedDeposit ? 0n : assets;
   await context.db
     .insert(sgusdVault)
-    .values(zeroSgusdVault(keys.chainId))
+    .values({
+      ...zeroSgusdVault(keys.chainId),
+      depositsGusd: depositsDelta,
+      sharesMinted: shares,
+      depositCount: 1,
+    })
     .onConflictDoUpdate((row) => ({
-      depositsGusd: row.depositsGusd + assets,
+      depositsGusd: row.depositsGusd + depositsDelta,
       sharesMinted: row.sharesMinted + shares,
       depositCount: row.depositCount + 1,
     }));
@@ -77,7 +89,12 @@ ponder.on("sgUSD:Withdraw", async ({ event, context }) => {
 
   await context.db
     .insert(sgusdVault)
-    .values(zeroSgusdVault(keys.chainId))
+    .values({
+      ...zeroSgusdVault(keys.chainId),
+      withdrawsGusd: assets,
+      sharesBurned: shares,
+      withdrawCount: 1,
+    })
     .onConflictDoUpdate((row) => ({
       withdrawsGusd: row.withdrawsGusd + assets,
       sharesBurned: row.sharesBurned + shares,
@@ -93,7 +110,7 @@ ponder.on("sgUSD:Seeded", async ({ event, context }) => {
 
   await context.db
     .insert(sgusdVault)
-    .values(zeroSgusdVault(keys.chainId))
+    .values({ ...zeroSgusdVault(keys.chainId), seededGusd: assets })
     .onConflictDoUpdate((row) => ({
       seededGusd: row.seededGusd + assets,
     }));

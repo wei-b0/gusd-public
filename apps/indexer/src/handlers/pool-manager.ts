@@ -158,7 +158,7 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), lpFeesGusdEst: lpFeeEst })
     .onConflictDoUpdate((row) => ({
       lpFeesGusdEst: row.lpFeesGusdEst + lpFeeEst,
     }));

@@ -291,7 +291,9 @@ describe("execute gates", () => {
     h.gpuBalance = parseGpuUnits(1);
     const { port, actions } = makePort();
     await expect(port.execute({ asset: "H100", side: "sell", basis: "units", size: 2 })).rejects.toThrow(
-      "This wallet holds 1.000 H100 — this sell needs 2.000 H100.",
+      // The held figure prints floored at the 4-dec ledger grain — it can
+      // never visually equal the demand the way the 3-dec rounded forms did.
+      "This wallet holds 1.0000 H100 — this sell needs 2.0000 H100.",
     );
     expect(actions.plans).toHaveLength(0);
   });
@@ -417,7 +419,7 @@ describe("sell plans", () => {
     const { port, actions } = makePort();
     await expect(
       port.execute({ asset: "H100", side: "sell", basis: "gusd", gusd: 3.8, toleranceBps: 50 }),
-    ).rejects.toThrow("This wallet holds 2.000 H100 — this sell needs 2.002 H100.");
+    ).rejects.toThrow("This wallet holds 2.0000 H100 — this sell needs 2.0020 H100.");
     expect(actions.plans).toHaveLength(0);
   });
 });

@@ -383,8 +383,8 @@ describe("vault aggregates", () => {
     seededGusd: "500000000", // 500 gUSD
     depositsGusd: "250000000", // 250 gUSD
     withdrawsGusd: "50000000", // 50 gUSD
-    sharesMinted: "300000000000000000000", // 300 sGUSD
-    sharesBurned: "50000000000000000000", // 50 sGUSD
+    sharesMinted: "300000000", // 300 sGUSD raw6 (shares are 6-dec)
+    sharesBurned: "50000000", // 50 sGUSD
     depositCount: 4,
     withdrawCount: 1,
     revenueGusd: "1000000", // 1 gUSD
@@ -395,8 +395,14 @@ describe("vault aggregates", () => {
     expect(vaultDeployedGusd(vault())).toBe(701);
   });
 
-  it("sGUSD supply = minted − burned shares (18-dec)", () => {
+  it("sGUSD supply = minted − burned shares (6-dec)", () => {
     expect(sgusdSupply(vault())).toBe(250);
+  });
+
+  it("parses the live session aggregate at the 6-dec scale", () => {
+    // 1,519,804 raw shares minted, none burned → 1.519804 sGUSD (the 1e18
+    // scale printed 0 and the 29× rate hid behind it).
+    expect(sgusdSupply(vault({ sharesMinted: "1519804", sharesBurned: "0" }))).toBe(1.519804);
   });
 
   it("malformed wire figures yield null, never a partial guess", () => {

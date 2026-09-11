@@ -150,10 +150,13 @@ export class OnChainTradingPort implements TradingPort {
         owner,
       );
       if (heldRaw < spendRaw) {
+        // The held figure prints floored at the ledger grain — it never
+        // reads above the true raw, so it can't visually equal the demand.
+        const held = Math.floor(formatGusdRaw(heldRaw) * 1e4) / 1e4;
         throw new Error(
           exactPullBuy
-            ? `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy spends ${fmtGusdLedger(quote.maxPaid)} gUSD in full. Mint gUSD from the reserve asset first.`
-            : `This wallet holds ${fmtGusdLedger(formatGusdRaw(heldRaw))} gUSD — this buy needs up to ${fmtGusdLedger(quote.maxPaid)} gUSD. Mint gUSD from the reserve asset first.`,
+            ? `This wallet holds ${fmtGusdLedger(held)} gUSD — this buy spends ${fmtGusdLedger(quote.maxPaid)} gUSD in full. Mint gUSD from the reserve asset first.`
+            : `This wallet holds ${fmtGusdLedger(held)} gUSD — this buy needs up to ${fmtGusdLedger(quote.maxPaid)} gUSD. Mint gUSD from the reserve asset first.`,
         );
       }
       // The exact-pull approval is the typed spend itself; the capped one
@@ -173,8 +176,12 @@ export class OnChainTradingPort implements TradingPort {
       // Same pre-flight on the sell side: no GPU holding, no approval ask.
       const heldRaw = await this.quoteDeps.reads.balanceOf(reg.token, owner);
       if (heldRaw < sizeRaw) {
+        // Held prints floored at the 4-dec ledger grain ("holds 6.9338 —
+        // needs 6.9340") so the two figures stay distinct even when the
+        // 3-dec rounded forms would read identical.
+        const held = Math.floor(formatGpuUnits(heldRaw) * 1e4) / 1e4;
         throw new Error(
-          `This wallet holds ${fmtUnits(formatGpuUnits(heldRaw))} ${request.asset} — this sell needs ${fmtUnits(quote.size)} ${request.asset}.`,
+          `This wallet holds ${fmtUnitsLedger(held)} ${request.asset} — this sell needs ${fmtUnitsLedger(quote.size)} ${request.asset}.`,
         );
       }
       const need = await planApproval(

@@ -32,6 +32,11 @@ through the oracle's `/v1/protocol` proxy.
 | oracle      | `/v1/prices*`, `/v1/protocol` proxy, `/v1/health`              | 8080      |
 | publisher   | publishes the benchmark to `GPUPriceOracle` (chain by default) | —         |
 
+> One-command posture: `./start-dev.sh` (fresh Anvil + full `Deploy.full`
+> redeploy + backend containers; `--build` builds the images on demand) and
+> `./stop-dev.sh` (`--volumes` also wipes Postgres). The rest of this README
+> is the manual path those scripts encode.
+
 ## Prerequisites
 
 - Docker Desktop

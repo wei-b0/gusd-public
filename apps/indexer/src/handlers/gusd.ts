@@ -41,7 +41,7 @@ ponder.on("GUSD:Minted", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), gusdMintedGusd: gusdOut, mintCount: 1 })
     .onConflictDoUpdate((row) => ({
       gusdMintedGusd: row.gusdMintedGusd + gusdOut,
       mintCount: row.mintCount + 1,
@@ -76,7 +76,7 @@ ponder.on("GUSD:Redeemed", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), gusdRedeemedGusd: gusdIn, redeemCount: 1 })
     .onConflictDoUpdate((row) => ({
       gusdRedeemedGusd: row.gusdRedeemedGusd + gusdIn,
       redeemCount: row.redeemCount + 1,

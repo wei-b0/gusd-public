@@ -146,11 +146,18 @@ export function prepareContractsCopy(): string {
 }
 
 /** Runs one forge script against the private anvil from the contracts copy. */
-export async function runForgeScript(script: string): Promise<void> {
+export async function runForgeScript(script: string, sig?: string): Promise<void> {
   const dir = prepareContractsCopy();
   const { code, output } = await spawnAndCollect(
     "forge",
-    ["script", script, "--rpc-url", ANVIL_URL, "--broadcast"],
+    [
+      "script",
+      script,
+      ...(sig !== undefined ? ["--sig", sig] : []),
+      "--rpc-url",
+      ANVIL_URL,
+      "--broadcast",
+    ],
     { cwd: dir, env: { ...process.env, PRIVATE_KEY: DEPLOYER_PK } },
   );
   if (code !== 0) {

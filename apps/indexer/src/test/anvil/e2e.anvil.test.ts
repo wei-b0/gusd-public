@@ -85,13 +85,14 @@ async function waitForSchema(
 
 beforeAll(async () => {
   await spawnAnvil();
-  // Deployment + the FULL Demo churn on this virgin chain: genesis funding +
-  // buy (Issued), external LP, pool buy, mixed-leg buy, sell, reprice to
-  // 30000, repriced gUSD issuance buy, harvest + distribute. (IndexerDemo is
-  // the dev-chain variant that skips Demo's genesis step — it fails on a
-  // fresh chain with TRANSFER_FROM_FAILED.)
-  await runForgeScript("Deploy");
-  await runForgeScript("Demo");
+  // Deploy.full — the canonical deployed + churned chain in one script:
+  // 7 SKUs (oracle seed prices, enabled issuance, canonical pools), quoter
+  // floats funded, mock USDT, the product churn (issuance + pool buys, a
+  // sell, LP), and the closing stake + distribute. The older Deploy + Demo
+  // pair drifted apart — minimal Deploy deliberately leaves the quoter
+  // floats unfunded ("Floats are funded by Deploy.full"), so Demo's first
+  // quote reverts NoFloat on a fresh chain.
+  await runForgeScript("script/Deploy.full.s.sol", "runFull()");
   pg = await connectPg();
   await dropScratchSchemas(pg);
 }, 600_000);
@@ -112,21 +113,73 @@ d("indexer onchain suites (gated)", () => {
       });
       instances.push(instA);
 
-      // The churn's oracle publication (IndexerDemo step 6) is the
-      // last-landed protocol event; its presence in the derived state means
-      // the historical backfill reached it.
-      const rows = await schemaQuery<{ price: string }>(
-        `select price from "gusd_index_e2e_a".oracle_state where gpu_id = $1`,
-        [H100_GPU_ID],
+      // Deploy.full's closing stake + distribute are the chain's
+      // last-landed protocol events; their presence in the derived state
+      // means the historical backfill reached the churn's final blocks. The
+      // figures are the script's deterministic closing state (the same
+      // numbers two independent Deploy.full replays landed).
+      // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
+      // arrive as strings (same grain as the count(*)::text probes below).
+      const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
+        `select revenue_gusd, deposit_count from "gusd_index_e2e_a".sgusd_vault`,
+        [],
       );
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.price).toBe("30000");
+      expect(closing).toHaveLength(1);
+      expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
+      expect(closing[0]!.revenue_gusd).toBe("1942037125");
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_e2e_a".pm_swap`,
         [],
       );
       expect(Number(swaps[0]!.count)).toBeGreaterThan(0);
+
+      // The vault singleton must equal the sums of its event tables — the
+      // chain's FIRST sgUSD event is the seed's own Deposit (owner = the
+      // sgUSD contract, emitted before Seeded), so an all-zero first-sight
+      // insert drops its delta: shares_minted one seed short, deposit_count
+      // one low, seeded missing entirely.
+      const sgusd = String(readDeployment().sgusd).toLowerCase();
+      const vault = await schemaQuery<{
+        seeded_gusd: string;
+        deposits_gusd: string;
+        withdraws_gusd: string;
+        shares_minted: string;
+        shares_burned: string;
+        deposit_count: string;
+        withdraw_count: string;
+        revenue_gusd: string;
+      }>(`select * from "gusd_index_e2e_a".sgusd_vault`, []);
+      expect(vault).toHaveLength(1);
+      const sums = await schemaQuery<{
+        seeded: string;
+        deposit_assets_user: string;
+        deposit_shares: string;
+        deposit_count: string;
+        withdraw_assets: string;
+        withdraw_shares: string;
+        withdraw_count: string;
+        revenue: string;
+      }>(
+        `select
+           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_seeded) as seeded,
+           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_deposited where lower(owner) <> $1) as deposit_assets_user,
+           (select coalesce(sum(shares), 0)::text from "gusd_index_e2e_a".sgusd_deposited) as deposit_shares,
+           (select count(*)::text from "gusd_index_e2e_a".sgusd_deposited) as deposit_count,
+           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_assets,
+           (select coalesce(sum(shares), 0)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_shares,
+           (select count(*)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_count,
+           (select coalesce(sum(to_vault), 0)::text from "gusd_index_e2e_a".revenue_distributed) as revenue`,
+        [sgusd],
+      );
+      expect(BigInt(vault[0]!.seeded_gusd)).toBe(BigInt(sums[0]!.seeded));
+      expect(BigInt(vault[0]!.deposits_gusd)).toBe(BigInt(sums[0]!.deposit_assets_user));
+      expect(BigInt(vault[0]!.shares_minted)).toBe(BigInt(sums[0]!.deposit_shares));
+      expect(vault[0]!.deposit_count).toBe(sums[0]!.deposit_count);
+      expect(BigInt(vault[0]!.withdraws_gusd)).toBe(BigInt(sums[0]!.withdraw_assets));
+      expect(BigInt(vault[0]!.shares_burned)).toBe(BigInt(sums[0]!.withdraw_shares));
+      expect(vault[0]!.withdraw_count).toBe(sums[0]!.withdraw_count);
+      expect(BigInt(vault[0]!.revenue_gusd)).toBe(BigInt(sums[0]!.revenue));
     },
     300_000,
   );
@@ -261,7 +314,10 @@ d("indexer onchain suites (gated)", () => {
         [H100_GPU_ID],
       );
       expect(state[0]!.price).toBe("32000");
-      expect(state[0]!.previous_price).toBe("30000"); // demo's pre-reorg value
+      // Deploy.full's churn reprices H100 27555 → 30000 ("oracle reprice"
+      // segment) — the last publication in history once the 31000 publish
+      // reverted, so it is what previous_price points at.
+      expect(state[0]!.previous_price).toBe("30000");
 
       expect(await swapCount()).toBe(swapsBefore);
       await instE.kill();

@@ -46,6 +46,19 @@ function indexedFromOutcome(outcome: unknown): readonly string[] | null {
   return indexed ?? null;
 }
 
+/** The reconciler's optional follow-up check, duck-typed the same way:
+ *  present only when the first pass saw fewer hashes than the action
+ *  confirmed. Null on ports that report no follow-up. */
+function followFromOutcome(
+  outcome: unknown,
+): ((onUpdate: (indexed: readonly string[] | null) => void) => void) | null {
+  if (outcome === null || typeof outcome !== "object" || !("follow" in outcome)) return null;
+  const follow = (outcome as { follow?: unknown }).follow;
+  return typeof follow === "function"
+    ? (follow as (onUpdate: (indexed: readonly string[] | null) => void) => void)
+    : null;
+}
+
 /** The stale-quote guard reads the head block; injectable for tests. */
 export type BlockNumberReader = () => Promise<number | null>;
 
@@ -189,6 +202,11 @@ export class ActionRunner {
       try {
         const outcome = await plan.reconcile(txIds);
         this.patch(id, { indexed: indexedFromOutcome(outcome) });
+        // When the first pass saw fewer hashes than the action confirmed,
+        // the reconciler hands back a bounded follow-up that re-checks as
+        // the indexer catches up. patch already works on terminal records,
+        // so the ledger flips to "indexed" as evidence lands — no reload.
+        followFromOutcome(outcome)?.((indexed) => this.patch(id, { indexed }));
       } catch (err) {
         // The transaction confirmed; a view that failed to refresh is a
         // console problem, not a user failure.

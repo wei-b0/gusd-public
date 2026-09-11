@@ -141,10 +141,12 @@ export function vaultDeployedGusd(v: SgusdVaultDto): number | null {
   }
 }
 
-/** sGUSD supply from the vault's ledger: minted shares − burned shares. */
+/** sGUSD supply from the vault's ledger: minted shares − burned shares.
+ *  Shares are 6-dec — same grain as the gUSD asset (ERC4626 with a zero
+ *  decimals offset), NOT 18-dec. */
 export function sgusdSupply(v: SgusdVaultDto): number | null {
   try {
-    return Number(BigInt(v.sharesMinted) - BigInt(v.sharesBurned)) / 1e18;
+    return Number(BigInt(v.sharesMinted) - BigInt(v.sharesBurned)) / 1e6;
   } catch {
     return null;
   }

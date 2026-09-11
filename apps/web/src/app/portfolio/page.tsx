@@ -10,16 +10,13 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { pairName } from "@/domain/types";
-import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, isFlatPct } from "@/domain/format";
+import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, fmtUnitsMax, isFlatPct } from "@/domain/format";
 import { isActionTerminal, type ActionRecord } from "@/domain/actions";
 import { useAccount, useActions, useEarn, useMarkets, useServices } from "@/data/services";
-import { useWalletActivity, useProtocolStats } from "@/data/protocol/hooks";
+import { useWalletActivity } from "@/data/protocol/hooks";
 import {
   basisFromVault,
-  gusdNumber,
   mergeActivity,
-  sgusdSupply,
-  vaultDeployedGusd,
   type ActivityRow,
 } from "@/data/protocol/map";
 import { PhaseTag } from "@/components/ui/action-status";
@@ -102,15 +99,11 @@ function PortfolioBook() {
       : true;
   });
   const hasIndexed = indexedRows.length > 0;
-  // The earning layer's cost basis (panel 03) and its aggregate size
-  // (panel 04) — null fields print "—" until the indexer lands them.
+  // The earning layer's cost basis (panel 03) — null fields print "—" until
+  // the indexer lands them. (Protocol-level vault aggregates live on the
+  // /gusd Earn panel, not in the personal portfolio.)
   const vaultBasis =
     activity.vaultPosition === null ? null : basisFromVault(activity.vaultPosition);
-  const stats = useProtocolStats();
-  const vault = stats?.vault ?? null;
-  const vaultDeployed = vault === null ? null : vaultDeployedGusd(vault);
-  const vaultSupply = vault === null ? null : sgusdSupply(vault);
-  const vaultRevenue = vault === null ? null : gusdNumber(vault.revenueGusd);
 
   // Mark to the displayed price: the venue price when a market layer exists,
   // otherwise the API's Index — never a simulated stand-in for either. The
@@ -131,9 +124,15 @@ function PortfolioBook() {
     const pnlPct = last === null || basis === null ? null : (last / basis - 1) * 100;
     return { p, last, unit, value, pnl, pnlPct };
   });
+  // Measured dust (value < 0.01 gUSD — a residual from a closed trade) is
+  // presentation noise, not a position: hidden below the 0.01 gUSD grain.
+  // Unmarkable rows (no price) stay — hiding for a missing price would be
+  // dishonest. Filtered before the meta so the count agrees with the table.
+  const DUST_GUSD = 0.01;
+  const visibleRows = rows.filter((r) => r.value === null || r.value >= DUST_GUSD);
   // The headline sums what can be marked; unmarkable positions print "—"
   // in their row rather than a fabricated 0 in the total.
-  const positionsValue = rows.reduce((sum, r) => sum + (r.value ?? 0), 0);
+  const positionsValue = visibleRows.reduce((sum, r) => sum + (r.value ?? 0), 0);
   // The share price is the vault's read; before the first read lands the
   // earning value prints 0 rather than an invented figure.
   const sGUsdValue = account.sGUsdBalance * (earn.rate ?? 0);
@@ -159,8 +158,8 @@ function PortfolioBook() {
 
       {/* 01 — GPU market positions */}
       <div className="mt-5">
-        <TuiPanel no="01" title="GPU market positions" meta={`${rows.length} markets`}>
-          {rows.length === 0 ? (
+        <TuiPanel no="01" title="GPU market positions" meta={`${visibleRows.length} markets`}>
+          {visibleRows.length === 0 ? (
             <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
               No market positions yet. Orders on{" "}
               <Link href="/markets" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
@@ -188,7 +187,7 @@ function PortfolioBook() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(({ p, last, unit, value, pnl, pnlPct }) => {
+                  {visibleRows.map(({ p, last, unit, value, pnl, pnlPct }) => {
                     const flat = pnlPct === null || isFlatPct(pnlPct);
                     return (
                       <tr key={p.asset} className="border-b border-rule last:border-b-0">
@@ -259,7 +258,7 @@ function PortfolioBook() {
 
           <TuiPanel no="03" title="Earning capital · sGUSD" meta="gUSD deployed">
             <dl className="border-t border-rule">
-              <Line label="sGUSD balance" value={`${fmtFull(account.sGUsdBalance)} sGUSD`} />
+              <Line label="sGUSD balance" value={`${fmtUnitsMax(account.sGUsdBalance)} sGUSD`} />
               <Line label="Value at rate" value={fmtGusd(sGUsdValue)} />
               {vaultBasis === null || vaultBasis.avgEntry === null ? (
                 <Line
@@ -280,34 +279,7 @@ function PortfolioBook() {
             </dl>
           </TuiPanel>
 
-          <TuiPanel
-            no="04"
-            title="Protocol positions"
-            meta={vault !== null ? "earning layer" : "lp · borrowing · staking"}
-          >
-            {vault === null ? (
-              <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
-                No protocol positions yet. Liquidity provision, borrowed exposure, and other
-                protocol roles appear here as they launch.
-              </p>
-            ) : (
-              <dl className="border-t border-rule">
-                <Line
-                  label="Vault · gUSD deployed"
-                  value={vaultDeployed === null ? "—" : fmtGusd(vaultDeployed)}
-                />
-                <Line
-                  label="sGUSD supply"
-                  value={vaultSupply === null ? "—" : `${fmtFull(vaultSupply)} sGUSD`}
-                />
-                <Line
-                  label="Revenue to vault"
-                  value={vaultRevenue === null ? "—" : fmtGusd(vaultRevenue)}
-                />
-              </dl>
-            )}
-          </TuiPanel>
-        </div>
+          </div>
 
         {/* 05 — activity: the indexed ledger merged with this session's
             in-flight / not-yet-indexed actions, newest first */}

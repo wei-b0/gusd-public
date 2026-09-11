@@ -52,7 +52,7 @@ export interface WalletPositionDto {
 
 export interface WalletVaultPositionDto {
   chainId: number;
-  /** Raw sgUSD shares (18-dec). */
+  /** Raw sgUSD shares (6-dec — same grain as the gUSD asset). */
   shares: string;
   /** Raw gUSD (6-dec) attributable deposit cost. */
   assetsCost: string;

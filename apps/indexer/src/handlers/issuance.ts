@@ -122,7 +122,13 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({
+      ...zeroProtocolStats(keys.chainId),
+      issuedGpu: amount,
+      issuedCount: 1,
+      issuanceProceedsGusd: base,
+      issuanceFeesGusd: fee,
+    })
     .onConflictDoUpdate((row) => ({
       issuedGpu: row.issuedGpu + amount,
       issuedCount: row.issuedCount + 1,

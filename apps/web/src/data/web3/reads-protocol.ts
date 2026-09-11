@@ -220,19 +220,22 @@ export function contractReadsWithIndexer(): ContractReads {
       try {
         const body = await fetchJson<StatsBody>("/stats");
         if (body === null || body.vault === null) return rpc.sgusdState(owner);
-        // Caps + seed flag stay direct reads; the share PRICE derives from
-        // the vault aggregates (assets = seeded + deposits − withdraws +
-        // revenue; shares = minted − burned). Zero shares → RPC truth.
-        const assets =
-          BigInt(body.vault.seededGusd) +
-          BigInt(body.vault.depositsGusd) -
-          BigInt(body.vault.withdrawsGusd) +
-          BigInt(body.vault.revenueGusd);
-        const shares = BigInt(body.vault.sharesMinted) - BigInt(body.vault.sharesBurned);
+        // Caps + seed flag stay direct reads. The share PRICE is execution-
+        // adjacent (it prices stake/unstake) — on-chain convertToAssets(1e6)
+        // is the primary source; the /stats aggregates (assets = seeded +
+        // deposits − withdraws + revenue; shares = minted − burned) only
+        // back it when the direct read fails. Zero shares → RPC truth.
         let rate: number;
-        if (shares <= 0n) {
+        try {
           rate = formatGusdRaw(await sgusd.read.convertToAssets([10n ** 6n]));
-        } else {
+        } catch {
+          const assets =
+            BigInt(body.vault.seededGusd) +
+            BigInt(body.vault.depositsGusd) -
+            BigInt(body.vault.withdrawsGusd) +
+            BigInt(body.vault.revenueGusd);
+          const shares = BigInt(body.vault.sharesMinted) - BigInt(body.vault.sharesBurned);
+          if (shares <= 0n) return rpc.sgusdState(owner);
           rate = formatGusdRaw((10n ** 6n * assets) / shares);
         }
         const [seeded, maxDeposit, maxWithdraw] = await Promise.all([

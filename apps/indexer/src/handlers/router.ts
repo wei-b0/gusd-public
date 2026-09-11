@@ -72,7 +72,7 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), buyCount: 1, buyVolumeGusd: paid })
     .onConflictDoUpdate((row) => ({
       buyCount: row.buyCount + 1,
       buyVolumeGusd: row.buyVolumeGusd + paid,
@@ -119,7 +119,7 @@ ponder.on("GpuRouter:Sell", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), sellCount: 1, sellVolumeGusd: out })
     .onConflictDoUpdate((row) => ({
       sellCount: row.sellCount + 1,
       sellVolumeGusd: row.sellVolumeGusd + out,

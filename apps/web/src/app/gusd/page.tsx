@@ -23,8 +23,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { isActionTerminal, type ActionOrigin, type ActionRecord } from "@/domain/actions";
 import type { EarnDirection, EarnQuote } from "@/domain/types";
-import { fmtClock, fmtFull, fmtGusdLedger, fmtGusdPrecise, fmtHash, fmtUnits } from "@/domain/format";
-import { formatStableRaw } from "@/domain/units";
+import { fmtClock, fmtFull, fmtGusdLedger, fmtGusdPrecise, fmtHash, fmtUnits, fmtUnitsMax } from "@/domain/format";
 import { LedgerRow } from "@/components/ui/ledger";
 import { ActionStatus, PhaseTag } from "@/components/ui/action-status";
 import { WalletlessNote } from "@/components/ui/walletless-note";
@@ -38,9 +37,7 @@ import {
 } from "@/data/services";
 import { getOnchainAccountStore, useOnchainAccount } from "@/data/onchain/account-store";
 import { useWalletActivity, useProtocolStats } from "@/data/protocol/hooks";
-import { mergeActivity, vaultDeployedGusd, sgusdSupply, type ActivityRow } from "@/data/protocol/map";
-import { stablesFor, type StableMeta } from "@/data/web3/stables";
-import { contractReads } from "@/data/web3/reads";
+import { mergeActivity, vaultDeployedGusd, sgusdSupply, gusdNumber, type ActivityRow } from "@/data/protocol/map";
 import { Gusd, SGusd } from "@/components/ui/pair";
 import { TuiPanel } from "@/components/ui/panel";
 import { GetDesk } from "@/components/gusd/get-desk";
@@ -171,17 +168,6 @@ function ModelStrip({ connected }: { connected: boolean }) {
       />
     </div>
   );
-}
-
-/** The chain's funding stables, cheapest fail in the balances rail: no
- *  deployment/config → empty list and the rail drops its stable rows rather
- *  than crashing the page. */
-function useStableAssets(): StableMeta[] {
-  try {
-    return stablesFor();
-  } catch {
-    return [];
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -655,77 +641,10 @@ function Balances({ account }: { account: ReturnType<typeof useAccount> }) {
     <TuiPanel title="Balances" meta={account.label ?? undefined}>
       <dl className="p-3.5">
         <Row label={<>Liquid · <Gusd /></>} value={fmtFull(account.gUsdBalance)} />
-        <Row label={<>Earning · <SGusd /></>} value={fmtFull(account.sGUsdBalance)} />
-        <FundingStableRows account={account} />
+        <Row label={<>Earning · <SGusd /></>} value={fmtUnitsMax(account.sGUsdBalance)} />
         <Row label="Positions" value={`${account.positions.length} markets`} />
       </dl>
     </TuiPanel>
-  );
-}
-
-/**
- * The wallet's funding stables — what the mint desk draws from. The reserve
- * comes straight off the account snapshot; other whitelisted stables are one
- * direct read each, the same source the desk's balance line uses. Rows drop
- * silently when the chain has no display config (fail-soft, like the desk).
- */
-function FundingStableRows({ account }: { account: ReturnType<typeof useAccount> }) {
-  const session = useWalletSession();
-  // The store snapshot (not the projected Account) carries loadedAt — the
-  // re-arm signal a post-tx refresh provides.
-  const onchain = useOnchainAccount(getOnchainAccountStore());
-  const stables = useStableAssets();
-  const reserve = stables[0] ?? null;
-  const others = stables.slice(1);
-  const key = others.map((s) => s.address).join(",");
-  const [reads, setReads] = useState<Record<string, number | null>>({});
-
-  useEffect(() => {
-    if (!account.connected || session.address === null || others.length === 0) {
-      setReads({});
-      return;
-    }
-    let alive = true;
-    Promise.all(
-      key.split(",").map(async (addr) => {
-        try {
-          const raw = await contractReads().balanceOf(
-            addr as `0x${string}`,
-            session.address as `0x${string}`,
-          );
-          return [addr, formatStableRaw(raw)] as const;
-        } catch {
-          return [addr, null] as const;
-        }
-      }),
-    ).then((pairs) => {
-      if (alive) setReads(Object.fromEntries(pairs));
-    });
-    return () => {
-      alive = false;
-    };
-    // loadedAt: a post-tx account refresh re-arms this read, so the funding
-    // rows recover from a failed read the same way the reserve row does.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.connected, session.address, key, onchain.loadedAt]);
-
-  if (!account.connected) return null;
-  return (
-    <>
-      {reserve !== null && (
-        <Row label={`Reserve · ${reserve.symbol}`} value={fmtFull(account.stableBalance)} />
-      )}
-      {others.map((s) => {
-        const v = reads[s.address];
-        return (
-          <Row
-            key={s.address}
-            label={`Funding · ${s.symbol}`}
-            value={v === undefined || v === null ? "—" : fmtFull(v)}
-          />
-        );
-      })}
-    </>
   );
 }
 
@@ -746,14 +665,16 @@ function EarningLedger() {
 /* ------------------------------------------------------------------ */
 
 /** The indexed vault-size cells for the Earn desk's public block — gUSD
- *  deployed by the vault and the sGUSD supply. Inert without the indexer:
- *  both print "—" and take no space in mock mode. */
+ *  deployed by the vault, protocol revenue accrued to it, and the sGUSD
+ *  supply. Inert without the indexer: all print "—" and take no space in
+ *  mock mode. */
 function EarnVaultCells() {
   const stats = useProtocolStats();
   const vault = stats?.vault ?? null;
   if (vault === null) return null;
   const deployed = vaultDeployedGusd(vault);
   const supply = sgusdSupply(vault);
+  const revenue = gusdNumber(vault.revenueGusd);
   return (
     <>
       <Cell
@@ -762,8 +683,13 @@ function EarnVaultCells() {
         sub="gUSD in the earning layer"
       />
       <Cell
+        label="Revenue to vault"
+        value={revenue === null ? "—" : fmtGusdLedger(revenue)}
+        sub="accrued to stakers"
+      />
+      <Cell
         label={<><SGusd /> supply</>}
-        value={supply === null ? "—" : `${fmtFull(supply)} sGUSD`}
+        value={supply === null ? "—" : `${fmtUnitsMax(supply)} sGUSD`}
         sub="minted − burned shares"
       />
     </>

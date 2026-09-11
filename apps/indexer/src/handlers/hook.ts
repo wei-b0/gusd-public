@@ -147,7 +147,7 @@ ponder.on("GPUHook:GpuFill", async ({ event, context }) => {
 
   await context.db
     .insert(protocolStats)
-    .values(zeroProtocolStats(keys.chainId))
+    .values({ ...zeroProtocolStats(keys.chainId), hookFeesGusd: protocolFee })
     .onConflictDoUpdate((row) => ({
       hookFeesGusd: row.hookFeesGusd + protocolFee,
     }));

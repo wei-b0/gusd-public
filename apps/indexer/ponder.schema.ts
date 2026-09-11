@@ -724,7 +724,7 @@ export const walletCostBasis = onchainTable(
   }),
 );
 
-/** sGUSD stake position per wallet (shares 18-dec, assets gUSD 6-dec). */
+/** sGUSD stake position per wallet (shares 6-dec, assets gUSD 6-dec). */
 export const walletVaultPositions = onchainTable(
   "wallet_vault_positions",
   (t) => ({

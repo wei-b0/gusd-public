@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IndexerPort } from "@/domain/indexer";
 import { INDEXED_EVENT_NAMES } from "@/domain/indexer";
 import type { TxPort } from "@/domain/ports";
@@ -124,8 +124,11 @@ describe("makeReconciler", () => {
       fromBlock: 10,
       events: [...INDEXED_EVENT_NAMES],
     });
-    // 0xH1's block isn't reflected yet — indexing lag, not failure.
-    expect(result).toEqual({ balances: true, indexed: ["0xH2"] });
+    // 0xH1's block isn't reflected yet — indexing lag, not failure. The
+    // first pass was incomplete, so the result carries the follow-up.
+    expect(result.balances).toBe(true);
+    expect(result.indexed).toEqual(["0xH2"]);
+    expect(result.follow).toBeTypeOf("function");
   });
 
   it("stays null when the chain has no indexer behind it", async () => {
@@ -157,7 +160,25 @@ describe("makeReconciler", () => {
 
     const result = await reconcile(["t1"]);
 
-    expect(result).toEqual({ balances: true, indexed: null });
+    expect(result.balances).toBe(true);
+    expect(result.indexed).toBe(null);
+    // Null first-pass evidence is the extreme lag case — the follow-up
+    // re-checks for it too.
+    expect(result.follow).toBeTypeOf("function");
+  });
+
+  it("carries no follow-up when the first pass saw every hash", async () => {
+    const h = makeHarness({ indexer: true });
+    h.getUserEvents.mockResolvedValue([
+      { txHash: "0xH1", event: "Buy" },
+      { txHash: "0xH2", event: "Minted" },
+    ]);
+    const reconcile = makeReconciler(h.deps);
+
+    const result = await reconcile(["t1", "t2"]);
+
+    expect(result.indexed).toEqual(["0xH1", "0xH2"]);
+    expect(result.follow).toBeUndefined();
   });
 
   it("skips the indexed half entirely with no session address", async () => {
@@ -211,5 +232,75 @@ describe("makeReconciler", () => {
 
     expect(result.balances).toBe(true);
     expect(h.deps.onSettled).toHaveBeenCalledTimes(1); // still fires
+  });
+});
+
+describe("makeReconciler — follow-up backoff", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fires as the indexer catches up and stops once every hash is seen", async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ indexer: true });
+    h.getUserEvents.mockResolvedValue([{ txHash: "0xH2", event: "Minted" }]);
+    const reconcile = makeReconciler(h.deps);
+    const result = await reconcile(["t1", "t2"]);
+    expect(result.follow).toBeTypeOf("function");
+
+    // The indexer reflects both transactions at the first re-check.
+    h.getUserEvents.mockResolvedValue([
+      { txHash: "0xH1", event: "Buy" },
+      { txHash: "0xH2", event: "Minted" },
+    ]);
+    h.deps.activity = { refresh: vi.fn(() => Promise.resolve()) };
+    const updates: (readonly string[] | null)[] = [];
+    result.follow!((indexed) => updates.push(indexed));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(updates).toEqual([["0xH1", "0xH2"]]);
+    expect(h.deps.activity!.refresh).toHaveBeenCalledTimes(1);
+
+    // Complete — the loop has returned; the remaining budget does nothing.
+    const callsAfterComplete = h.getUserEvents.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(updates).toHaveLength(1);
+    expect(h.getUserEvents.mock.calls.length).toBe(callsAfterComplete);
+  });
+
+  it("grows from null evidence the same way", async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ indexer: true });
+    h.getUserEvents.mockResolvedValue(null);
+    const reconcile = makeReconciler(h.deps);
+    const result = await reconcile(["t1"]);
+    expect(result.indexed).toBe(null);
+
+    h.getUserEvents.mockResolvedValue([{ txHash: "0xH1", event: "Buy" }]);
+    const updates: (readonly string[] | null)[] = [];
+    result.follow!((indexed) => updates.push(indexed));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(updates).toEqual([["0xH1"]]);
+  });
+
+  it("budget exhausts silently when the indexer never catches up", async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ indexer: true });
+    h.getUserEvents.mockResolvedValue(null);
+    const reconcile = makeReconciler(h.deps);
+    const result = await reconcile(["t1"]);
+
+    const updates: (readonly string[] | null)[] = [];
+    result.follow!((indexed) => updates.push(indexed));
+
+    await vi.advanceTimersByTimeAsync(27_000 + 5_000);
+
+    // No evidence growth, no update, no throw — and each budget step
+    // re-checked the indexer once (first pass + 4 follow-ups).
+    expect(updates).toEqual([]);
+    expect(h.getUserEvents.mock.calls.length).toBe(5);
   });
 });
