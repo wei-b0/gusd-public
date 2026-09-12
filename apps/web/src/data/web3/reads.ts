@@ -10,6 +10,7 @@ import type { Address } from "viem";
 import { getContracts, gpuTokenClient, erc20Client } from "./contracts";
 import { poolIdOf, canonicalPoolKey } from "./pool";
 import { formatGusdRaw, formatStableRaw, formatGpuUnits } from "@/domain/units";
+import type { HookMarketState } from "./trading/hook-quote";
 
 /** Onchain registration state of one market — the single source for
  *  "unavailable" UI states. Null when the GPU isn't registered at all. */
@@ -79,6 +80,11 @@ export interface ContractReads {
    *  10_000) — the scale issuance's math runs at. Staleness judged by
    *  issuance's own limit — the constraint issue() enforces. */
   oracleUpdatedAt(gpuId: `0x${string}`): Promise<{ rawPrice: bigint; updatedAt: number; isStale: boolean }>;
+  /** The hook's full plan-input state for one market, in one batch — the
+   *  deterministic quoter's input set (see trading/hook-quote.ts). Every
+   *  field is a public view; the per-block POL usage has no getter and is
+   *  structurally 0 at quote time (a landing tx's block starts fresh). */
+  hookMarketState(gpuId: `0x${string}`): Promise<HookMarketState>;
 }
 
 /**
@@ -87,7 +93,7 @@ export interface ContractReads {
  * round trip on multi-call flows.
  */
 export function contractReads(): ContractReads {
-  const { gusd, stable, sgusd, issuance, hook, oracle, addresses } = getContracts();
+  const { gusd, stable, sgusd, issuance, hook, oracle, marketLiquidity, addresses } = getContracts();
   const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
   return {
@@ -185,6 +191,44 @@ export function contractReads(): ContractReads {
         rawPrice,
         updatedAt: Number(updatedAtRaw),
         isStale: rawPrice === 0n || age > Number(maxStaleness),
+      };
+    },
+    async hookMarketState(gpuId) {
+      const [polState, polPaused, maxPol, perBlockCap, hookStaleness, hookFee, getPrice, issueCfg, issueStaleness, cd, bidInv, askInv] =
+        await Promise.all([
+          hook.read.polState([gpuId]),
+          hook.read.polPaused(),
+          hook.read.maxPolNotionalGusd(),
+          hook.read.perBlockPolCapGusd(),
+          hook.read.maxOracleStaleness(),
+          hook.read.hookFeeBps(),
+          oracle.read.getPrice([gpuId]),
+          issuance.read.gpuConfig([gpuId]),
+          issuance.read.maxOracleStaleness(),
+          issuance.read.compositionDivisor(),
+          marketLiquidity.read.bidInventoryGusd([gpuId]),
+          marketLiquidity.read.askInventoryGpu([gpuId]),
+        ]);
+      const [rawPrice, updatedAtRaw] = getPrice;
+      const [askBps, bidBps, polFeeBps] = polState;
+      return {
+        rawPrice,
+        oracleUpdatedAtSec: Number(updatedAtRaw),
+        hookMaxOracleStalenessSec: Number(hookStaleness),
+        askBps: Number(askBps),
+        bidBps: Number(bidBps),
+        polFeeBps: Number(polFeeBps),
+        polPaused,
+        maxPolNotionalGusd: maxPol,
+        perBlockPolCapGusd: perBlockCap,
+        perBlockUsedGusd: 0n, // internal mapping, no getter — fresh every landing block
+        hookFeeBps: Number(hookFee),
+        issueFeeBps: Number(issueCfg.feeBps),
+        issuanceEnabled: issueCfg.enabled,
+        issuanceMaxOracleStalenessSec: Number(issueStaleness),
+        compositionDivisor: cd,
+        bidInventoryGusd: bidInv,
+        askInventoryGpu: askInv,
       };
     },
   };

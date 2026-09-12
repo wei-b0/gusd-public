@@ -35,6 +35,7 @@ import type {
   MarketTrade,
   MintDirection,
   MintQuote,
+  QuoteFailure,
   TradeAvailability,
   TradeQuote,
   TradeRequest,
@@ -287,6 +288,10 @@ class TradingPortImpl {
   }
 
   async quote(_request: TradeRequest): Promise<TradeQuote | null> {
+    return null;
+  }
+
+  async quoteDetailed(_request: TradeRequest): Promise<TradeQuote | QuoteFailure | null> {
     return null;
   }
 

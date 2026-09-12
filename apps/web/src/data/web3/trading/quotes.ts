@@ -14,12 +14,23 @@
  * against the contract's own quoteIssue (see ./genesis) and rides the
  * exact-out path under the typed-spend cap.
  *
- * All of it quotes through the float-seeded GpuQuoter, which runs the
- * pool's real hook inside an eth_call — the same pricing path execution
- * runs — and the signed limits (`maxPaid` / `minOut` / `minSize`) bound
- * the fill. Neither quote pre-commits it: state can move between eth_call
- * and inclusion, so execution is bounded by the signed limits, not the
- * quote.
+ * Two quoting paths, dispatched by the pool's native liquidity:
+ *  - No native CL liquidity (the launch configuration — every fill is
+ *    hook-driven): the deterministic mirror in ./hook-quote, pure
+ *    arithmetic over the hook's public state. The float-seeded lens would
+ *    bound every quote to its private simulation float; the mirror is the
+ *    market's real depth.
+ *  - Native liquidity present: the float-seeded GpuQuoter, which runs the
+ *    pool's real hook inside an eth_call — the walk leg is real there and
+ *    the mirror deliberately does not reimplement it.
+ *
+ * Neither path pre-commits the fill: state can move between read and
+ * inclusion, so execution is bounded by the signed limits (`maxPaid` /
+ * `minOut` / `minSize`), not the quote. A mirror rejection carries the
+ * market's capacity in the quote's own units (QuoteFailure.capacityRaw)
+ * so the slip can say "this market fills at most X" instead of a bare
+ * error; a simulation revert degrades to the direction's generic
+ * no-capacity (the walk leg has no public decomposition).
  *
  * Honesty rules the math keeps: the quoter already runs the hook, so its
  * number IS all-in — protocol fees are split out for display only, and LP
@@ -33,6 +44,7 @@
 import type { Address } from "viem";
 import type {
   AssetId,
+  QuoteFailure,
   TradeAvailability,
   TradeLeg,
   TradeQuote,
@@ -47,10 +59,18 @@ import {
   parseGusd,
 } from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
-import { canonicalPoolKey } from "../pool";
+import { canonicalPoolKey, poolIdOf } from "../pool";
 import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { contractReads, type ContractReads } from "../reads";
+import {
+  oracleGuardOk,
+  quoteBuyExactOutMirror,
+  quoteBuyMirror,
+  quoteSellExactOutMirror,
+  quoteSellMirror,
+  type HookMarketState,
+} from "./hook-quote";
 import { issueUnitsForSpend } from "./genesis";
 
 /** Slippage tolerance the slip offers, bps (the presets row). */
@@ -163,6 +183,79 @@ function gpuQuoterRead(deps: QuoteDeps): GpuQuoterRead {
   return gpuQuoterReadFor(deps.contracts);
 }
 
+/** Why a quote didn't come back — the slip's message maps 1:1 off these.
+ *  The type lives in the domain layer (the port and the slip consume it);
+ *  re-exported here as the quoting seam's own vocabulary. */
+export type { QuoteFailure } from "@/domain/types";
+
+/** The deterministic mirror's one hook-state read — shared per quote so a
+ *  four-desk batch doesn't fan out 4× the same 12 reads. */
+interface MirrorBatch {
+  state: HookMarketState;
+  /** The pool's native CL liquidity, raw. 0 = hook-driven (the mirror's
+   *  jurisdiction); > 0 = the float-seeded simulation. */
+  nativeLiquidity: bigint;
+}
+
+async function mirrorBatch(
+  deps: QuoteDeps,
+  gpuId: `0x${string}`,
+  poolKey: GpuPoolKeyArg,
+): Promise<MirrorBatch | null> {
+  try {
+    const state = await deps.reads.hookMarketState(gpuId);
+    const nativeLiquidity = await deps.contracts.stateView.read
+      .getLiquidity([poolIdOf(poolKey)])
+      .catch(() => 0n);
+    return { state, nativeLiquidity };
+  } catch {
+    // The mirror is an upgrade, never a dependency: a seam without the
+    // hook-state read (older port, partial test fakes) quotes through the
+    // float-seeded lens exactly as before.
+    return null;
+  }
+}
+
+/** The GPU pools' quoting seam — the two-path dispatch of the module doc.
+ *  Returns the decomposed result, or the typed failure the slip maps to
+ *  its message. */
+async function runGpuQuote(
+  deps: QuoteDeps,
+  batch: MirrorBatch | null,
+  poolKey: GpuPoolKeyArg,
+  method: "quoteBuyExactOut" | "quoteBuy" | "quoteSell" | "quoteSellExactOut",
+  amountRaw: bigint,
+): Promise<QuoteFailure | GpuQuoteResult> {
+  const nowSec = Math.floor(deps.now() / 1000);
+  if (batch !== null && batch.nativeLiquidity === 0n) {
+    const mirror =
+      method === "quoteBuyExactOut"
+        ? quoteBuyExactOutMirror
+        : method === "quoteBuy"
+          ? quoteBuyMirror
+          : method === "quoteSell"
+            ? quoteSellMirror
+            : quoteSellExactOutMirror;
+    const m = mirror(batch.state, amountRaw, nowSec);
+    if (m.ok) return { ...m.r, nativeGpu: 0n, endTick: 0 };
+    return { unavailable: true, reason: m.reason, capacityRaw: m.capacityRaw };
+  }
+  try {
+    return await gpuQuoterRead(deps)[method]([poolKey, amountRaw]);
+  } catch {
+    if (batch !== null && !oracleGuardOk(batch.state, nowSec)) {
+      return { unavailable: true, reason: "oracle-stale" };
+    }
+    return {
+      unavailable: true,
+      reason:
+        method === "quoteBuyExactOut" || method === "quoteBuy"
+          ? "no-ask-capacity"
+          : "no-bid-capacity",
+    };
+  }
+}
+
 /** Availability read for the slip's gate — null when unregistered. Short
  *  TTL so the desk header and the slip share one read without drift. */
 export async function describeAsset(
@@ -218,7 +311,7 @@ export async function quoteBuy(
   size: number,
   toleranceBps: number = DEFAULT_TOLERANCE_BPS,
   deps: QuoteDeps = defaultQuoteDeps(),
-): Promise<TradeQuote | null> {
+): Promise<TradeQuote | QuoteFailure | null> {
   if (!Number.isFinite(size) || size <= 0) return null;
   let gpuId: `0x${string}`;
   try {
@@ -271,12 +364,10 @@ export async function quoteBuy(
     addresses.hook as Address,
   );
 
-  let r: GpuQuoteResult;
-  try {
-    r = await gpuQuoterRead(deps).quoteBuyExactOut([poolKey, sizeRaw]);
-  } catch {
-    return null; // the market cannot fill this size — the honest "can't quote"
-  }
+  const batch = await mirrorBatch(deps, gpuId, poolKey);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuyExactOut", sizeRaw);
+  if ("unavailable" in outcome) return outcome;
+  const r = outcome;
   if (r.gpuOut !== sizeRaw || r.gusdIn === 0n) return null;
 
   // Legs carry their own fees — the UI derives the fee copy from this set,
@@ -330,7 +421,7 @@ export async function quoteSell(
   size: number,
   toleranceBps: number = DEFAULT_TOLERANCE_BPS,
   deps: QuoteDeps = defaultQuoteDeps(),
-): Promise<TradeQuote | null> {
+): Promise<TradeQuote | QuoteFailure | null> {
   if (!Number.isFinite(size) || size <= 0) return null;
   let gpuId: `0x${string}`;
   try {
@@ -352,12 +443,10 @@ export async function quoteSell(
   );
 
   const blockNumber = await deps.getBlockNumber();
-  let r: GpuQuoteResult;
-  try {
-    r = await gpuQuoterRead(deps).quoteSell([poolKey, sizeRaw]);
-  } catch {
-    return null; // no depth — the honest "can't quote"
-  }
+  const batch = await mirrorBatch(deps, gpuId, poolKey);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSell", sizeRaw);
+  if ("unavailable" in outcome) return outcome;
+  const r = outcome;
   if (r.gusdOut === 0n || r.gpuIn !== sizeRaw) return null;
 
   // The seller receives gusdOut net of the protocol's take; the fee line
@@ -398,7 +487,7 @@ export async function quoteBuyBySpend(
   gusd: number,
   toleranceBps: number = DEFAULT_TOLERANCE_BPS,
   deps: QuoteDeps = defaultQuoteDeps(),
-): Promise<TradeQuote | null> {
+): Promise<TradeQuote | QuoteFailure | null> {
   if (!Number.isFinite(gusd) || gusd <= 0) return null;
   let gpuId: `0x${string}`;
   try {
@@ -461,12 +550,10 @@ export async function quoteBuyBySpend(
     addresses.hook as Address,
   );
 
-  let r: GpuQuoteResult;
-  try {
-    r = await gpuQuoterRead(deps).quoteBuy([poolKey, spendRaw]);
-  } catch {
-    return null; // the market cannot absorb this spend — the honest "can't quote"
-  }
+  const batch = await mirrorBatch(deps, gpuId, poolKey);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuy", spendRaw);
+  if ("unavailable" in outcome) return outcome;
+  const r = outcome;
   // The exact-in quoter must spend exactly what was typed and deliver a
   // fillable size; anything else is dust or a degenerate pool. The signed
   // floor must reach one ledger grain — below it the minimum can't print
@@ -527,7 +614,7 @@ export async function quoteSellByProceeds(
   gusd: number,
   toleranceBps: number = DEFAULT_TOLERANCE_BPS,
   deps: QuoteDeps = defaultQuoteDeps(),
-): Promise<TradeQuote | null> {
+): Promise<TradeQuote | QuoteFailure | null> {
   if (!Number.isFinite(gusd) || gusd <= 0) return null;
   let gpuId: `0x${string}`;
   try {
@@ -549,12 +636,10 @@ export async function quoteSellByProceeds(
   );
 
   const blockNumber = await deps.getBlockNumber();
-  let r: GpuQuoteResult;
-  try {
-    r = await gpuQuoterRead(deps).quoteSellExactOut([poolKey, proceedsRaw]);
-  } catch {
-    return null; // no depth for this payout — the honest "can't quote"
-  }
+  const batch = await mirrorBatch(deps, gpuId, poolKey);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSellExactOut", proceedsRaw);
+  if ("unavailable" in outcome) return outcome;
+  const r = outcome;
   // The exact-out sell must deliver exactly the typed demand and cost a
   // fillable size — below one ledger grain the units can't even print.
   if (r.gusdOut !== proceedsRaw || r.gpuIn < GPU_LEDGER_GRAIN) return null;
@@ -587,11 +672,12 @@ export async function quoteSellByProceeds(
 }
 
 /** The slip's single quoting seam — dispatches on the request's basis and
- *  side. Every basis executes under the limits its quote signed. */
-export async function quoteAsset(
+ *  side, passing through typed failures so the slip can map reason →
+ *  message (see QuoteFailure). */
+export async function quoteAssetDetailed(
   request: TradeRequest,
   deps: QuoteDeps = defaultQuoteDeps(),
-): Promise<TradeQuote | null> {
+): Promise<TradeQuote | QuoteFailure | null> {
   const toleranceBps = request.toleranceBps ?? DEFAULT_TOLERANCE_BPS;
   if (request.basis === "gusd") {
     return request.side === "buy"
@@ -601,4 +687,14 @@ export async function quoteAsset(
   return request.side === "buy"
     ? quoteBuy(request.asset, request.size, toleranceBps, deps)
     : quoteSell(request.asset, request.size, toleranceBps, deps);
+}
+
+/** The compat seam — callers that only need a quote or null. Detailed
+ *  failures (see QuoteFailure) collapse to null here. */
+export async function quoteAsset(
+  request: TradeRequest,
+  deps: QuoteDeps = defaultQuoteDeps(),
+): Promise<TradeQuote | null> {
+  const outcome = await quoteAssetDetailed(request, deps);
+  return outcome && "unavailable" in outcome ? null : outcome;
 }

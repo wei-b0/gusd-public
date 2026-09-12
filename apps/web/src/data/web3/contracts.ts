@@ -24,6 +24,7 @@ import { STABLE_ROUTER_ABI } from "./abis/stable_router";
 import { GPU_PRICE_ORACLE_ABI } from "./abis/gpu_price_oracle";
 import { V4_QUOTER_ABI } from "./abis/v4_quoter";
 import { STATE_VIEW_ABI } from "./abis/state_view";
+import { GPU_MARKET_LIQUIDITY_ABI } from "./abis/gpu_market_liquidity";
 import { GPU_TOKEN_ABI } from "./abis/gpu_token";
 import { ERC20_ABI } from "./abis/erc20";
 
@@ -111,6 +112,12 @@ function stateViewContract(client?: PublicClient): StateViewContract {
   return contract(contractAddresses().stateView, STATE_VIEW_ABI, client);
 }
 
+/** The protocol-owned inventory vault — the POL's two-sided bid/ask book. */
+export type MarketLiquidityContract = ContractFor<typeof GPU_MARKET_LIQUIDITY_ABI>;
+function marketLiquidityContract(client?: PublicClient): MarketLiquidityContract {
+  return contract(contractAddresses().marketLiquidity, GPU_MARKET_LIQUIDITY_ABI, client);
+}
+
 /** A GPU position's 18-decimal ERC-20, resolved per gpuId at runtime. */
 export type GpuTokenContract = ContractFor<typeof GPU_TOKEN_ABI>;
 export function gpuTokenClient(address: Address, client?: PublicClient): GpuTokenContract {
@@ -138,6 +145,8 @@ export interface ContractSet {
   /** The stock v4 quoter — hook-free pools only (the stable swap leg). */
   quoter: QuoterContract;
   stateView: StateViewContract;
+  /** The POL inventory vault (bid/ask capacity behind the hook's fills). */
+  marketLiquidity: MarketLiquidityContract;
   /** The addresses themselves — for allowance targets and pool keys. */
   addresses: ProtocolAddresses;
 }
@@ -166,6 +175,7 @@ export function getContracts(chainId?: number): ContractSet {
     gpuQuoter: gpuQuoterContract(client),
     quoter: quoterContract(client),
     stateView: stateViewContract(client),
+    marketLiquidity: marketLiquidityContract(client),
     addresses,
   };
   sets.set(id, set);

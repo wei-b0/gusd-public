@@ -555,6 +555,36 @@ export interface TradeQuote {
 }
 
 /**
+ * Why a market couldn't quote an order — the typed failure the slip's gate
+ * speaks. The quote layer returns this instead of a bare null when the
+ * chain answered with a reason (a stale publication, a direction the
+ * market's capacity can't cover), so the gate can say what WOULD work
+ * instead of a bare "can't quote".
+ */
+export interface QuoteFailure {
+  unavailable: true;
+  reason:
+    /** No fresh oracle publication — the hook fills nothing until the
+     *  next one lands. */
+    | "oracle-stale"
+    /** The buy side can't cover the demand: POL ask inventory is short
+     *  and the issuance backstop is closed (or its own oracle is stale).
+     *  `capacityRaw` is the max buyable size in GPU raw (18-dec). */
+    | "no-ask-capacity"
+    /** The sell side can't absorb the sale within the vault's float and
+     *  the protocol's per-block caps. `capacityRaw` is the max sellable
+     *  size in GPU raw for size-first requests, the max net payout in
+     *  gUSD raw (6-dec) for money-first ones. */
+    | "no-bid-capacity"
+    /** Degenerate inputs — the availability gate already covers these. */
+    | "no-quote";
+  /** The market's max fill in the request's own units, raw: GPU ledger
+   *  raw for size-first, gUSD 6-dec raw for money-first. Absent when the
+   *  rejection carries no usable capacity figure. */
+  capacityRaw?: bigint;
+}
+
+/**
  * Onchain availability of one market — the slip's gate. The port returns
  * null when the GPU has no settlement panel registered at all. Pool
  * registration with zero depth is still "registered": the quote layer says
@@ -563,7 +593,9 @@ export interface TradeQuote {
 export interface TradeAvailability {
   issuanceEnabled: boolean;
   poolRegistered: boolean;
-  /** The pool's LP fee, bps (part of the desk's fee schedule). */
+  /** The pool's native swap fee, bps (part of the desk's fee schedule —
+   *  it prices LP flow when the book carries it; hook-driven launch pools
+   *  with no native liquidity never charge it). */
   poolFeeBps: number;
   /** The hook's protocol trading fee, bps. */
   hookFeeBps: number;

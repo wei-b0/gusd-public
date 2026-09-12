@@ -25,15 +25,22 @@
  * than quoting against nothing.
  *
  * Unavailable markets speak in place: an unregistered asset, a closed
- * issuance, or an empty pool each get their own honest voice — never a
- * silent dead button.
+ * issuance, an empty pool, or an order past the market's capacity each
+ * get their own honest voice — never a silent dead button.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ActionRecord } from "@/domain/actions";
-import type { TradeAvailability, TradeQuote, TradeRequest, TradeSide } from "@/domain/types";
+import type {
+  QuoteFailure,
+  TradeAvailability,
+  TradeQuote,
+  TradeRequest,
+  TradeSide,
+} from "@/domain/types";
 import { parseAssetId } from "@/domain/types";
 import { fmtGusdLedger, fmtUnitsLedger, fmtUnitsMax } from "@/domain/format";
+import { formatGpuUnits, formatGusdRaw } from "@/domain/units";
 import { Pair } from "@/components/ui/pair";
 import { ActionStatus } from "@/components/ui/action-status";
 import { WalletlessNote } from "@/components/ui/walletless-note";
@@ -53,6 +60,13 @@ const QUOTE_DEBOUNCE_MS = 250;
  *  wherever a concrete base exists (see `context`). */
 const PRESETS = [0.1, 0.5, 1] as const;
 
+/** A quote the chain actually returned — not the typed refusal. The one
+ *  narrowing every quote read in this component runs through: a refusal
+ *  must never reach the ledger rows or ungate the submit button. */
+function isQuote(q: TradeQuote | QuoteFailure | null | undefined): q is TradeQuote {
+  return q !== null && q !== undefined && !("unavailable" in q);
+}
+
 export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
@@ -64,8 +78,10 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const [gusdText, setGusdText] = useState("10");
   const [toleranceBps, setToleranceBps] = useState(DEFAULT_TOLERANCE_BPS);
   const [availability, setAvailability] = useState<TradeAvailability | null | undefined>(undefined);
-  /** undefined = quoting, null = the chain can't quote this order, else the quote. */
-  const [quote, setQuote] = useState<TradeQuote | null | undefined>(undefined);
+  /** undefined = quoting, null = the chain can't quote this order, else
+   *  the quote — or the chain's typed refusal (QuoteFailure) naming why:
+   *  a stale publication, or a capacity the market can't fill past. */
+  const [quote, setQuote] = useState<TradeQuote | QuoteFailure | null | undefined>(undefined);
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The MAX click on a money-first sell quotes the full holding live —
@@ -118,7 +134,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
           : { asset, side, basis: "units", size: activeValue, toleranceBps };
       trading
-        .quote(request)
+        .quoteDetailed(request)
         .then((q) => {
           if (alive) setQuote(q);
         })
@@ -154,6 +170,26 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         ? { label: `holding ${fmtUnitsMax(position.size)} ${assetId}`, max: Math.floor(position.size * 1e6) / 1e6, canMax: true }
         : null;
 
+  // A typed quote refusal speaks in place too: stale publication, or the
+  // market's real capacity — "fills at most X" in the request's own basis
+  // (capacityRaw rides the quote's units: units on size-first, gUSD on
+  // money-first), so the order can size down to what the book holds.
+  const capacityVoice = (raw: bigint): string =>
+    mode === "units"
+      ? `${fmtUnitsLedger(formatGpuUnits(raw))} ${assetId}`
+      : `${fmtGusdLedger(formatGusdRaw(raw))} gUSD`;
+  const failureVoice = (f: QuoteFailure): string | null => {
+    if (f.reason === "oracle-stale") {
+      return "The chain's price publication is stale — orders wait for a fresh oracle publication.";
+    }
+    if (f.reason === "no-ask-capacity" || f.reason === "no-bid-capacity") {
+      return f.capacityRaw !== undefined && f.capacityRaw > 0n
+        ? `This market fills at most ${capacityVoice(f.capacityRaw)} on this ${side} right now — size down to its capacity.`
+        : "This market has nothing to fill against right now — orders wait for depth.";
+    }
+    return null;
+  };
+
   // The availability gate, in the design system's amber voice. Undefined
   // is "still checking", null is "the chain has no such market".
   let gate: string | null = null;
@@ -164,9 +200,17 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       gate = "No secondary depth yet — sells open when the pool holds liquidity.";
     } else if (side === "buy" && !availability.issuanceEnabled && !availability.poolRegistered) {
       gate = "Neither issuance nor a market is open for this asset yet — orders wait for the operator.";
+    } else if (
+      quote !== null && quote !== undefined && "unavailable" in quote &&
+      referencePrice !== null && validInput
+    ) {
+      // The chain answered with a typed refusal — the gate speaks its
+      // reason in place ("no-quote" falls through to the disabled button).
+      gate = failureVoice(quote);
     } else if (side === "sell" && quote === null && referencePrice !== null && validInput) {
-      // Registered but unquotable — at genesis that's an empty pool. The
-      // dashes say "no numbers"; this says why.
+      // Registered but the chain returned no quote at all — a degenerate
+      // fill (dust, zero proceeds). The dashes say "no numbers"; this says
+      // why.
       gate = "Nothing to quote this sell against yet — the pool holds no depth.";
     }
   }
@@ -245,7 +289,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const oraclePrice = availability?.oraclePrice ?? null;
 
   let ledgerRows: ReactNode = null;
-  if (quote !== null && quote !== undefined && quote.asset === asset && quote.side === side && validInput) {
+  if (isQuote(quote) && quote.asset === asset && quote.side === side && validInput) {
     if (side === "buy") {
       ledgerRows =
         mode === "gusd" ? (
@@ -542,7 +586,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         type="button"
         onClick={onSubmit}
         disabled={
-          active !== null || !validInput || !quote || gate !== null || referencePrice === null
+          active !== null || !validInput || !isQuote(quote) || gate !== null || referencePrice === null
         }
         className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
           side === "buy" ? "rev-g hover:opacity-90" : "rev-d hover:opacity-90"

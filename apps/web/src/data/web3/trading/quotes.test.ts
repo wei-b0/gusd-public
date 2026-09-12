@@ -15,7 +15,9 @@ import {
   disposeAvailabilityCache,
   type GpuQuoteResult,
   type QuoteDeps,
+  type QuoteFailure,
 } from "./quotes";
+import type { HookMarketState } from "./hook-quote";
 
 /**
  * The quote math, not the chain: the GpuQuoter and the issuance contract are
@@ -61,6 +63,12 @@ const h = vi.hoisted(() => ({
   hookFeeBps: 50,
   block: 7,
   registrationCalls: 0,
+  /** The hook-state seam the deterministic mirror reads; null = no seam —
+   *  every quote takes the float-seeded lens exactly as before. */
+  hookState: null as HookMarketState | null,
+  /** The pool's native CL liquidity as the stateView fake answers: > 0
+   *  forces the lens; 0 with a hook state present routes to the mirror. */
+  nativeLiquidity: 1n,
 }));
 
 /** The contract set the quote math reads from — same object the mocked
@@ -81,6 +89,11 @@ const fakeContracts = {
   },
   hook: {
     read: { hookFeeBps: async () => BigInt(h.hookFeeBps) },
+  },
+  stateView: {
+    read: {
+      getLiquidity: async () => h.nativeLiquidity,
+    },
   },
   gpuQuoter: {
     read: {
@@ -129,6 +142,10 @@ function makeDeps(): QuoteDeps {
         updatedAt: 900,
         isStale: h.oracleStale,
       }),
+      hookMarketState: async () => {
+        if (h.hookState === null) throw new Error("no hook-state seam in this fake");
+        return h.hookState;
+      },
     },
     contracts: fakeContracts,
     getBlockNumber: async () => h.block,
@@ -229,6 +246,37 @@ function makeSellProceeds(opts: {
   };
 }
 
+/** The hook's full plan-input state for the deterministic mirror, at the
+ *  fake's scales: rawPrice 12500 (1.25 gUSD/unit) over compositionDivisor
+ *  1e16, the {50, 50, 10} spread defaults, both oracle guards fresh at
+ *  now=1000, and effectively unlimited caps and inventory unless a test
+ *  narrows one field to build a bound. */
+function makeHookState(opts?: Partial<HookMarketState>): HookMarketState {
+  return {
+    // The publication is at epoch 0: the deps fake's now() is 1_000 ms, so
+    // the quote's nowSec is 1 and the age is 1s — inside both staleness
+    // limits, and a future timestamp would (correctly) fail the guard.
+    rawPrice: 12_500n,
+    oracleUpdatedAtSec: 0,
+    hookMaxOracleStalenessSec: 10_000,
+    issuanceMaxOracleStalenessSec: 10_000,
+    askBps: 50,
+    bidBps: 50,
+    polFeeBps: 10,
+    polPaused: false,
+    maxPolNotionalGusd: 10n ** 24n,
+    perBlockPolCapGusd: 10n ** 24n,
+    perBlockUsedGusd: 0n,
+    hookFeeBps: 50,
+    issueFeeBps: 50,
+    issuanceEnabled: true,
+    compositionDivisor: 10n ** 16n,
+    bidInventoryGusd: 10n ** 24n,
+    askInventoryGpu: 10n ** 24n,
+    ...opts,
+  };
+}
+
 beforeEach(() => {
   h.reg = {
     gpuId: gpuIdForAsset("H100"),
@@ -252,6 +300,8 @@ beforeEach(() => {
   h.hookFeeBps = 50;
   h.block = 7;
   h.registrationCalls = 0;
+  h.hookState = null;
+  h.nativeLiquidity = 1n;
   disposeAvailabilityCache();
 });
 
@@ -311,9 +361,11 @@ describe("quoteBuy", () => {
     expect(q.maxPaid).toBeCloseTo(expectedMax, 12);
   });
 
-  it("maps a reverted quote to null — the honest can't-fill", async () => {
+  it("maps a reverted quote to the typed no-ask-capacity failure", async () => {
     h.buyResult = null; // quoter reverts (capacity exceeded)
-    expect(await quoteBuy("H100", 2, 50, makeDeps())).toBeNull();
+    const f = await quoteBuy("H100", 2, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-ask-capacity");
   });
 
   it("refuses a result that does not cover the size", async () => {
@@ -329,7 +381,8 @@ describe("quoteBuy", () => {
     h.reg = { ...h.reg!, issuanceEnabled: false };
     h.buyResult = makeBuy({ poolGpu: parseGpuUnits(2), poolGusd: 4_000_000n });
     const quote = await quoteBuy("H100", 2, 50, makeDeps());
-    expect(quote?.legs.map((l) => l.kind)).toEqual(["pool"]);
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    expect(quote.legs.map((l) => l.kind)).toEqual(["pool"]);
   });
 
   it("returns null for an unregistered asset and invalid sizes", async () => {
@@ -408,9 +461,11 @@ describe("quoteSell", () => {
     expect(h.sellArgs!.poolKey).toEqual(canonicalPoolKey(GUSD, GPU_TOKEN, POOL_PARAMS, HOOK));
   });
 
-  it("maps a reverted quote to null", async () => {
+  it("maps a reverted quote to the typed no-bid-capacity failure", async () => {
     h.sellResult = null; // no bid depth — the honest can't-fill
-    expect(await quoteSell("H100", 1, 50, makeDeps())).toBeNull();
+    const f = await quoteSell("H100", 1, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-bid-capacity");
   });
 
   it("refuses a result that does not cover the size or pays nothing", async () => {
@@ -526,9 +581,11 @@ describe("quoteBuyBySpend", () => {
     expect(await quoteBuyBySpend("H100", 10, 50, makeDeps())).toBeNull();
   });
 
-  it("maps a reverted quote to null", async () => {
+  it("maps a reverted quote to the typed no-ask-capacity failure", async () => {
     h.spendBuyResult = null;
-    expect(await quoteBuyBySpend("H100", 10, 50, makeDeps())).toBeNull();
+    const f = await quoteBuyBySpend("H100", 10, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-ask-capacity");
   });
 
   it("returns null for an unregistered asset or non-positive spend", async () => {
@@ -615,9 +672,11 @@ describe("quoteSellByProceeds", () => {
     expect(await quoteSellByProceeds("H100", 0.001, 50, makeDeps())).toBeNull(); // sub-grain units
   });
 
-  it("maps a reverted quote to null", async () => {
+  it("maps a reverted quote to the typed no-bid-capacity failure", async () => {
     h.proceedsSellResult = null;
-    expect(await quoteSellByProceeds("H100", 3.8, 50, makeDeps())).toBeNull();
+    const f = await quoteSellByProceeds("H100", 3.8, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-bid-capacity");
   });
 
   it("refuses sells without secondary depth or registration", async () => {
@@ -626,6 +685,110 @@ describe("quoteSellByProceeds", () => {
     expect(await quoteSellByProceeds("H100", 1.9, 50, makeDeps())).toBeNull();
     h.reg = null;
     expect(await quoteSellByProceeds("H100", 1.9, 50, makeDeps())).toBeNull();
+  });
+});
+
+describe("the deterministic mirror path (LP-less pool)", () => {
+  it("routes a pool-covered buy through the mirror without touching the lens", async () => {
+    h.hookState = makeHookState();
+    h.nativeLiquidity = 0n;
+    const quote = await quoteBuy("H100", 2, 50, makeDeps());
+    expect(h.buyArgs).toBeNull(); // the float-seeded lens never ran
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    // Ask edge: 12500 × 10050 / 1e20 gUSD-wei per GPU-wei → 2 units cost
+    // 2.5125, POL fee ceil(10bps) 2.513µ + hook fee ceil(50bps) 12.563µ →
+    // 2.525063 all-in.
+    expect(quote.legs).toEqual([
+      { kind: "pool", gpuUnits: 2, gUsd: 2.525063, fees: { protocol: 0.015076 } },
+    ]);
+    expect(quote.notional).toBeCloseTo(2.525063, 12);
+  });
+
+  it("splits a buy beyond ask inventory with the backstop at the primary's price", async () => {
+    h.hookState = makeHookState({ askInventoryGpu: parseGpuUnits(1) });
+    h.nativeLiquidity = 0n;
+    const quote = await quoteBuy("H100", 2, 50, makeDeps());
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    // R2: the backstop closes the residual at exactly the primary ask, so
+    // the all-in total equals the pure-ask cost of the whole size.
+    expect(quote.legs).toEqual([
+      { kind: "pool", gpuUnits: 1, gUsd: 1.268813, fees: { protocol: 0.01382 } },
+      { kind: "issuance", gpuUnits: 1, gUsd: 1.25625, fees: { issuance: 0.00625 } },
+    ]);
+    expect(quote.notional).toBeCloseTo(2.525063, 12);
+  });
+
+  it("quotes an LP-less sell net of both fees at the bid edge", async () => {
+    h.hookState = makeHookState();
+    h.nativeLiquidity = 0n;
+    const quote = await quoteSell("H100", 2, 50, makeDeps());
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    // Bid edge 1.24375/unit gross; POL fee ceil(10bps) then hook fee
+    // ceil(50bps) come off the top → 2.472586 net.
+    expect(quote.notional).toBeCloseTo(2.472586, 12);
+    expect(quote.legs[0]).toMatchObject({
+      kind: "pool",
+      gpuUnits: 2,
+      gUsd: 2.472586,
+      fees: { protocol: 0.014914 },
+    });
+    expect(quote.minOut).toBeCloseTo(2.460223, 9);
+  });
+
+  it("carries the bid book's capacity in a typed sell failure", async () => {
+    h.hookState = makeHookState({ bidInventoryGusd: 2_000_000n });
+    h.nativeLiquidity = 0n;
+    const f = await quoteSell("H100", 5, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-bid-capacity");
+    expect(f.capacityRaw).toBeDefined();
+    expect(f.capacityRaw!).toBeGreaterThan(0n);
+    expect(f.capacityRaw!).toBeLessThan(parseGpuUnits(5));
+  });
+
+  it("carries the max payout when a proceeds-first sell exceeds the bid book", async () => {
+    h.hookState = makeHookState({ bidInventoryGusd: 2_000_000n });
+    h.nativeLiquidity = 0n;
+    // 2 gUSD of float can't net 2 gUSD after the seller's fees — the
+    // capacity is the largest net payout the float covers (1.988070).
+    const f = await quoteSellByProceeds("H100", 2, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-bid-capacity");
+    expect(f.capacityRaw).toBe(1_988_070n);
+  });
+
+  it("maps a stale oracle in the hook state to the typed staleness failure", async () => {
+    // Age is 1s against the deps fake's nowSec — a zero limit fails it.
+    h.hookState = makeHookState({ hookMaxOracleStalenessSec: 0 });
+    h.nativeLiquidity = 0n;
+    const f = await quoteSell("H100", 1, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("oracle-stale");
+  });
+
+  it("degrades to the float-seeded lens when the hook-state seam is missing", async () => {
+    h.hookState = null;
+    h.nativeLiquidity = 0n; // even an LP-less pool
+    h.sellResult = {
+      isBuy: false,
+      exactIn: true,
+      gusdIn: 0n,
+      gusdOut: 1_900_000n,
+      gpuIn: parseGpuUnits(1),
+      gpuOut: 0n,
+      nativeGpu: 0n,
+      polGpu: 0n,
+      backstopGpu: 0n,
+      polFeeGusd: 0n,
+      hookFeeGusd: 0n,
+      issueBase: 0n,
+      issueFee: 0n,
+      endTick: 0,
+    };
+    const quote = await quoteSell("H100", 1, 50, makeDeps());
+    expect(h.sellArgs).not.toBeNull(); // the lens served it
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    expect(quote.notional).toBeCloseTo(1.9, 12);
   });
 });
 

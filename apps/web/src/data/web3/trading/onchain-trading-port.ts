@@ -26,6 +26,7 @@ import type { ActionPlan, ActionRecord, ApprovalNeed, QuoteSnapshot } from "@/do
 import type {
   Account,
   AssetId,
+  QuoteFailure,
   TradeAvailability,
   TradeQuote,
   TradeRequest,
@@ -43,6 +44,7 @@ import {
   DEFAULT_TOLERANCE_BPS,
   describeAsset,
   quoteAsset,
+  quoteAssetDetailed,
   type QuoteDeps,
   defaultQuoteDeps,
 } from "./quotes";
@@ -105,6 +107,10 @@ export class OnChainTradingPort implements TradingPort {
 
   async quote(request: TradeRequest): Promise<TradeQuote | null> {
     return quoteAsset(request, this.quoteDeps);
+  }
+
+  async quoteDetailed(request: TradeRequest): Promise<TradeQuote | QuoteFailure | null> {
+    return quoteAssetDetailed(request, this.quoteDeps);
   }
 
   async execute(request: TradeRequest): Promise<ActionRecord> {

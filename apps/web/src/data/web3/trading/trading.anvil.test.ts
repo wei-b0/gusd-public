@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { createWalletClient, getContract, http, type WalletClient } from "viem";
+import { createWalletClient, getContract, http, type Address, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { waitForTransactionReceipt } from "viem/actions";
 import { getActiveChain } from "../chains";
@@ -11,7 +11,9 @@ import { contractReads } from "../reads";
 import { mintSpec, planMintApproval } from "../gusd/actions";
 import { formatGpuUnits, parseGpuUnits, parseGusd } from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
-import { quoteBuy, quoteSell } from "./quotes";
+import { canonicalPoolKey, poolIdOf } from "../pool";
+import { quoteBuy, quoteSell, gpuQuoterReadFor } from "./quotes";
+import { quoteBuyExactOutMirror, quoteSellMirror } from "./hook-quote";
 import { buySpec } from "./specs";
 import { decodeTradeResult } from "./events";
 
@@ -110,7 +112,7 @@ d("trading desk against the deployed protocol", () => {
 
     const quote = await quoteBuy("H100", 1);
     expect(quote).not.toBeNull();
-    if (quote === null) return;
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
     expect(quote.legs).toHaveLength(1);
     const poolLeg = quote.legs[0];
     if (poolLeg === undefined || poolLeg.kind !== "pool") return;
@@ -133,14 +135,17 @@ d("trading desk against the deployed protocol", () => {
     const size = formatGpuUnits(askInventory) + 1;
     const quote = await quoteBuy("H100", size);
     expect(quote).not.toBeNull();
-    if (quote === null) return;
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
     // The ladder drains the market's ask inventory first, then the
-    // in-swap backstop mints exactly the shortfall.
+    // in-swap backstop mints exactly the shortfall. Live inventory drifts
+    // below the unit grain as real fills land, and the size derives
+    // through a float — so the shortfall asserts at ledger tolerance
+    // (drift sits ~2.6e-15 units, far inside it), never at exact == 1.
     expect(quote.legs).toHaveLength(2);
     const [poolLeg, issueLeg] = quote.legs;
     if (poolLeg === undefined || issueLeg === undefined || issueLeg.kind !== "issuance") return;
     expect(poolLeg).toMatchObject({ kind: "pool", gpuUnits: size - 1 });
-    expect(issueLeg.gpuUnits).toBe(1);
+    expect(issueLeg.gpuUnits).toBeCloseTo(1, 9);
     // The backstop leg prices exactly what the primary itself quotes —
     // execution-identical pricing, one unit of it (quoteIssue returns
     // product units).
@@ -156,8 +161,9 @@ d("trading desk against the deployed protocol", () => {
     const gpuId = gpuIdForAsset("H100");
     const quote = await quoteBuy("H100", 1);
     expect(quote).not.toBeNull();
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
 
-    const maxPaidRaw = parseGusd(quote!.maxPaid);
+    const maxPaidRaw = parseGusd(quote.maxPaid);
     const need = await planApproval(
       contracts.addresses.gusd,
       "gUSD",
@@ -194,13 +200,13 @@ d("trading desk against the deployed protocol", () => {
 
     // The router pulled the cap and refunded the change: the user pays
     // exactly the quoted total, not the tolerance headroom.
-    expect(gusdBefore - gusdAfter).toBe(parseGusd(quote!.notional));
+    expect(gusdBefore - gusdAfter).toBe(parseGusd(quote.notional));
     expect(gpuAfter - gpuBefore).toBe(parseGpuUnits(1));
 
     // The receipt's own Buy event decodes back to the fill.
     const fill = await decodeTradeResult(hash);
     expect(fill).toMatchObject({ kind: "buy", asset: "H100", size: 1 });
-    expect(fill !== null && fill.kind === "buy" ? fill.paid : -1).toBeCloseTo(quote!.notional, 9);
+    expect(fill !== null && fill.kind === "buy" ? fill.paid : -1).toBeCloseTo(quote.notional, 9);
   }, 30_000);
 
   it("quotes sells against the primary-capitalized bid, at or below the bid edge", async () => {
@@ -209,12 +215,83 @@ d("trading desk against the deployed protocol", () => {
     // sit strictly below the bid edge — never null.
     const q = await quoteSell("H100", 1);
     expect(q).not.toBeNull();
-    if (q === null) return;
+    if (q === null || "unavailable" in q) throw new Error("expected a quote");
     expect(q.side).toBe("sell");
     expect(q.notional).toBeGreaterThan(0);
     const { bidEdge } = await hookEdges(gpuIdForAsset("H100"));
     expect(q.price).toBeLessThanOrEqual(bidEdge);
     // The signed floor is the proceeds minus the tolerance slack.
+    expect(q.minOut).toBeLessThan(q.notional);
+  }, 30_000);
+
+  it("matches the on-chain GpuQuoter fill-for-fill on the LP-less pool", async () => {
+    const gpuId = gpuIdForAsset("H100");
+    const reg = await contractReads().registration(gpuId);
+    if (reg === null) throw new Error("H100 unregistered");
+    const contracts = getContracts();
+    const poolKey = canonicalPoolKey(
+      contracts.addresses.gusd as Address,
+      reg.token,
+      reg.poolParams,
+      contracts.addresses.hook as Address,
+    );
+    // The launch configuration, asserted not assumed: no native CL
+    // liquidity, so the deterministic mirror is the desk's pricing path.
+    expect(await contracts.stateView.read.getLiquidity([poolIdOf(poolKey)])).toBe(0n);
+
+    const state = await contractReads().hookMarketState(gpuId);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const lens = gpuQuoterReadFor(contracts);
+
+    // Sell parity: units sold → net gUSD, fee split identical.
+    const sell = quoteSellMirror(state, parseGpuUnits(1), nowSec);
+    const lensSell = await lens.quoteSell([poolKey, parseGpuUnits(1)]);
+    expect(sell.ok).toBe(true);
+    if (!sell.ok) throw new Error("mirror sell rejected");
+    expect(lensSell.gusdOut).toBe(sell.r.gusdOut);
+    expect(lensSell.gpuIn).toBe(sell.r.gpuIn);
+    expect(lensSell.polFeeGusd).toBe(sell.r.polFeeGusd);
+    expect(lensSell.hookFeeGusd).toBe(sell.r.hookFeeGusd);
+
+    // Buy parity: units demanded → all-in gUSD, ladder split identical.
+    const buy = quoteBuyExactOutMirror(state, parseGpuUnits(1), nowSec);
+    const lensBuy = await lens.quoteBuyExactOut([poolKey, parseGpuUnits(1)]);
+    expect(buy.ok).toBe(true);
+    if (!buy.ok) throw new Error("mirror buy rejected");
+    expect(lensBuy.gusdIn).toBe(buy.r.gusdIn);
+    expect(lensBuy.gpuOut).toBe(buy.r.gpuOut);
+    expect(lensBuy.polGpu).toBe(buy.r.polGpu);
+    expect(lensBuy.backstopGpu).toBe(buy.r.backstopGpu);
+    expect(lensBuy.issueBase).toBe(buy.r.issueBase);
+    expect(lensBuy.issueFee).toBe(buy.r.issueFee);
+  }, 30_000);
+
+  it("quotes a sell far beyond the lens's simulation float — the P0 fix", async () => {
+    const contracts = getContracts();
+    // The lens seeds 1,000 GPU/SKU into its revert-borne simulation, so a
+    // 15,000-GPU sell reverts the SIMULATION while the vault's bid
+    // inventory (primary-capitalized) is ample. The lens demonstrably
+    // cannot answer it; the mirror prices the real market.
+    const gpuId = gpuIdForAsset("H100");
+    const reg = await contractReads().registration(gpuId);
+    if (reg === null) throw new Error("H100 unregistered");
+    const poolKey = canonicalPoolKey(
+      contracts.addresses.gusd as Address,
+      reg.token,
+      reg.poolParams,
+      contracts.addresses.hook as Address,
+    );
+    await expect(
+      gpuQuoterReadFor(contracts).quoteSell([poolKey, parseGpuUnits(15_000)]),
+    ).rejects.toThrow();
+
+    const q = await quoteSell("H100", 15_000);
+    expect(q).not.toBeNull();
+    if (q === null || "unavailable" in q) throw new Error("expected a mirror quote");
+    expect(q.notional).toBeGreaterThan(0);
+    // Priced at the bid net of both fees — strictly below the bid edge.
+    const { bidEdge } = await hookEdges(gpuId);
+    expect(q.price).toBeLessThanOrEqual(bidEdge);
     expect(q.minOut).toBeLessThan(q.notional);
   }, 30_000);
 });

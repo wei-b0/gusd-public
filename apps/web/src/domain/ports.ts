@@ -30,6 +30,7 @@ import type {
   MarketTrade,
   MintDirection,
   MintQuote,
+  QuoteFailure,
   TradeAvailability,
   TradeQuote,
   TradeRequest,
@@ -67,6 +68,14 @@ export interface TradingPort {
    * Works without a session — quoting is public, acting is not.
    */
   quote(request: TradeRequest): Promise<TradeQuote | null>;
+  /**
+   * The same quote with typed failures: a `QuoteFailure` instead of a
+   * bare null when the chain answered with a reason (stale publication,
+   * capacity), so the slip's gate can state what would work. Null still
+   * means "not quotable" for the degenerate cases (invalid input,
+   * unregistered asset).
+   */
+  quoteDetailed(request: TradeRequest): Promise<TradeQuote | QuoteFailure | null>;
   /**
    * Execute through the action runner (approval + router call +
    * reconciliation). Requires a connected wallet; resolves to the action

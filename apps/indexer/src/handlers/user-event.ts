@@ -10,9 +10,30 @@ import {
   type UserEventInput,
 } from "../projections/user-event.js";
 
-/** Minimal structural view of the entity context — what this helper needs,
- *  no more, so call sites pass their context.db straight through. */
-type UserEventDb = any;
+/**
+ * Minimal structural view of the entity context — what this helper needs,
+ * no more, so call sites pass their context.db straight through. Same
+ * doctrine as WalletStateDb: find's return stays an open record because
+ * checking it against a specific select model instantiates it to one;
+ * strong typing lives in the pure projection (projections/user-event.ts).
+ * Both inserts ride one overload (the tables share the Table signature):
+ * user_events stays insert-once by usage, wallets upserts on conflict.
+ */
+interface UserEventDb {
+  find(
+    table: typeof wallets,
+    key: { chainId: number; address: string },
+  ): Promise<{ [column: string]: any } | null>;
+  insert(table: typeof userEvents | typeof wallets): {
+    values(
+      value: typeof userEvents.$inferInsert | typeof wallets.$inferInsert,
+    ): {
+      onConflictDoUpdate(
+        set: Partial<typeof wallets.$inferInsert>,
+      ): Promise<unknown>;
+    };
+  };
+}
 
 /**
  * Write one user-attributed evidence row and stamp the wallet registry.

@@ -469,9 +469,11 @@ function PositionPanel({ asset, account }: { asset: AssetId; account: ReturnType
 
 /**
  * The Trade panel's fee-schedule line — the market's onchain fee schedule
- * (LP + protocol + issuance). It names the market's rates, not any one
+ * (pool + protocol + issuance). It names the market's rates, not any one
  * quote's fees; the slip's ledger carries what a specific fill incurs.
- * "—" while unregistered.
+ * "—" while unregistered. The pool rate is the market's configured native
+ * swap fee — it prices LP flow when the book carries it, and the launch
+ * pools (hook-driven, no native liquidity) simply never charge it.
  */
 function TradeMeta({ assetId }: { assetId: string }) {
   const { trading } = useServices();
@@ -486,7 +488,7 @@ function TradeMeta({ assetId }: { assetId: string }) {
         if (alive) {
           setMeta(
             a
-              ? `schedule ${(a.poolFeeBps / 100).toFixed(2)}% LP · ${(a.hookFeeBps / 100).toFixed(2)}% protocol · ${(a.issuanceFeeBps / 100).toFixed(2)}% issuance`
+              ? `schedule ${(a.poolFeeBps / 100).toFixed(2)}% pool · ${(a.hookFeeBps / 100).toFixed(2)}% protocol · ${(a.issuanceFeeBps / 100).toFixed(2)}% issuance`
               : "unregistered",
           );
         }
