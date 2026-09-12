@@ -47,19 +47,42 @@ forge script script/Deploy.s.sol --rpc-url https://rpc.mainnet.chain.robinhood.c
   --broadcast --sig "run()"
 ```
 
-What lands, unchanged from every environment: the v4 stack (fresh PoolManager +
-StateView + Quoter, or reused verbatim via `POOL_MANAGER`/`STATE_VIEW`/`QUOTER`
-when the chain has a canonical stack — liquidity must not fragment across two
-managers; decide from what Robinhood Chain hosts), Permit2 (canonical address),
-the hook (mined at the 0x10CC flags), the 4 launch SKUs with **issuance enabled,
-oracle seeded at the env prices, canonical pools initialized live** — empty by
-design: the hook is the book, genesis buys ride the in-swap backstop, and LPs
-provision through the PositionManager. The mint corridor is 50 bps both ways,
-the hook fee 50 bps, the POL book ask/bid 0.5%/0.5% + 0.1% POL fee.
+What lands, unchanged from every environment: the v4 core (or reused verbatim
+via `POOL_MANAGER`/`STATE_VIEW`/`QUOTER` when the chain has a canonical stack
+— liquidity must not fragment across two managers) + Permit2 (canonical
+address), the hook (mined at the 0x10CC flags), the 4 launch SKUs with
+**issuance enabled, oracle seeded at the env prices, canonical pools
+initialized live** — empty by design: the hook is the book, genesis buys ride
+the in-swap backstop, and LPs provision through the PositionManager. The mint
+corridor is 50 bps both ways, the hook fee 50 bps, the POL book ask/bid
+0.5%/0.5% + 0.1% POL fee.
 
-The deployment record (`deployments/4663.json`) carries `startBlock` (the
-pre-broadcast head — the indexer's backfill anchor) and `oraclePublisher`
-(the publish identity ops funds and keeps hot).
+### Deployed — 2026-09-13
+
+The production deploy is live on 4663. Robinhood Chain hosts a canonical v4
+stack (Robinhood team-deployed); it was reused verbatim via
+`POOL_MANAGER`/`STATE_VIEW`/`QUOTER`/`POSITION_MANAGER` (39% less gas than a
+fresh stack, and liquidity stays unified on the chain's canonical manager).
+Canonical contracts on 4663 (from Robinhood's docs, verified on-chain via
+`eth_call` probes — this RPC's `eth_getCode` intermittently returns 0x for
+deployed contracts, so never trust a bare `getCode` here):
+
+| Contract | 4663 |
+|---|---|
+| PoolManager | `0x8366a39cc670b4001a1121b8f6a443a643e40951` |
+| PositionManager | `0x58daec3116aae6d93017baaea7749052e8a04fa7` |
+| V4 Quoter | `0x8dc178efb8111bb0973dd9d722ebeff267c98f94` |
+| StateView | `0xf3334192d15450cdd385c8b70e03f9a6bd9e673b` |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
+| WETH | `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
+
+The deployed record (`deployments/4663.json`) carries `startBlock`
+(the pre-broadcast head — the indexer's backfill anchor) and
+`oraclePublisher` (the publish identity ops funds and keeps hot).
+Seeded from the live collector snapshot: H100 31,855 · H200 40,099 ·
+L40S 13,153 · RTX4090 3,946. Broadcast spent ~0.00235 ETH pinned at
+0.115 gwei (the chain's base fee sits at ~0.097–0.099 gwei; forge's
+default estimate pads 2× and can be pinned with `--with-gas-price`).
 
 There is **no genesis seeding script on mainnet** — deliberately. The
 vault's bid capacity is born from the first real genesis buy (the in-swap
