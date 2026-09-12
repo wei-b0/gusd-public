@@ -10,7 +10,7 @@ code, and a methodology change is a **new version row**, never a mutation.
 The settlement universe is the launch four: `H100_PANEL_V1`
 (`H100_SXM_80GB`), `H200_PANEL_V1` (`H200_141GB`), `L40S_PANEL_V1`
 (`L40S_48GB`) and `RTX_4090_PANEL_V1` (`RTX_4090_24GB`). The broader
-`@gusd/gpu-catalog` `CATALOG` (26 SKUs) is collection-only — old panels keep
+`@gusd/gpu-catalog` `CATALOG` (27 SKUs) is collection-only — old panels keep
 their historical rows, but nothing outside the four settles or publishes.
 
 ## Version history

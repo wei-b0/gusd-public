@@ -2,12 +2,12 @@ import type { PricingTier } from "@gusd/types";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
 
 /**
- * Methodology v0.2.0 configuration. Thresholds live in config, never in
+ * Methodology v0.4.0 configuration. Thresholds live in config, never in
  * code: a methodology change is a new config + new version, validated by the
- * exhaustive allowlist below before it can drive a computation. v0.2.0 adds
- * per-panel overrides so the full PROTOCOL.md §3 SKU universe can settle —
- * thin SKUs run on a reduced quorum over named rate-card principals and the
- * engine caps them at `degraded`.
+ * exhaustive allowlist below before it can drive a computation. v0.4.0 keeps
+ * per-panel overrides so thin panels can settle — promoted COLLECTED
+ * principals on a reduced quorum, with the engine capping override panels at
+ * `degraded`.
  */
 
 export interface ScreeningConfig {
