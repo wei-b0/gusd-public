@@ -88,7 +88,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     ///      address mining).
     PoolWalk internal immutable _poolWalk;
 
-    uint16 public hookFeeBps; // native-leg fee; retired to 0 by default (R1)
+    uint16 public hookFeeBps; // hook fee in gUSD on every fill shape (buys exactIn: out of the absorbed budget)
     uint256 public maxOracleStaleness = DEFAULT_MAX_ORACLE_STALENESS;
     uint256 public maxWalkTicks = DEFAULT_MAX_WALK_TICKS;
     uint256 public maxPolNotionalGusd = DEFAULT_MAX_POL_NOTIONAL_GUSD;
@@ -647,19 +647,25 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     ///      caller input; R3-capped at plan), spent on the POL ladder +
     ///      backstop, GPU delivered to the PM. Tail beyond the recomputed
     ///      ladder rides to the vault (bounded rounding remainder). The hook
-    ///      fee is taken IN KIND — gpuFee GPU off the delivered fills,
-    ///      routed to the revenue ledger — because the specified delta is
-    ///      frozen at beforeSwap and only the output leg is adjustable in
-    ///      afterSwap.
+    ///      fee is charged in gUSD out of the absorbed budget: the specified
+    ///      delta is frozen at beforeSwap and only the output leg is
+    ///      adjustable in afterSwap, so charging the buyer extra gUSD is
+    ///      impossible — instead the ladder runs on budget =
+    ///      absorb − hookFeeGusd and the buyer still receives the full gross
+    ///      fills. Money closes at zero: hookFeeGusd + polFee → ledger,
+    ///      total → issuance pull, polSpend − polFee + tail → vault credit.
     function _settleBuyIn(address sender, PoolKey calldata key, PoolCtx memory ctx, uint256 absorb, uint256 price)
         internal
         returns (int128)
     {
+        uint256 hookFeeGusd = Math.mulDiv(absorb, hookFeeBps, 1e4, Math.Rounding.Ceil);
+        if (hookFeeGusd > absorb) hookFeeGusd = absorb;
+        uint256 budget = absorb - hookFeeGusd;
         PolParams memory pp = _paramsFor(ctx.gpuId);
         uint256 cd = issuance.compositionDivisor();
         uint16 issueFeeBps = issuance.feeBpsOf(ctx.gpuId);
         (uint256 polGpu, uint256 polSpend, uint256 polFee, uint256 issueGpu, uint256 base, uint256 fee, uint256 total) =
-            _buyLadder(ctx.gpuId, pp, price, _effAskBps(pp, ctx.gpuId), cd, issueFeeBps, absorb, type(uint256).max);
+            _buyLadder(ctx.gpuId, pp, price, _effAskBps(pp, ctx.gpuId), cd, issueFeeBps, budget, type(uint256).max);
         poolManager.take(Currency.wrap(gUSD), address(this), absorb);
         Currency gpuCur = ctx.gIsC0 ? key.currency1 : key.currency0;
         if (polGpu > 0) {
@@ -668,23 +674,26 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
             poolManager.settle();
         }
         if (issueGpu > 0) {
-            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), absorb - polSpend);
+            // The pull bound is budget−polSpend, not absorb−polSpend: the
+            // ladder's total ≤ leftover is measured against the fee-net
+            // budget, and issuance's fail-closed transferFrom must not reach
+            // past it into the fee reserve.
+            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), budget - polSpend);
             poolManager.sync(gpuCur);
             IERC20(ctx.gpuToken).safeTransfer(address(poolManager), issueGpu);
             poolManager.settle();
         }
         uint256 grossGpu = polGpu + issueGpu;
-        uint256 gpuFee = Math.mulDiv(grossGpu, hookFeeBps, 1e4, Math.Rounding.Ceil);
-        if (gpuFee > 0) poolManager.take(gpuCur, revenueLedger, gpuFee);
-        uint256 tail = absorb - (polSpend + total);
-        if (polFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee);
+        uint256 tail = budget - (polSpend + total);
+        if (polFee + hookFeeGusd > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee + hookFeeGusd);
+        totalHookFeesGusd += hookFeeGusd;
         if (polSpend > polFee) _vault.creditBidFromTrade(ctx.gpuId, polSpend - polFee + tail);
         else if (tail > 0) _vault.creditBidFromTrade(ctx.gpuId, tail);
         _bookPol(polSpend, polFee);
         if (polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, polGpu, polSpend, polFee, 0);
         if (issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, issueGpu, base + fee, fee, 1);
-        _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(absorb), _toI128(grossGpu - gpuFee));
-        return -_toI128(grossGpu - gpuFee);
+        _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(absorb), _toI128(grossGpu));
+        return -_toI128(grossGpu);
     }
 
     /// @dev Sell, exactIn GPU: absorbed GPU taken straight to the vault (the

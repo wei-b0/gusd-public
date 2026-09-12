@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {WETH} from "solmate/src/tokens/WETH.sol";
 import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
@@ -200,18 +201,22 @@ contract Deploy is Script {
         // 6) wiring — no protocolFeeController: the hook captures the protocol
         //    trading share itself (gUSD-denominated in both directions)
         GUSD(d.gusd).setRevenueSink(d.ledger);
-        GUSD(d.gusd).setFees(0, 0);
+        GUSD(d.gusd).setFees(50, 50); // USD↔gUSD corridor: 50 bps mint + redeem
         RevenueLedger(d.ledger).setVault(d.sgusd);
         RevenueLedger(d.ledger).setTreasury(vm.envOr("TREASURY", deployer));
         RevenueLedger(d.ledger).setSplit(5_000);
         GPUHook(d.hook).setHookFeeBps(50);
         // seed the sgUSD vault: 1 gUSD in, 1 share out (one-way gate). A mock
         // reserve funds itself; a real external asset must already sit on the
-        // deployer (≥ 1 unit) — there is no mint to call on it.
-        if (underlyingIsMock) MockERC20(d.underlying).mint(deployer, 1e6);
-        else require(IERC20(d.underlying).balanceOf(deployer) >= 1e6, "deployer must hold >= 1 unit of UNDERLYING to seed sgUSD");
-        IERC20(d.underlying).approve(d.gusd, 1e6);
-        GUSD(d.gusd).mint(1e6, deployer);
+        // deployer (≥ the gross below) — there is no mint to call on it. The
+        // gross covers the GUSD mint fee so the net lands at exactly 1 gUSD.
+        uint256 mintFeeBps = GUSD(d.gusd).mintFeeBps();
+        uint256 seedGross = Math.mulDiv(1e6, 10_000, 10_000 - mintFeeBps, Math.Rounding.Ceil) + 1;
+        if (underlyingIsMock) MockERC20(d.underlying).mint(deployer, seedGross);
+        else require(IERC20(d.underlying).balanceOf(deployer) >= seedGross, "deployer must hold the seed gross of UNDERLYING to seed sgUSD");
+        IERC20(d.underlying).approve(d.gusd, seedGross);
+        GUSD(d.gusd).mint(seedGross, deployer);
+        require(IERC20(d.gusd).balanceOf(deployer) >= 1e6, "seed net below 1 gUSD");
         GUSD(d.gusd).approve(d.sgusd, 1e6);
         sgUSD(d.sgusd).seed(1e6);
         require(uint160(d.hook) & Hooks.ALL_HOOK_MASK == HOOK_FLAGS, "hook flags mismatch");

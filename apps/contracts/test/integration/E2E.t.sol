@@ -455,7 +455,8 @@ contract E2ETest is Test, DeployPermit2 {
     /// @notice buyExactIn full fill: the GpuQuoter quote is execution-
     ///         identical, the caller spends exactly gusdMaxIn, POL ask
     ///         inventory fills beyond the edge, and the hook fee is charged
-    ///         IN-KIND in GPU (totalHookFeesGusd must not move on this shape).
+    ///         in gUSD out of the absorbed budget (counter moves; the
+    ///         delivered GPU is the full gross, so parity holds).
     function test_buyExactIn_quoteParity() public {
         // POL ask inventory: alice sells 50 GPU after a genesis buy
         vm.startPrank(alice);
@@ -481,8 +482,9 @@ contract E2ETest is Test, DeployPermit2 {
         uint256 gpuOut = router.buyExactIn(H100, 10e6, q.gpuOut, 0, 0, bob);
         vm.stopPrank();
         assertEq(gpuOut, q.gpuOut, "quote == execution");
-        assertEq(q.hookFeeGusd, 0, "exactIn buy fee is in-kind, not gUSD");
-        assertEq(hook.totalHookFeesGusd(), hookFees0, "totalHookFeesGusd unchanged (fee taken in GPU)");
+        assertGt(q.hookFeeGusd, 0, "exactIn buy fee charged in gUSD");
+        assertGt(hook.totalHookFeesGusd(), hookFees0, "totalHookFeesGusd bumped by the budget fee");
+        assertEq(hook.totalHookFeesGusd() - hookFees0, q.hookFeeGusd, "execution fee == quoted fee");
         assertEq(gusd.balanceOf(bob), 1_000_000e6 - 10e6, "exact spend");
         assertEq(gusd.balanceOf(address(router)), 0, "router dust-free");
     }

@@ -170,8 +170,8 @@ function makeBuy(opts: {
 }
 
 /** An exact-in buy answer — the money-first quote: `gusdIn` is the typed
- *  spend itself, and the hook fee rides in-kind in GPU so hookFeeGusd
- *  reads 0. */
+ *  spend itself, and the hook fee is charged in gUSD out of the absorbed
+ *  budget, so `hookFeeGusd` is nonzero and rides in the protocol fee row. */
 function makeBuySpend(opts: {
   gusdIn: bigint;
   nativeGpu?: bigint;
@@ -180,6 +180,7 @@ function makeBuySpend(opts: {
   issueBase?: bigint;
   issueFee?: bigint;
   polFee?: bigint;
+  hookFee?: bigint;
 }): GpuQuoteResult {
   const nativeGpu = opts.nativeGpu ?? 0n;
   const polGpu = opts.polGpu ?? 0n;
@@ -195,7 +196,7 @@ function makeBuySpend(opts: {
     polGpu,
     backstopGpu,
     polFeeGusd: opts.polFee ?? 0n,
-    hookFeeGusd: 0n, // in-kind on exact-in buys
+    hookFeeGusd: opts.hookFee ?? 0n, // gUSD fee out of the absorbed budget
     issueBase: opts.issueBase ?? 0n,
     issueFee: opts.issueFee ?? 0n,
     endTick: 0,
@@ -471,6 +472,29 @@ describe("quoteBuyBySpend", () => {
     expect(q.toleranceBps).toBe(50);
     expect(q.quotedAtMs).toBe(1_000);
     expect(q.blockNumber).toBe(7);
+  });
+
+  it("carries the exact-in hook fee in the protocol fee row", async () => {
+    // 50 bps of the typed spend: the fee is charged in gUSD out of the
+    // absorbed budget, so it sums with the POL fee and the delivered GPU
+    // stays the full gross
+    h.spendBuyResult = makeBuySpend({
+      gusdIn: 10_000_000n,
+      nativeGpu: parseGpuUnits(6),
+      backstopGpu: parseGpuUnits(0.96),
+      issueBase: 1_200_000n,
+      issueFee: 6_000n,
+      polFee: 4_000n,
+      hookFee: 5_000n,
+    });
+    const quote = await quoteBuyBySpend("H100", 10, 50, makeDeps());
+    expect(quote).not.toBeNull();
+    const q = quote as TradeQuote;
+    expect(q.size).toBeCloseTo(6.96, 12);
+    expect(q.legs).toEqual([
+      { kind: "pool", gpuUnits: 6, gUsd: 8.794, fees: { protocol: 0.009 } },
+      { kind: "issuance", gpuUnits: 0.96, gUsd: 1.206, fees: { issuance: 0.006 } },
+    ]);
   });
 
   it("keeps the spend cap at the typed amount at any tolerance", async () => {

@@ -32,8 +32,10 @@ contract RevenueLedger is Ownable2Step {
     error NothingToDistribute();
     error SplitTooLarge();
     error ZeroAddress();
+    error SweptTokenIsGusd();
 
     event Distributed(uint256 amount, uint256 toVault, uint256 toTreasury);
+    event Swept(address indexed token, address indexed to, uint256 amount);
     event RecipientsUpdated(address vault, address treasury);
     event SplitUpdated(uint16 sgUSDBps);
 
@@ -76,5 +78,17 @@ contract RevenueLedger is Ownable2Step {
     /// @notice gUSD sitting in the ledger awaiting distribution.
     function pendingRevenue() external view returns (uint256) {
         return IERC20(gUSD).balanceOf(address(this));
+    }
+
+    /// @notice Owner recovery for non-gUSD inflows (stray transfers, tokens
+    ///         a source mis-delivers): moves the full balance out. gUSD is
+    ///         excluded — it belongs to {distribute}'s vault/treasury split.
+    function sweep(address token, address to) external onlyOwner {
+        if (token == address(gUSD)) revert SweptTokenIsGusd();
+        if (to == address(0)) revert ZeroAddress();
+        uint256 amt = IERC20(token).balanceOf(address(this));
+        if (amt == 0) return; // idempotent
+        IERC20(token).safeTransfer(to, amt);
+        emit Swept(token, to, amt);
     }
 }

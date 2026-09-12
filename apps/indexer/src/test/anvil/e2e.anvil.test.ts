@@ -117,7 +117,10 @@ d("indexer onchain suites (gated)", () => {
       // last-landed protocol events; their presence in the derived state
       // means the historical backfill reached the churn's final blocks. The
       // figures are the script's deterministic closing state (the same
-      // numbers two independent Deploy.full replays landed).
+      // numbers two independent Deploy.full replays landed). 12,014.37 gUSD
+      // vault share: the pre-fee figure 1,942.04 grew by half the 50 bps
+      // GUSD mint fees the script's mints now pay (the other half goes to
+      // the treasury).
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -126,7 +129,7 @@ d("indexer onchain suites (gated)", () => {
       );
       expect(closing).toHaveLength(1);
       expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
-      expect(closing[0]!.revenue_gusd).toBe("1942037125");
+      expect(closing[0]!.revenue_gusd).toBe("12014372236");
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_e2e_a".pm_swap`,

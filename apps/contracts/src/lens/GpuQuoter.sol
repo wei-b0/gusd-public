@@ -53,7 +53,7 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         uint256 polGpu; // GPU filled by POL inventory
         uint256 backstopGpu; // GPU minted by the issuance backstop
         uint256 polFeeGusd; // POL fee charged
-        uint256 hookFeeGusd; // hook fee charged (0 for buys — taken in kind)
+        uint256 hookFeeGusd; // hook fee charged in gUSD (every shape)
         uint256 issueBase; // backstop principal (buys only)
         uint256 issueFee; // backstop fee (buys only)
         int24 endTick; // pool tick after the native leg
@@ -75,6 +75,7 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         uint256 principal; // vault principalContributed
         uint256 polNotional; // hook totalPolNotionalGusd
         uint256 polFees; // hook totalPolFeesGusd
+        uint256 hookFees; // hook totalHookFeesGusd
         uint256 totalIssued; // issuance totalIssued
     }
 
@@ -189,14 +190,9 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         r.gusdIn = gusdIn;
         int256 dGpu = poolManager.currencyDelta(address(this), gpuCur);
         r.gpuOut = dGpu > 0 ? uint256(dGpu) : 0;
-        // the hook takes its exactIn-buy fee IN KIND off the delivered fills
-        // (GPUHook._settleBuyIn: ceil(fill x hookFeeBps / 1e4)), so the
-        // caller's GPU credit is fills - fee; add the fee back or the native
-        // decomposition underflows whenever the fill exceeds the native leg
-        // add BEFORE subtracting: gpuOut + fee >= fills always (native >= 0),
-        // whereas gpuOut - fills alone can go negative on in-kind-fee buys
-        r.nativeGpu = r.gpuOut + Math.mulDiv(r.polGpu + r.backstopGpu, hook.hookFeeBps(), 1e4, Math.Rounding.Ceil)
-            - r.polGpu - r.backstopGpu;
+        // gpuOut is the gross PM delta — the exactIn-buy hook fee is gUSD out
+        // of the absorbed budget (GPUHook._settleBuyIn), never off the fills
+        r.nativeGpu = r.gpuOut - r.polGpu - r.backstopGpu;
         r.endTick = _tick(key);
         revert QuoteGpu(r);
     }
@@ -267,6 +263,7 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         s.principal = vault.principalContributed(gpuId);
         s.polNotional = hook.totalPolNotionalGusd();
         s.polFees = hook.totalPolFeesGusd();
+        s.hookFees = hook.totalHookFeesGusd();
         s.totalIssued = issuance.gpuConfig(gpuId).totalIssued;
     }
 
@@ -300,8 +297,9 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
 
     /// @dev Counter deltas -> fill decomposition. Buys deplete ask inventory
     ///      (POL GPU) and mint via the backstop; sells add to ask inventory
-    ///      and debit bid inventory. hookFee reproduces the hook's own
-    ///      rounding for the shapes that charge it in gUSD.
+    ///      and debit bid inventory. Every shape charges the hook fee in
+    ///      gUSD now: exactOut buy / sells reproduce the hook's own rounding
+    ///      algebra, exactIn buy reads it straight off the fee counter.
     function _finish(GPUHook hook, bytes32 gpuId, Snap memory s0, bool isBuy, bool exactIn)
         internal
         view
@@ -317,10 +315,13 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         r.backstopGpu = s1.totalIssued - s0.totalIssued;
         uint256 polSpend = s1.polNotional - s0.polNotional;
         uint256 feeBps = hook.hookFeeBps();
+        uint256 hookFeeDelta = s1.hookFees - s0.hookFees;
         if (isBuy && !exactIn) {
             uint256 charge = polSpend + r.issueBase + r.issueFee;
             r.hookFeeGusd = Math.mulDiv(charge, feeBps, 1e4, Math.Rounding.Ceil);
-        } else if (!isBuy) {
+        } else if (isBuy) {
+            r.hookFeeGusd = hookFeeDelta;
+        } else {
             uint256 net = polSpend - r.polFeeGusd;
             r.hookFeeGusd = Math.mulDiv(net, feeBps, 1e4, Math.Rounding.Ceil);
         }

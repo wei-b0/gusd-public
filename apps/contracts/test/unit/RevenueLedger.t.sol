@@ -102,4 +102,58 @@ contract RevenueLedgerTest is Test {
         gusd.mint(address(ledger), 700);
         assertEq(ledger.pendingRevenue(), 700);
     }
+
+    // --------------------------------------------------------------- sweep
+
+    /// Non-gUSD inflows move out in full, owner-gated; gUSD itself stays
+    /// reserved for distribute()'s split.
+    function test_sweepMovesFullBalance() public {
+        MockERC20 stray = new MockERC20("stray", "STRAY", 18);
+        stray.mint(address(ledger), 123);
+        vm.expectEmit(true, true, false, true);
+        emit RevenueLedger.Swept(address(stray), treasury, 123);
+        ledger.sweep(address(stray), treasury);
+        assertEq(stray.balanceOf(treasury), 123);
+        assertEq(stray.balanceOf(address(ledger)), 0);
+    }
+
+    function test_sweepIsIdempotentOnZero() public {
+        MockERC20 stray = new MockERC20("stray", "STRAY", 18);
+        ledger.sweep(address(stray), treasury); // no balance: silent no-op
+        ledger.sweep(address(stray), treasury);
+        assertEq(stray.balanceOf(treasury), 0);
+    }
+
+    function test_sweepSweepsWhateverIsThere() public {
+        MockERC20 stray = new MockERC20("stray", "STRAY", 18);
+        stray.mint(address(ledger), 50);
+        ledger.sweep(address(stray), rando);
+        stray.mint(address(ledger), 77);
+        ledger.sweep(address(stray), rando); // full balance again
+        assertEq(stray.balanceOf(rando), 127);
+    }
+
+    function test_sweepGusdReverts() public {
+        gusd.mint(address(ledger), 100);
+        vm.expectRevert(RevenueLedger.SweptTokenIsGusd.selector);
+        ledger.sweep(address(gusd), treasury);
+        assertEq(gusd.balanceOf(address(ledger)), 100); // untouched
+        assertEq(ledger.pendingRevenue(), 100);
+    }
+
+    function test_sweepZeroAddressReverts() public {
+        MockERC20 stray = new MockERC20("stray", "STRAY", 18);
+        stray.mint(address(ledger), 1);
+        vm.expectRevert(RevenueLedger.ZeroAddress.selector);
+        ledger.sweep(address(stray), address(0));
+    }
+
+    function test_sweepOnlyOwner() public {
+        MockERC20 stray = new MockERC20("stray", "STRAY", 18);
+        stray.mint(address(ledger), 1);
+        vm.prank(rando);
+        vm.expectRevert(); // OwnableUnauthorizedAccount — onlyOwner gates every sweep
+        ledger.sweep(address(stray), rando);
+        assertEq(stray.balanceOf(rando), 0);
+    }
 }

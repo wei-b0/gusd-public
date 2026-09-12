@@ -476,8 +476,9 @@ export async function quoteBuyBySpend(
 
   // Legs decompose exactly like the size-first quote — the backstop's
   // principal+fee is the issuance share, the rest is the market leg. The
-  // hook fee is taken in-kind in GPU on exact-in buys, so hookFeeGusd
-  // reads 0 here: the fee rides inside the all-in price, not beside it.
+  // exact-in hook fee is charged in gUSD out of the absorbed budget, so
+  // hookFeeGusd is nonzero and rides in fees.protocol; the delivered GPU
+  // is the full gross, so the all-in price still carries it.
   const legs: TradeLeg[] = [];
   const marketGpu = r.nativeGpu + r.polGpu;
   const backstopGusd = r.issueBase + r.issueFee;

@@ -300,7 +300,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
 
     function test_hookAddressFlagsV2() public view {
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x10CC);
-        // hook fee is retired to 0 by default (R1); staleness gate is 25h
+        // rig default: hook fee off (tests opt in via HOOK_FEE_BPS); staleness gate is 25h
         assertEq(hook.hookFeeBps(), 0);
         assertEq(hook.maxOracleStaleness(), 25 hours);
         assertEq(hook.maxWalkTicks(), 48);
@@ -388,7 +388,9 @@ abstract contract GPUHookTestBase is Test, Deployers {
     // hookFeeBps=50 opted in. Identities (verified against GPUHook.sol):
     //   buy exactOut:  hookFee = ceil((polSpend + issueBase + issueFee) * f)
     //                  counter totalHookFeesGusd += hookFee
-    //   buy exactIn:   hookFee IN KIND (GPU) -> ledger; counter untouched
+    //   buy exactIn:   hookFee = ceil(absorb * f) OUT OF THE ABSORBED BUDGET
+    //                  (ladder runs on budget = absorb - hookFee, swapper
+    //                  gets the full gross fills); counter bumped
     //   sells:         hookFee = ceil((gross - polFee) * f) on POL legs only
     //                  (native legs are hook-fee-free); counter incremented
 
@@ -441,29 +443,60 @@ abstract contract GPUHookTestBase is Test, Deployers {
         assertEq(fills[0].src, 1, "issuance backstop source");
     }
 
-    /// Buy exactIn: the hook fee is taken IN KIND — gpuFee GPU off the
-    /// delivered fills, routed to the ledger — and the gUSD counter is NOT
-    /// bumped (the specified leg is frozen at beforeSwap).
-    function test_buyExactIn_feeInKind() public {
+    /// Buy exactIn: the hook fee is charged in gUSD OUT OF THE ABSORBED BUDGET —
+    /// the ladder runs on budget = absorb − hookFeeGusd, the swapper receives
+    /// the full gross fills, and the fee lands on the ledger with the counter
+    /// bumped (the specified leg is frozen at beforeSwap, so charging the
+    /// buyer extra gUSD is impossible; deducting from the absorb budget is
+    /// the economically identical shape).
+    function test_buyExactIn_feeFromBudget() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
         uint256 fees0 = hook.totalHookFeesGusd();
+        uint256 ledgerG0 = gusd.balanceOf(ledger);
         uint256 ledgerGpu0 = gpu.balanceOf(ledger);
         uint256 hookG0 = gusd.balanceOf(address(hook));
+        uint256 gpuBefore = gpu.balanceOf(address(this));
+        uint256 principal0 = pol.principalContributed(GPU_ID);
         PoolId id = _canonicalKey().toId();
         vm.recordLogs();
         int256 d = _swap(_buyZeroForOne(), -5e6); // 5 gUSD budget
         assertEq(d, -int256(5e6), "pays the full budget");
-        (Fill[] memory fills,) = _records();
-        assertGe(fills.length, 1, "backstop fill");
-        uint256 grossGpu;
-        for (uint256 i; i < fills.length; ++i) {
-            assertTrue(fills[i].isBuy);
-            grossGpu += fills[i].gpuAmt;
+        // Single read (the log buffer is consumed): the hook's HookSwap gives
+        // absorb (its gUSD debit) + the gross GPU delivered; the core Swap
+        // event gives the native leg, so both fee basis and delivery
+        // decompose without a second getRecordedLogs.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        int128 hookGusd = 0;
+        int128 hookGpu = 0;
+        int128 nativeGusd = 0;
+        int128 nativeGpu = 0;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics.length == 3 && logs[i].topics[1] == PoolId.unwrap(id)) {
+                if (logs[i].emitter == address(hook) && logs[i].topics[0] == _HOOK_SWAP_TOPIC) {
+                    (int128 a0, int128 a1,) = abi.decode(logs[i].data, (int128, int128, uint24));
+                    (hookGusd, hookGpu) = gIsC0 ? (a0, a1) : (a1, a0);
+                } else if (logs[i].emitter == address(manager)) {
+                    (int128 a0, int128 a1,,,,) =
+                        abi.decode(logs[i].data, (int128, int128, uint160, uint128, int24, uint24));
+                    (nativeGusd, nativeGpu) = gIsC0 ? (a0, a1) : (a1, a0);
+                }
+            }
         }
-        assertGt(grossGpu, 0);
-        assertEq(gpu.balanceOf(ledger) - ledgerGpu0, _hookFeeFor(grossGpu), "in-kind GPU fee to ledger");
-        assertEq(hook.totalHookFeesGusd() - fees0, 0, "counter not bumped for in-kind fee");
+        uint256 absorb = uint256(int256(-hookGusd));
+        uint256 grossGpu = uint256(int256(hookGpu));
+        assertGt(absorb, 0, "buy crosses the edge");
+        assertGt(grossGpu, 0, "backstop fill delivered");
+        assertEq(absorb, 5e6 - uint256(int256(-nativeGusd)), "absorb = budget - native leg");
+        uint256 expectedFee = _hookFeeFor(absorb);
+        uint256 issueFee = _issueFeeFor(pol.principalContributed(GPU_ID) - principal0);
+        assertGt(issueFee, 0, "backstop minted");
+        assertEq(hook.totalHookFeesGusd() - fees0, expectedFee, "counter bumped by the budget fee");
+        assertEq(
+            gusd.balanceOf(ledger) - ledgerG0, expectedFee + issueFee, "ledger got hookFee + issueFee (polFee = 0: empty vault)"
+        );
+        assertEq(gpu.balanceOf(ledger) - ledgerGpu0, 0, "no in-kind GPU fee");
         assertEq(gusd.balanceOf(address(hook)) - hookG0, 0, "nothing retained");
+        assertEq(gpu.balanceOf(address(this)) - gpuBefore, grossGpu + uint256(int256(nativeGpu)), "full gross fills to the swapper");
     }
 
     /// 100% POL: seed ask inventory (buy -> bid, sell -> vault GPU), then
@@ -581,7 +614,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         (Fill[] memory fills,) = _records();
         assertGe(fills.length, 1, "backstop still fills");
         assertEq(hook.totalHookFeesGusd() - fees0, 0, "no hook fee");
-        assertEq(gpu.balanceOf(ledger) - ledgerGpu0, 0, "no in-kind fee");
+        assertEq(gpu.balanceOf(ledger) - ledgerGpu0, 0, "no GPU fee to ledger");
         uint256 issueBase = pol.principalContributed(GPU_ID) - principal0;
         assertGt(issueBase, 0);
         assertEq(

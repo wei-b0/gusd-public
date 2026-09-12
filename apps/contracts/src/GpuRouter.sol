@@ -139,9 +139,12 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             IERC20(address(gUSD)).safeTransferFrom(msg.sender, address(this), p.maxPaid);
             funded = p.maxPaid;
         } else if (p.payment == address(underlying)) {
-            IERC20(p.payment).safeTransferFrom(msg.sender, address(this), p.maxPaid);
-            // nets the mint fee; the minted gUSD is what is actually available
-            funded = gUSD.mint(p.maxPaid, address(this));
+            // maxPaid is gUSD-equivalent: gross up for the mint fee so the
+            // minted gUSD covers it (mirrors sell()'s redeem-fee gross-up);
+            // the surplus rides in `funded` and refunds as change below
+            uint256 gross = Math.mulDiv(p.maxPaid, 10_000, 10_000 - gUSD.mintFeeBps(), Math.Rounding.Ceil);
+            IERC20(p.payment).safeTransferFrom(msg.sender, address(this), gross);
+            funded = gUSD.mint(gross, address(this));
         } else {
             revert UnsupportedPayment();
         }

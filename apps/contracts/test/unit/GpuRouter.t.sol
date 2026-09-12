@@ -378,7 +378,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     // ---------------------------------------------------------- buyExactIn
 
     /// Full fill: the caller spends exactly gusdMaxIn; the hook fee on this
-    /// shape is charged IN-KIND in GPU (totalHookFeesGusd must not move).
+    /// shape is charged in gUSD out of the absorbed budget (counter moves).
     function test_buyExactIn_fullFill() public {
         uint256 gusdMaxIn = 1e9;
         uint256 minGpuOut = 9e8;
@@ -390,7 +390,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
 
         assertGt(gpuOut, minGpuOut, "full fill");
         assertEq(gusd.balanceOf(alice), aliceGusdBefore - gusdMaxIn, "paid exactly gusdMaxIn");
-        assertEq(hook.totalHookFeesGusd(), hookFees0, "exactIn buy fee is in-kind GPU, not gUSD");
+        assertGt(hook.totalHookFeesGusd(), hookFees0, "exactIn buy fee lands in gUSD");
         assertEq(gusd.balanceOf(address(router)), 0);
         assertEq(gpu.balanceOf(address(router)), 0);
     }
