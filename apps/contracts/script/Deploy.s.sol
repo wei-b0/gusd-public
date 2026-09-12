@@ -35,11 +35,18 @@ import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
+import {TestnetOnly} from "./TestnetOnly.sol";
+
 /// @notice Chain-agnostic deployment of the V2 protocol stack: core primitives,
 ///         the 0x10CC trading-fee hook, the BUY/SELL product router, and the
 ///         production periphery (Permit2/WETH/Descriptor/PositionManager/Quoter)
 ///         that external LPs provision the canonical pools through.
-contract Deploy is Script {
+///         The TestnetOnly base supplies the mainnet predicate only: on a
+///         production chain this script refuses its dev postures (mock
+///         reserve, fixture seed prices) — see docs/mainnet-deploy.md.
+contract Deploy is Script, TestnetOnly {
     using PoolIdLibrary for PoolKey;
 
     // CREATE2 default proxy used by forge scripts
@@ -59,6 +66,9 @@ contract Deploy is Script {
     // PRICE_SCALE fixed point (×10_000, so 25_000 = $2.50/GPU-hour): H100/H200
     // anchor to live market rates; L40S/RTX 4090 are stylized dev/test
     // fixtures, not oracle truth — the first real publication replaces them.
+    // Production deploys set every seed explicitly via SEED_PRICE_<SYMBOL>
+    // (see _seedPrice): the seed is the reference all early fills price
+    // against until the pipeline's first publication clears its trigger.
     bytes32 public constant H100_ID = bytes32(bytes("H100_SXM_80GB"));
     bytes32 public constant H200_ID = bytes32(bytes("H200_141GB"));
     bytes32 public constant L40S_ID = bytes32(bytes("L40S_48GB"));
@@ -71,12 +81,22 @@ contract Deploy is Script {
         uint256 seedPrice;
     }
 
-    function gpuCatalogue() internal pure returns (GpuCatalogEntry[] memory e) {
+    function gpuCatalogue() internal view returns (GpuCatalogEntry[] memory e) {
         e = new GpuCatalogEntry[](4);
-        e[0] = GpuCatalogEntry(H100_ID, "H100 SXM 80GB GPU-hour", "H100", 25_000); // $2.50
-        e[1] = GpuCatalogEntry(H200_ID, "H200 141GB GPU-hour", "H200", 32_000); // $3.20
-        e[2] = GpuCatalogEntry(L40S_ID, "L40S 48GB GPU-hour", "L40S", 6_000); // $0.60 — dev fixture
-        e[3] = GpuCatalogEntry(RTX_4090_ID, "RTX 4090 24GB GPU-hour", "RTX4090", 3_000); // $0.30 — dev fixture
+        e[0] = GpuCatalogEntry(H100_ID, "H100 SXM 80GB GPU-hour", "H100", _seedPrice("H100", 25_000)); // $2.50
+        e[1] = GpuCatalogEntry(H200_ID, "H200 141GB GPU-hour", "H200", _seedPrice("H200", 32_000)); // $3.20
+        e[2] = GpuCatalogEntry(L40S_ID, "L40S 48GB GPU-hour", "L40S", _seedPrice("L40S", 6_000)); // $0.60 — dev fixture
+        e[3] = GpuCatalogEntry(RTX_4090_ID, "RTX 4090 24GB GPU-hour", "RTX4090", _seedPrice("RTX4090", 3_000)); // $0.30 — dev fixture
+    }
+
+    /// @dev One launch seed, env-overridable per SKU: SEED_PRICE_H100 /
+    ///      H200 / L40S / RTX4090 (PRICE_SCALE ×10_000, so 25_000 = $2.50).
+    ///      Dev defaults are the §3 table above; a production deploy sets
+    ///      each from the collector pipeline's live snapshot at deploy time —
+    ///      real capital must never price against a fabricated fixture until
+    ///      the pipeline's first publication replaces it.
+    function _seedPrice(string memory symbol, uint256 devPrice) internal view returns (uint256) {
+        return vm.envOr(string.concat("SEED_PRICE_", symbol), uint256(devPrice));
     }
 
     struct Deployment {
@@ -104,6 +124,21 @@ contract Deploy is Script {
     function run() external returns (Deployment memory d) {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
+        // Pre-broadcast posture guard: on a production chain the reserve
+        // asset and every launch seed are real. A forgotten UNDERLYING or a
+        // missing SEED_PRICE_* fails loudly BEFORE the first transaction is
+        // sent — the mock reserve and the fixture seeds are dev hermeticity,
+        // never postures that touch real capital (docs/mainnet-deploy.md).
+        if (_isMainnet()) {
+            require(
+                vm.envOr("UNDERLYING", address(0)) != address(0),
+                "mainnet requires a real UNDERLYING (no mock reserve on mainnet)"
+            );
+            require(vm.envOr("SEED_PRICE_H100", uint256(0)) != 0, "mainnet requires SEED_PRICE_H100");
+            require(vm.envOr("SEED_PRICE_H200", uint256(0)) != 0, "mainnet requires SEED_PRICE_H200");
+            require(vm.envOr("SEED_PRICE_L40S", uint256(0)) != 0, "mainnet requires SEED_PRICE_L40S");
+            require(vm.envOr("SEED_PRICE_RTX4090", uint256(0)) != 0, "mainnet requires SEED_PRICE_RTX4090");
+        }
         vm.startBroadcast(pk);
 
         // 1) underlying + oracle (env overrides for real assets). The reserve

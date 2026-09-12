@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Script} from "forge-std/Script.sol";
+import {TestnetOnly} from "./TestnetOnly.sol";
 import {console2} from "forge-std/console2.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -34,7 +35,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 ///         external LP via PositionManager -> pool BUY (quote == execution)
 ///         -> mixed BUY -> SELL -> oracle reprice (instant, structural) ->
 ///         distribute -> sgUSD accrual. Every flow is a single router call.
-contract Demo is Script {
+///         REFUSES mainnets (TestnetOnly) — demo activity on a public dev
+///         key is testnet posture.
+contract Demo is Script, TestnetOnly {
     using PoolIdLibrary for PoolKey;
 
     bytes32 constant H100 = bytes32(bytes("H100_SXM_80GB"));
@@ -44,6 +47,7 @@ contract Demo is Script {
     uint256 constant BOB_PK = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
 
     function run() external {
+        _refuseOnMainnet();
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
         address alice = vm.addr(ALICE_PK);

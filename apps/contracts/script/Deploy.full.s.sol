@@ -58,7 +58,9 @@ import {Deploy} from "./Deploy.s.sol";
 ///         requires) will not run after it. Minimal flow-testing recipe
 ///         remains Deploy + Demo; this script is the whole-app recipe for
 ///         Anvil AND testnets. Actor keys are the public anvil dev keys —
-///         test posture only.
+///         test posture only. REFUSES mainnets (the guard rides Deploy's
+///         TestnetOnly base): production deploys run the production Deploy
+///         with real assets — see docs/mainnet-deploy.md.
 contract DeployFull is Deploy {
     using PoolIdLibrary for PoolKey;
 
@@ -104,6 +106,9 @@ contract DeployFull is Deploy {
     }
 
     function runFull() external returns (Deployment memory d) {
+        // Mock USDT, public anvil actor keys and a demo activity pass are
+        // testnet posture — never a production chain's first transactions.
+        _refuseOnMainnet();
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
         address alice = vm.addr(ALICE_PK);
@@ -540,7 +545,7 @@ contract DeployFull is Deploy {
     /// @dev The deploy-time seed table — the same constants Deploy used to seed
     ///      the oracle, reused for spend caps and sell floors. Single-sourced
     ///      from Deploy's catalogue: no second price table here.
-    function _priceOf(bytes32 gpuId) internal pure returns (uint256) {
+    function _priceOf(bytes32 gpuId) internal view returns (uint256) {
         GpuCatalogEntry[] memory e = gpuCatalogue();
         for (uint256 i; i < e.length; ++i) {
             if (e[i].id == gpuId) return e[i].seedPrice;

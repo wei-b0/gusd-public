@@ -11,6 +11,7 @@ pragma solidity ^0.8.26;
 ///      script (Phase 6 anvil suite replays it); unlike Demo it tolerates
 ///      already-demoed state.
 import {Script} from "forge-std/Script.sol";
+import {TestnetOnly} from "./TestnetOnly.sol";
 import {console2} from "forge-std/console2.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -35,7 +36,9 @@ import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract IndexerDemo is Script {
+/// @notice Indexer demo activity — seeded trades so the index has tape to
+///         verify against. REFUSES mainnets (TestnetOnly).
+contract IndexerDemo is Script, TestnetOnly {
     using PoolIdLibrary for PoolKey;
 
     bytes32 constant H100 = bytes32(bytes("H100_SXM_80GB"));
@@ -43,6 +46,7 @@ contract IndexerDemo is Script {
     uint256 constant BOB_PK = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
 
     function run() external {
+        _refuseOnMainnet();
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address alice = vm.addr(ALICE_PK);
         address bob = vm.addr(BOB_PK);
