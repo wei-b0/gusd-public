@@ -21,7 +21,7 @@ import type {
   WalletKind,
   WalletSession,
 } from "@/domain/types";
-import { getActiveChain, chainAddParams, chainCaip2From } from "@/data/web3/chains";
+import { getActiveChain, chainAddParams, chainCaip2From, signableChain } from "@/data/web3/chains";
 import { createWalletClientFromProvider, isUserRejection } from "@/data/web3/wallet-client";
 import { CLOSED_FLOW, DISCONNECTED_SESSION, SessionStore } from "./session-store";
 import {
@@ -171,12 +171,22 @@ export class PrivyAuthPort implements AuthPort {
       throw new Error("Connect a wallet first — nothing signs without one.");
     }
     const active = getActiveChain();
-    if (chainId !== active.id) {
+    const chain = signableChain(chainId);
+    if (chain === null) {
       throw new Error(`This desk trades on ${active.name} — no signer for chain ${chainId}.`);
     }
     const walletChain = chainFromCaip2(session.chainId);
-    if (walletChain !== null && walletChain !== active.id) {
-      throw new Error(`The wallet is on another network — switch it to ${active.name} and try again.`);
+    if (chainId === active.id) {
+      if (walletChain !== null && walletChain !== active.id) {
+        throw new Error(`The wallet is on another network — switch it to ${active.name} and try again.`);
+      }
+    } else if (walletChain !== chainId) {
+      // An origin leg: the bridge switches first and a landed switch is
+      // recorded below — a session still reporting the desk's chain means
+      // the switch was declined or never happened.
+      throw new Error(
+        "The bridge needs the wallet on the origin chain — start the funding flow again and approve the network switch.",
+      );
     }
     const key = `${this.attached.address}:${chainId}`;
     const existing = this.clients.get(key);
@@ -184,6 +194,7 @@ export class PrivyAuthPort implements AuthPort {
     const client = createWalletClientFromProvider({
       address: this.attached.address,
       provider: this.attached.provider,
+      chain,
     });
     this.clients.set(key, client);
     return client;
@@ -193,7 +204,10 @@ export class PrivyAuthPort implements AuthPort {
     const wallet = this.attached;
     if (!wallet) throw new Error("Connect a wallet first — there is no network to switch.");
     const active = getActiveChain();
-    if (chainId !== active.id) {
+    // The desk's own chain always; a bridge origin while the desk serves
+    // funding (signableChain is the one definition of "off-desk but
+    // signable"). Anything else has no product surface that would ask.
+    if (signableChain(chainId) === null) {
       throw new Error(`This desk only switches to ${active.name}.`);
     }
     const hex = `0x${chainId.toString(16)}` as `0x${string}`;
@@ -208,14 +222,24 @@ export class PrivyAuthPort implements AuthPort {
       // add it, which also switches. Managed wallets handle their own adds.
       if (!wallet.switchManaged && isUnrecognizedChainError(err)) {
         const params = chainAddParams(chainId);
-        if (params) {
-          await request(wallet.provider, "wallet_addEthereumChain", [params]);
-          return;
+        if (params === null) {
+          // Unreachable through the signableChain gate (every servable chain
+          // carries add params) — fail closed as an ordinary switch failure.
+          throw new Error("The network switch didn't go through. Try again in a moment.");
         }
+        await request(wallet.provider, "wallet_addEthereumChain", [params]);
+        // Fall through to the session record below — an added chain is a
+        // landed switch, event or no event.
+      } else {
+        if (isUserRejection(err)) return; // the wallet stayed where it was
+        throw new Error("The network switch didn't go through. Try again in a moment.");
       }
-      if (isUserRejection(err)) return; // the wallet stayed where it was
-      throw new Error("The network switch didn't go through. Try again in a moment.");
     }
+    // Record where the wallet now sits. Managed (embedded) wallets don't
+    // re-announce through the provider, and both the network strip and the
+    // bridge's origin-leg signer check read this field — a landed switch
+    // that the session never hears about reads as a declined one.
+    this.setChainCaip2(caip2(chainId));
   }
 
   // -- bridge channels ------------------------------------------------------

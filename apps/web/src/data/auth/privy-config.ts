@@ -9,7 +9,7 @@
  */
 
 import type { PrivyClientConfig } from "@privy-io/react-auth";
-import { getActiveChain } from "@/data/web3/chains";
+import { bridgeOriginChains, getActiveChain } from "@/data/web3/chains";
 
 /** Build-time Privy app id. Empty ⇒ Privy disabled ⇒ demo mode. */
 export const privyAppId = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
@@ -36,11 +36,16 @@ export const WALLETCONNECT_PROJECT_ID =
  * The chain pins matter as much: without them Privy's embedded wallets boot
  * on its own default (Ethereum mainnet) — the session then reads "unknown
  * network" — and `switchChain` throws for any chain outside `supportedChains`,
- * so the network strip's SWITCH could never land on the desk's chain.
+ * so the network strip's SWITCH could never land on the desk's chain. The
+ * bridge-origin chains ride along when the desk serves funding: the funding
+ * flow legitimately switches an embedded wallet to an origin (Ethereum /
+ * Base / Arbitrum One) for the approve + deposit legs, and Privy refuses
+ * switches outside this list. Embedded wallets still boot on `defaultChain`
+ * — the desk's chain.
  */
 export const PRIVY_PROVIDER_CONFIG = {
   loginMethods: [...PRIVY_LOGIN_METHODS],
-  supportedChains: [getActiveChain()],
+  supportedChains: [getActiveChain(), ...bridgeOriginChains()],
   defaultChain: getActiveChain(),
   embeddedWallets: {
     ethereum: { createOnLogin: "users-without-wallets" },

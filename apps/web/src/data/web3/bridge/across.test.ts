@@ -303,6 +303,17 @@ describe("execute — the progress stream", () => {
     expect(failed?.error).toContain("The bridge didn't start — no funds moved.");
   });
 
+  it("returns the wallet to the desk's chain before the mint hand-off", async () => {
+    h.executeSwapQuote.mockImplementation(() => Promise.resolve({ error: null }));
+    const { port, calls } = makePort();
+    const q = await issueQuote(port);
+    const yields = await drain(port, q);
+    expect(yields[yields.length - 1]!.phase).toBe("mint-ready");
+    // Origin switch → origin signer → return to the desk's chain (31337 in
+    // tests) — the mint leg must never meet a wallet parked on the origin.
+    expect(calls).toEqual(["switch:1", "wallet", "switch:31337"]);
+  });
+
   it("consumes the issued quote on a completed run — a replay cannot re-bridge", async () => {
     h.executeSwapQuote.mockImplementation(() => Promise.resolve({ error: null }));
     const { port } = makePort();

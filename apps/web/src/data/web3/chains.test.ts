@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bridgeOriginChains,
   chainAddParams,
   chainCaip2From,
   chainIdFromCaip2,
@@ -7,6 +8,7 @@ import {
   getActiveChain,
   isChainSupported,
   isKnownChain,
+  signableChain,
 } from "./chains";
 
 describe("chains registry", () => {
@@ -39,6 +41,13 @@ describe("chains registry", () => {
     expect(params?.chainId).toBe("0x7a69");
     expect(params?.rpcUrls[0]).toBe("http://127.0.0.1:8545");
     expect(chainAddParams(1)).toBeNull();
+  });
+
+  it("names the desk's chain as the only always-signable chain", () => {
+    expect(signableChain(31_337)?.id).toBe(31_337);
+    // Bridge origins stay closed while the desk serves no funding.
+    expect(signableChain(1)).toBeNull();
+    expect(signableChain(8453)).toBeNull();
   });
 
   it("normalizes both wire forms of a chain id to CAIP-2", () => {
@@ -108,5 +117,37 @@ describe("dev funding override", () => {
       crossChainFunding: false,
       crossChainGuidance: false,
     });
+  });
+});
+
+// The bridge-origin universe mirrors the Across adapter's ORIGIN_TOKENS keys
+// and opens only while the desk serves the live funding surface.
+describe("bridge origins", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("keeps the origins closed when the desk serves no funding", async () => {
+    vi.resetModules();
+    const { bridgeOriginChains, signableChain, chainAddParams, chainLabel } = await import("./chains");
+    expect(bridgeOriginChains()).toEqual([]);
+    expect(signableChain(1)).toBeNull();
+    expect(chainAddParams(1)).toBeNull();
+    expect(chainLabel(1)).toBeNull();
+  });
+
+  it("opens the Across universe — Ethereum, Base, Arbitrum One — under the live surface", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_FUNDING_DEV", "live");
+    vi.resetModules();
+    const { bridgeOriginChains, signableChain, chainAddParams, chainLabel } = await import("./chains");
+    expect(bridgeOriginChains().map((c) => c.id)).toEqual([1, 8453, 42_161]);
+    expect(signableChain(1)?.id).toBe(1);
+    expect(chainAddParams(1)?.chainId).toBe("0x1");
+    expect(chainAddParams(42_161)?.chainId).toBe("0xa4b1");
+    expect(chainLabel(1)).toBe("Ethereum · bridge origin");
+    // A chain neither the registry nor the origins know stays unknown.
+    expect(signableChain(10)).toBeNull();
+    expect(chainAddParams(10)).toBeNull();
   });
 });

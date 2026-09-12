@@ -5,24 +5,26 @@
  * from. Signing and writes only; reads go through ./public-client.
  */
 
-import { createWalletClient, custom, UserRejectedRequestError, type Hex, type WalletClient } from "viem";
+import { createWalletClient, custom, UserRejectedRequestError, type Chain, type Hex, type WalletClient } from "viem";
 import type { EIP1193Provider } from "@privy-io/react-auth";
 import { getActiveChain } from "./chains";
 
 /**
- * Build a WalletClient over a wallet's own provider, bound to the active
- * chain. Callers pre-check the wallet's network (the auth port refuses
- * getWalletClient off-chain), so no chainId parameter — a client bound to a
- * different chain than the registry's would only disguise a wrong-network
- * write as a valid one.
+ * Build a WalletClient over a wallet's own provider. Callers pre-check the
+ * wallet's network (the auth port refuses getWalletClient on a chain the
+ * wallet isn't on), so there is no implicit chain lookup — the caller names
+ * the chain and the client binds to it, so a wrong-network write can never
+ * disguise itself as a valid one. Desk signing binds the active chain; the
+ * bridge's origin legs bind the origin.
  */
 export function createWalletClientFromProvider(options: {
   address: string;
   provider: EIP1193Provider;
+  chain?: Chain;
 }): WalletClient {
   return createWalletClient({
     account: options.address as `0x${string}`,
-    chain: getActiveChain(),
+    chain: options.chain ?? getActiveChain(),
     transport: custom(options.provider),
   });
 }

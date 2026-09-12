@@ -31,6 +31,7 @@ import { useActiveAction, useServices, useWalletSession } from "@/data/services"
 import { getOnchainAccountStore, useOnchainAccount } from "@/data/onchain/account-store";
 import { stablesFor, stableConfig, stableLabel, type StableMeta } from "@/data/web3/stables";
 import { contractReads } from "@/data/web3/reads";
+import { originBalanceOf } from "@/data/web3/bridge/origin-reads";
 import { chainCapabilities, chainLabel, getActiveChain } from "@/data/web3/chains";
 import { getContracts } from "@/data/web3/contracts";
 import { DEMO_FUND } from "@/data/demo";
@@ -152,15 +153,18 @@ export function GetDesk() {
   const paused = mintQuote?.paused ?? false;
 
   const [otherBalance, setOtherBalance] = useState<number | null>(null);
+  const [remoteBalance, setRemoteBalance] = useState<number | null>(null);
+  // Null = the balance read hasn't landed (direct reads only) — the row
+  // says "—", never a premature zero.
   const balance = !walletBound
     ? 0
     : direction === "redeem"
       ? onchain.gUsd
       : asset === null
-        ? 0
+        ? remoteBalance
         : isReserve
           ? onchain.stable
-          : (otherBalance ?? 0);
+          : otherBalance;
   const inputLabel = direction === "mint" ? sourceSymbol : "gUSD";
   const outputLabel = direction === "mint" ? "gUSD" : (asset?.symbol ?? "stable");
 
@@ -276,6 +280,40 @@ export function GetDesk() {
     // funding row recovers from a failed read like the desk's own balance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset?.address, isReserve, walletBound, session.address, onchain.loadedAt]);
+
+  // The selected origin balance isn't in the account snapshot either — the
+  // wallet sits on the deployment chain and the token lives elsewhere. One
+  // public-RPC read per selected chain+token (null renders "—" until it
+  // lands). The bridge lane's end re-arms it too: the deposit spends the
+  // origin balance even when the mint leg never runs.
+  const remoteSource = source?.kind === "remote" ? source : null;
+  useEffect(() => {
+    setRemoteBalance(null);
+    if (remoteSource === null || !walletBound || session.address === null) return;
+    let alive = true;
+    originBalanceOf(
+      remoteSource.chainId,
+      remoteSource.token.address,
+      session.address as `0x${string}`,
+    )
+      .then((raw) => {
+        if (alive) setRemoteBalance(raw === null ? null : formatStableRaw(raw));
+      })
+      .catch(() => {
+        if (alive) setRemoteBalance(null);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    remoteSource?.chainId,
+    remoteSource?.token.address,
+    walletBound,
+    session.address,
+    onchain.loadedAt,
+    run.kind,
+  ]);
 
   async function onConnect() {
     setError(null);
@@ -491,9 +529,11 @@ export function GetDesk() {
             {direction === "mint" ? "Amount" : "Redeem"} · {inputLabel}
             {source?.kind === "remote" && ` on ${source.chainLabel}`}
           </span>
-          {walletBound && asset !== null && (
+          {walletBound && source !== null && (
             <span className="num text-[10.5px] text-dim">
-              balance {fmtGusdLedger(balance)} {inputLabel}
+              {balance === null
+                ? "balance —"
+                : `balance ${fmtGusdLedger(balance)} ${inputLabel}`}
             </span>
           )}
         </div>
@@ -506,16 +546,16 @@ export function GetDesk() {
             aria-label={`Amount in ${inputLabel}`}
             className="num w-full bg-transparent px-3 py-2.5 text-[15px] text-data outline-none"
           />
-          {/* Presets need a balance — remote origins don't read from here,
-              so their amount is free-typed. */}
-          {asset !== null && (
+          {/* Presets need a landed balance read — until it does (or on a
+              failed read) the amount is free-typed. */}
+          {source !== null && (
             <div className="flex items-stretch border-l border-rule">
               {[0.25, 0.5, 1].map((frac) => (
                 <button
                   key={frac}
                   type="button"
-                  disabled={!walletBound || balance <= 0}
-                  onClick={() => setAmountText(String(Number((balance * frac).toFixed(6))))}
+                  disabled={!walletBound || balance === null || balance <= 0}
+                  onClick={() => setAmountText(String(Number(((balance ?? 0) * frac).toFixed(6))))}
                   className="num border-l border-rule px-2.5 text-[11px] text-dim first:border-l-0 hover:text-amber disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {frac * 100}%

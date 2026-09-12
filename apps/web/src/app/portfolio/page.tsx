@@ -124,15 +124,9 @@ function PortfolioBook() {
     const pnlPct = last === null || basis === null ? null : (last / basis - 1) * 100;
     return { p, last, unit, value, pnl, pnlPct };
   });
-  // Measured dust (value < 0.01 gUSD — a residual from a closed trade) is
-  // presentation noise, not a position: hidden below the 0.01 gUSD grain.
-  // Unmarkable rows (no price) stay — hiding for a missing price would be
-  // dishonest. Filtered before the meta so the count agrees with the table.
-  const DUST_GUSD = 0.01;
-  const visibleRows = rows.filter((r) => r.value === null || r.value >= DUST_GUSD);
   // The headline sums what can be marked; unmarkable positions print "—"
   // in their row rather than a fabricated 0 in the total.
-  const positionsValue = visibleRows.reduce((sum, r) => sum + (r.value ?? 0), 0);
+  const positionsValue = rows.reduce((sum, r) => sum + (r.value ?? 0), 0);
   // The share price is the vault's read; before the first read lands the
   // earning value prints 0 rather than an invented figure.
   const sGUsdValue = account.sGUsdBalance * (earn.rate ?? 0);
@@ -158,8 +152,8 @@ function PortfolioBook() {
 
       {/* 01 — GPU market positions */}
       <div className="mt-5">
-        <TuiPanel no="01" title="GPU market positions" meta={`${visibleRows.length} markets`}>
-          {visibleRows.length === 0 ? (
+        <TuiPanel no="01" title="GPU market positions" meta={`${rows.length} markets`}>
+          {rows.length === 0 ? (
             <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
               No market positions yet. Orders on{" "}
               <Link href="/markets" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
@@ -187,7 +181,7 @@ function PortfolioBook() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map(({ p, last, unit, value, pnl, pnlPct }) => {
+                  {rows.map(({ p, last, unit, value, pnl, pnlPct }) => {
                     const flat = pnlPct === null || isFlatPct(pnlPct);
                     return (
                       <tr key={p.asset} className="border-b border-rule last:border-b-0">

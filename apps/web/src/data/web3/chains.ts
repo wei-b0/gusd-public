@@ -6,6 +6,12 @@
  * entries so enabling them is a config change, not a code change — no
  * other network is ever invented here.
  *
+ * The one exception is transit, not deployment: when the active chain serves
+ * cross-chain funding, the wallet is asked to sign on the bridge's origin
+ * chains (Ethereum / Base / Arbitrum One — the Across universe below). Those
+ * live in BRIDGE_ORIGINS, never the REGISTRY: no chain is deployable there,
+ * and every helper that reads origins is gated on the funding capability.
+ *
  * Contract addresses live beside this registry in ./abis/addresses.generated.ts
  * (sourced from apps/contracts/deployments/<id>.json) and resolve through
  * ./contracts.ts — the chain registry itself stays address-free.
@@ -63,6 +69,24 @@ const ROBINHOOD: Chain = defineChain({
   name: "robinhood",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
+});
+
+/** Bridge-origin chains — never deployment targets, so they stay out of the
+ *  REGISTRY and can never be the active chain. They exist so the funding
+ *  panel's legs can sign on them (the auth port's switch + signer guards)
+ *  and so a wallet lacking one can still be taught it (wallet_addEthereumChain). */
+const ETHEREUM: Chain = defineChain({
+  id: 1,
+  name: "ethereum",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://cloudflare-eth.com"] } },
+});
+
+const ARBITRUM_ONE: Chain = defineChain({
+  id: 42_161,
+  name: "arbitrum",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://arb1.arbitrum.io/rpc"] } },
 });
 
 /** Per-chain product capabilities. Config-driven so feature gates read from
@@ -183,9 +207,14 @@ export function isChainSupported(chainId: number): boolean {
   return chainId === getActiveChain().id;
 }
 
-/** Human label for the network row: "Anvil · dev". */
+/** Human label for the network row: "Anvil · dev". Bridge origins label too
+ *  (while funding is served) so the system bar names the chain the wallet
+ *  legitimately sits on during the funding legs. */
 export function chainLabel(chainId: number): string | null {
-  return REGISTRY[chainId]?.label ?? null;
+  return (
+    REGISTRY[chainId]?.label ??
+    (bridgeOriginsOpen() ? (BRIDGE_ORIGINS[chainId]?.label ?? null) : null)
+  );
 }
 
 /** Product capabilities for a chain id, or null when unknown. Feature gates
@@ -210,9 +239,77 @@ export function configuredRpcUrl(chainId: number): string | null {
   return isChainEnabled(chainId) ? rpcUrlFor(chainId) : null;
 }
 
+/**
+ * The bridge-origin universe — must mirror the Across adapter's ORIGIN_TOKENS
+ * keys (apps/web/src/data/web3/bridge/across.ts): Ethereum, Base, Arbitrum
+ * One. Reachable only while the active chain serves cross-chain funding;
+ * every reader below funnels through that one gate.
+ */
+const BRIDGE_ORIGINS: Record<number, { chain: Chain; label: string; addParams: ChainEntry["addParams"] }> = {
+  [ETHEREUM.id]: {
+    chain: ETHEREUM,
+    label: "Ethereum · bridge origin",
+    addParams: {
+      chainId: "0x1",
+      chainName: "Ethereum",
+      nativeCurrency: ETHEREUM.nativeCurrency,
+      rpcUrls: ["https://cloudflare-eth.com"],
+    },
+  },
+  [BASE.id]: {
+    chain: BASE,
+    label: "Base · bridge origin",
+    addParams: {
+      chainId: "0x2105",
+      chainName: "Base",
+      nativeCurrency: BASE.nativeCurrency,
+      rpcUrls: ["https://mainnet.base.org"],
+    },
+  },
+  [ARBITRUM_ONE.id]: {
+    chain: ARBITRUM_ONE,
+    label: "Arbitrum One · bridge origin",
+    addParams: {
+      chainId: "0xa4b1",
+      chainName: "Arbitrum One",
+      nativeCurrency: ARBITRUM_ONE.nativeCurrency,
+      rpcUrls: ["https://arb1.arbitrum.io/rpc"],
+    },
+  },
+};
+
+/** True when this build's active chain serves the live funding panel — the
+ *  only condition under which the wallet is ever asked to sign off-desk. */
+function bridgeOriginsOpen(): boolean {
+  return chainCapabilities(CONFIGURED_CHAIN_ID)?.crossChainFunding === true;
+}
+
+/** The origin chains the wallet may be asked to sign on, or none when the
+ *  desk doesn't serve funding (testnets, dev without the override). */
+export function bridgeOriginChains(): Chain[] {
+  if (!bridgeOriginsOpen()) return [];
+  return Object.values(BRIDGE_ORIGINS).map((o) => o.chain);
+}
+
+/**
+ * The chain object for a chain id the wallet may legitimately sign on: the
+ * active chain always, a bridge origin while funding is served — null for
+ * everything else. The auth port's switch and signer guards both read this,
+ * so there is exactly one definition of "off-desk but signable".
+ */
+export function signableChain(chainId: number): Chain | null {
+  const active = getActiveChain();
+  if (chainId === active.id) return active;
+  if (!bridgeOriginsOpen()) return null;
+  return BRIDGE_ORIGINS[chainId]?.chain ?? null;
+}
+
 /** wallet_addEthereumChain params for a chain id, or null when unknown. */
 export function chainAddParams(chainId: number): ChainEntry["addParams"] | null {
-  return REGISTRY[chainId]?.addParams ?? null;
+  return (
+    REGISTRY[chainId]?.addParams ??
+    (bridgeOriginsOpen() ? (BRIDGE_ORIGINS[chainId]?.addParams ?? null) : null)
+  );
 }
 
 /** True when the chain is one the registry knows (even if not active). */

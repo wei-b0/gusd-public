@@ -207,18 +207,26 @@ export class AcrossBridgePort implements BridgePort {
           if (p !== null) push(p);
         },
       })
-      .then((res) => {
+      .then(async (res) => {
         if (res.error) {
           push({ phase: "failed", message: "", txHash: null, error: voice(res.error, depositSubmitted) });
-        } else {
-          push({
-            phase: "mint-ready",
-            message:
-              "Funds landed in the wallet as the reserve asset — the mint desk can take it from here.",
-            txHash: null,
-            error: null,
-          });
+          return;
         }
+        // The wallet's work is done — the fill was the relayer's. Return it
+        // to the desk's chain so the mint leg signs there without a manual
+        // switch (and the network strip settles back to green).
+        try {
+          await this.deps.switchChain(getActiveChain().id);
+        } catch {
+          // The mint leg's own guard names the fix if the return didn't land.
+        }
+        push({
+          phase: "mint-ready",
+          message:
+            "Funds landed in the wallet as the reserve asset — the mint desk can take it from here.",
+          txHash: null,
+          error: null,
+        });
       })
       .catch((err: unknown) => {
         push({
