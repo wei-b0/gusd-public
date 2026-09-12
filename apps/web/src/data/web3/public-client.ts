@@ -5,7 +5,7 @@
  * OHLC, and history come from the API/oracle feed. This client exists for
  * execution support and correctness: transaction receipts, allowances,
  * simulation, and the interim balances/positions reads that validate and
- * reconcile actions until the Ponder indexer ships (see src/domain/indexer.ts).
+ * reconcile actions when indexed reads are unavailable (see src/domain/indexer.ts).
  *
  * Transport is plain http with modest batching/timeouts, matching the
  * publisher's house style. Never imported unless a wallet session exists.

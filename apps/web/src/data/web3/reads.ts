@@ -1,6 +1,6 @@
 /**
  * Contract reads for execution support and correctness — the interim user-
- * state source until the Ponder indexer ships (see src/domain/indexer.ts).
+ * state source when indexed data is unavailable (see src/domain/indexer.ts).
  * Balances, allowances, registration, and preview/state views the action
  * layer needs immediately before execution. Never a market-data source: no
  * prices, no candles, no volume (doctrine in ./public-client).

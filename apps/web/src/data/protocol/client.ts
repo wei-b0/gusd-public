@@ -1,5 +1,5 @@
 /**
- * REST client for the oracle's /v1/protocol/* routes (Ponder-indexed data).
+ * REST client for the oracle's /v1/protocol/* routes (Envio-indexed data).
  * Transport only, mirroring ../oracle/client.ts: no retry, no caching, no
  * base-URL logic beyond the lazy env read, CORS-simple GETs, 5s timeout.
  *

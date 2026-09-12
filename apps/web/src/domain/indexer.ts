@@ -1,5 +1,5 @@
 /**
- * The indexer port — the placeholder seam for the Ponder indexer.
+ * The indexer port for protocol history and derived state.
  *
  * Nothing stands behind it yet: the only implementation is the HTTP stub
  * in src/data/indexer/indexer-client.ts, which is inert unless
@@ -7,7 +7,7 @@
  * reads in the account store are the interim user-state source and every
  * ledger keeps "this session" provenance.
  *
- * The wire contract Ponder must serve, and the events it must index —
+ * The wire contract the indexer must serve, and the events it must index —
  * positions, balances-at-block, cost basis, and history all derive from
  * these and nothing else:
  *

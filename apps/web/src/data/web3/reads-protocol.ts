@@ -1,7 +1,7 @@
 /**
  * The indexed read seam: same ContractReads port, with the STATE methods
  * (balances, positions, registration, gusdState, sgusdState, hookFeeBps)
- * answered from the oracle's /v1/protocol/* routes over Ponder's indexed
+ * answered from the oracle's /v1/protocol/* routes over Envio's indexed
  * views when NEXT_PUBLIC_INDEXER_URL is configured. Everything
  * freshness-critical or execution-adjacent stays on direct RPC exactly as
  * before: balanceOf/allowance (approvals + actions), quoteIssue (quotes),

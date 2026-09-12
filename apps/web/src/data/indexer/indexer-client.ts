@@ -1,9 +1,9 @@
 /**
  * The indexer client — the one IndexerPort implementation, inert until
- * Ponder ships. With NEXT_PUBLIC_INDEXER_URL absent, isIndexed is false
+ * Envio ships. With NEXT_PUBLIC_INDEXER_URL absent, isIndexed is false
  * and getUserEvents resolves null without touching the network (asserted
  * in the unit suite). With the URL configured, it speaks the wire contract
- * documented in src/domain/indexer.ts against Ponder's HTTP API; any
+ * documented in src/domain/indexer.ts against the oracle protocol API; any
  * failure — unreachable, slow, malformed — resolves to null, because
  * indexing lag is never an error state.
  */
@@ -23,7 +23,7 @@ const TIMEOUT_MS = 5_000;
 
 class HttpIndexerClient implements IndexerPort {
   isIndexed(chainId: number): boolean {
-    // Ponder indexes the one chain this build is configured for; other
+    // Envio indexes the one chain this build is configured for; other
     // chains have no deployment to index.
     return indexerUrl() !== null && chainId === getActiveChain().id;
   }

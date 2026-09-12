@@ -73,7 +73,7 @@ export class Web3Services implements Services {
   readonly auth: PrivyAuthPort;
   readonly tx: WalletTxPort;
   readonly actions: ActionPort;
-  /** The interim onchain user-state store (the Ponder successor lands later). */
+  /** The onchain user-state store used beside indexed history. */
   readonly accountStore: OnChainAccountStore;
   /** The indexed wallet-activity store (rows for the ledgers). */
   readonly activityStore: IndexedActivityStore;
@@ -112,7 +112,7 @@ export class Web3Services implements Services {
     });
     // Post-confirmation reconciliation: the store re-read (always), the
     // indexed stores re-pull (activity rows + market state), the settled
-    // seam drops quote caches, and the indexed-evidence fetch once Ponder
+    // seam drops quote caches and the indexed-evidence fetch when Envio
     // stands behind NEXT_PUBLIC_INDEXER_URL.
     const reconcile = makeReconciler({
       accountStore: this.accountStore,

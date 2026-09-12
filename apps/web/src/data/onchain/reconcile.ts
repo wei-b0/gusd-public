@@ -55,7 +55,7 @@ export interface ReconcilerDeps {
   accountStore: Pick<OnChainAccountStore, "refresh" | "get">;
   /** The earn port's own derived view (share price), when one exists. */
   earn?: { refresh(): Promise<void> };
-  /** Null — the default until Ponder ships — keeps this half inert. */
+  /** Null when indexed reconciliation is not configured. */
   indexer?: IndexerPort | null;
   /** Tx lookup, to resolve the settled blocks the events must follow. */
   tx?: Pick<TxPort, "get">;

@@ -18,7 +18,7 @@ import { Sparkline } from "@/components/charts/sparkline";
 /**
  * Venue-flow figures (Volume / Liquidity). The Volume column carries real
  * 24h swap volume and Liquidity the in-range gUSD-side depth of the
- * canonical pool — both from the Ponder indexer via the market seam. Rows
+ * canonical pool — both from the Envio indexer via the market seam. Rows
  * with no indexed pool print "—" (mock mode never invents them).
  */
 const SHOW_MARKET_FLOWS = true;

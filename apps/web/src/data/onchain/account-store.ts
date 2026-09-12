@@ -2,7 +2,7 @@
  * The interim onchain account store — this session's wallet state read
  * straight from the contracts: balances and GPU positions.
  *
- * Successor, by design: the Ponder indexer (src/domain/indexer.ts) replaces
+ * Successor, by design: the Envio indexer (src/domain/indexer.ts) replaces
  * these direct reads with indexed events once it ships. Until then this
  * store is the one place that turns the chain into user state, so desks,
  * presets, and the portfolio read one snapshot instead of each firing their

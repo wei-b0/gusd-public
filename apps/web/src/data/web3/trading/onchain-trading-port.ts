@@ -16,7 +16,7 @@
  * Quote and execution run the same protocol pricing path and math; the
  * signed limits (`maxPaid`/`minOut`/`minSize`) bound the fill if state
  * moves between quote and inclusion. The account view projects the interim
- * onchain account store (the Ponder successor lands later) — never demo
+ * onchain account store and indexed protocol reads — never demo
  * capital, never invented cost basis.
  */
 
