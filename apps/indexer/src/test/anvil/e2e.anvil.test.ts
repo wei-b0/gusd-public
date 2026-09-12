@@ -86,12 +86,12 @@ async function waitForSchema(
 beforeAll(async () => {
   await spawnAnvil();
   // Deploy.full — the canonical deployed + churned chain in one script:
-  // 7 SKUs (oracle seed prices, enabled issuance, canonical pools), quoter
-  // floats funded, mock USDT, the product churn (issuance + pool buys, a
-  // sell, LP), and the closing stake + distribute. The older Deploy + Demo
-  // pair drifted apart — minimal Deploy deliberately leaves the quoter
-  // floats unfunded ("Floats are funded by Deploy.full"), so Demo's first
-  // quote reverts NoFloat on a fresh chain.
+  // 4 launch SKUs (oracle seed prices, enabled issuance, canonical pools),
+  // quoter floats funded, mock USDT, the product churn (issuance + pool
+  // buys, a sell, LP), and the closing stake + distribute. The older
+  // Deploy + Demo pair drifted apart — minimal Deploy deliberately leaves
+  // the quoter floats unfunded ("Floats are funded by Deploy.full"), so
+  // Demo's first quote reverts NoFloat on a fresh chain.
   await runForgeScript("script/Deploy.full.s.sol", "runFull()");
   pg = await connectPg();
   await dropScratchSchemas(pg);

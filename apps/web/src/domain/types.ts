@@ -11,9 +11,9 @@
 import type { Hex, WalletClient, Address } from "viem";
 
 /** GPU asset classes traded on gUSD. Product language: the bare GPU name. */
-export type AssetId = "H100" | "H200" | "B200" | "B300" | "GB200" | "GB300" | "A100";
+export type AssetId = "H100" | "H200" | "L40S" | "RTX4090";
 
-export const ASSET_IDS = ["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const;
+export const ASSET_IDS = ["H100", "H200", "L40S", "RTX4090"] as const;
 
 /** Parses a route segment or string into a known AssetId, or null. */
 export function parseAssetId(value: string): AssetId | null {

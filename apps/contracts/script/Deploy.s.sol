@@ -54,6 +54,31 @@ contract Deploy is Script {
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
     );
 
+    // PROTOCOL.md §3 launch catalogue — the four tokenized/settled GPUs. Ids
+    // are bytes32 left-aligned ASCII SKUs. Seed prices are oracle seeds in
+    // PRICE_SCALE fixed point (×10_000, so 25_000 = $2.50/GPU-hour): H100/H200
+    // anchor to live market rates; L40S/RTX 4090 are stylized dev/test
+    // fixtures, not oracle truth — the first real publication replaces them.
+    bytes32 public constant H100_ID = bytes32(bytes("H100_SXM_80GB"));
+    bytes32 public constant H200_ID = bytes32(bytes("H200_141GB"));
+    bytes32 public constant L40S_ID = bytes32(bytes("L40S_48GB"));
+    bytes32 public constant RTX_4090_ID = bytes32(bytes("RTX_4090_24GB"));
+
+    struct GpuCatalogEntry {
+        bytes32 id;
+        string name;
+        string symbol;
+        uint256 seedPrice;
+    }
+
+    function gpuCatalogue() internal pure returns (GpuCatalogEntry[] memory e) {
+        e = new GpuCatalogEntry[](4);
+        e[0] = GpuCatalogEntry(H100_ID, "H100 SXM 80GB GPU-hour", "H100", 25_000); // $2.50
+        e[1] = GpuCatalogEntry(H200_ID, "H200 141GB GPU-hour", "H200", 32_000); // $3.20
+        e[2] = GpuCatalogEntry(L40S_ID, "L40S 48GB GPU-hour", "L40S", 6_000); // $0.60 — dev fixture
+        e[3] = GpuCatalogEntry(RTX_4090_ID, "RTX 4090 24GB GPU-hour", "RTX4090", 3_000); // $0.30 — dev fixture
+    }
+
     struct Deployment {
         address underlying;
         address poolManager;
@@ -221,27 +246,37 @@ contract Deploy is Script {
         sgUSD(d.sgusd).seed(1e6);
         require(uint160(d.hook) & Hooks.ALL_HOOK_MASK == HOOK_FLAGS, "hook flags mismatch");
 
-        // 7) canonical GPU: register H100, enable issuance, seed the oracle
-        //    price, and initialize the canonical (empty) pool so the market is
-        //    live at deploy time; genesis BUYs are 100% issuance until LPs add
-        //    depth through the PositionManager.
-        bytes32 h100Id = bytes32(bytes("H100_SXM_80GB"));
-        GPUIssuance(d.issuance).createGpu(h100Id, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
-        GPUIssuance(d.issuance).setIssuanceEnabled(h100Id, true);
-        if (oracleDeployed) {
-            // genesis seed via the owner hatch: works for any PUBLISHER value,
-            // including a publisher key the deployer does not control
-            GPUPriceOracle(d.oracle).setPriceOverride(h100Id, 25_000, block.timestamp); // $2.50/GPU-hour
-        } else {
-            // _initializeCanonicalPool below derives the pool's starting price
-            // from the live oracle: an external oracle must have published.
-            console2.log("oracle external; pool initializes at the oracle's live price");
+        // 7) canonical GPU universe: register the launch four, enable issuance,
+        //    seed the oracle prices, and initialize the canonical (empty)
+        //    pools so every market is live at deploy time; genesis BUYs are
+        //    100% issuance until LPs add depth through the PositionManager.
+        GpuCatalogEntry[] memory catalogue = gpuCatalogue();
+        for (uint256 i; i < catalogue.length; ++i) {
+            bytes32 gpuId = catalogue[i].id;
+            GPUIssuance(d.issuance).createGpu(
+                gpuId, catalogue[i].name, catalogue[i].symbol, 50, 3000, 60
+            );
+            GPUIssuance(d.issuance).setIssuanceEnabled(gpuId, true);
+            if (oracleDeployed) {
+                // genesis seed via the owner hatch: works for any PUBLISHER
+                // value, including a publisher key the deployer does not
+                // control
+                GPUPriceOracle(d.oracle).setPriceOverride(
+                    gpuId, catalogue[i].seedPrice, block.timestamp
+                );
+            }
+            // POL market-making params (ask/bid spread + POL fee, bps) —
+            // without them effAsk is 0 and the in-swap backstop's fee has no
+            // headroom: every dry-book buy reverts InsufficientMarketCapacity.
+            GPUHook(d.hook).setPolParams(gpuId, 50, 50, 10);
+            // derives the pool's starting price from the live oracle: an
+            // external oracle must have published (fail closed — the pool
+            // refuses to start at a fabricated price)
+            _initializeCanonicalPool(d, gpuId);
         }
-        // POL market-making params (ask/bid spread + POL fee, bps) — without
-        // them effAsk is 0 and the in-swap backstop's fee has no headroom:
-        // every dry-book buy reverts InsufficientMarketCapacity.
-        GPUHook(d.hook).setPolParams(h100Id, 50, 50, 10);
-        _initializeCanonicalPool(d, h100Id);
+        if (!oracleDeployed) {
+            console2.log("oracle external; pools initialize at the oracle's live price");
+        }
 
         vm.stopBroadcast();
         _persist(d, oracleDeployed);

@@ -49,9 +49,9 @@ through the oracle's `/v1/protocol` proxy.
 pnpm install
 ```
 
-Start the chain and deploy the full catalogue (seeds all 7 SKUs, mock USDT,
-the stable pool, and demo activity — primary buys capitalize each market's
-bid bands, so the web app has data the moment it opens).
+Start the chain and deploy the full catalogue (seeds the four launch SKUs,
+mock USDT, the stable pool, and demo activity — primary buys capitalize each
+market's bid bands, so the web app has data the moment it opens).
 Use anvil account #0: Deploy defaults the on-chain publisher to the deployer,
 and that is the key the stack's publisher container uses.
 

@@ -65,8 +65,10 @@ Deploy variables (env; see `script/Deploy.s.sol`):
 | `STABLES` | Comma-separated extra StableRouter-whitelisted stables (the underlying is whitelisted at construction) |
 | `POOL_MANAGER` / `STATE_VIEW` / `QUOTER` / `POSITION_MANAGER` / `WETH` | Reuse an existing canonical Uniswap v4 stack instead of deploying one (e.g. Robinhood Chain mainnet's) |
 
-The deployed oracle is genesis-seeded at \$2.50/GPU-hour for `H100_SXM_80GB`
-via the owner hatch; `deployments/<chainId>.json` records `oraclePublisher`
+The deployed oracle is genesis-seeded for the four launch SKUs
+(`H100_SXM_80GB`, `H200_141GB`, `L40S_48GB`, `RTX_4090_24GB`) at their
+catalogue seed prices via the owner hatch; `deployments/<chainId>.json`
+records `oraclePublisher`
 when we deployed the oracle (an external `ORACLE` is never seeded and omits
 that key — prices arrive through its own publication path). The canonical
 GPU/gUSD pool initializes at the oracle's LIVE price for the registered GPU
@@ -123,9 +125,9 @@ to guidance on 46630 by registry capability — Across serves mainnets only.
 
 ### Full-catalogue dev/testnet deploy
 
-`Deploy.s.sol` is the production posture: every contract, but only H100
-registered, no pool liquidity, and the reserve as the sole stable. That is
-enough for the test suite, not for exercising the app end to end.
+`Deploy.s.sol` is the production posture: every contract, all four launch
+SKUs registered, no pool liquidity, and the reserve as the sole stable.
+That is enough for the test suite, not for exercising the app end to end.
 `script/Deploy.full.s.sol` layers the full dev/test posture on top of an
 unchanged production deploy:
 
@@ -140,9 +142,9 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
 — the inner production deploy reads them). What it adds beyond
 `Deploy.run()`:
 
-- **All 7 SKUs** (A100/H100/H200/B200/B300/GB200/GB300) created, oracle-seeded
-  (\$1.80–\$10.00/GPU-hour), issuance enabled, canonical pool initialized from
-  the seed price.
+- **All 4 launch SKUs** (H100/H200/L40S/RTX 4090) created, oracle-seeded
+  (\$0.30–\$3.20/GPU-hour — dev fixtures), issuance enabled, canonical pool
+  initialized from the seed price.
 - **Genesis inventory via the real issuance→POL path**: 10,000 GPU per SKU
   issued to the deployer through 100%-issuance buys paid in gUSD — each
   buy's principal capitalizes that market's POL bid band (there is no

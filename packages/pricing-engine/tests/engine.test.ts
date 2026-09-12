@@ -630,7 +630,7 @@ describe("computeIndex", () => {
 // === panelOverrides (v0.2.0) ==================================================
 
 describe("panelOverrides", () => {
-  const A100 = CATALOG.find((g) => g.id === "A100_SXM_80GB")!;
+  const L40S = CATALOG.find((g) => g.id === "L40S_48GB")!;
 
   /** Input for a thin panel: all contributors rate-card, global config. */
   function thinInput(
@@ -639,8 +639,8 @@ describe("panelOverrides", () => {
   ): IndexInput {
     return {
       ...makeInput(prices, opts),
-      gpu: A100,
-      panelId: "A100_PANEL_V1",
+      gpu: L40S,
+      panelId: "L40S_PANEL_V1",
     };
   }
 
@@ -665,13 +665,13 @@ describe("panelOverrides", () => {
     expect(() =>
       validateMethodologyConfig({
         ...DEFAULT_METHODOLOGY_CONFIG,
-        panelOverrides: { A100_PANEL_V1: {} },
+        panelOverrides: { L40S_PANEL_V1: {} },
       }),
     ).toThrow(/empty override/);
     expect(() =>
       validateMethodologyConfig({
         ...DEFAULT_METHODOLOGY_CONFIG,
-        panelOverrides: { A100_PANEL_V1: { gates: { minProvidersForScreen: 2 } } },
+        panelOverrides: { L40S_PANEL_V1: { gates: { minProvidersForScreen: 2 } } },
       }),
     ).toThrow(/unknown gate/);
   });
@@ -680,42 +680,41 @@ describe("panelOverrides", () => {
     expect(() =>
       validateMethodologyConfig({
         ...DEFAULT_METHODOLOGY_CONFIG,
-        panelOverrides: { GB300_PANEL_V1: { dispersion: { max: 0.2 } } },
+        panelOverrides: { L40S_PANEL_V1: { dispersion: { max: 0.2 } } },
       }),
     ).toThrow(/dispersion/);
     // ...but a patched max above the inherited warn is coherent
     expect(() =>
       validateMethodologyConfig({
         ...DEFAULT_METHODOLOGY_CONFIG,
-        panelOverrides: { GB300_PANEL_V1: { dispersion: { max: 0.9 } } },
+        panelOverrides: { RTX_4090_PANEL_V1: { dispersion: { max: 0.9 } } },
       }),
     ).not.toThrow();
   });
 
   it("effectiveConfigFor merges the patch and is identity without one", () => {
-    const plain = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H100_PANEL_V1");
-    expect(plain).toBe(DEFAULT_METHODOLOGY_CONFIG);
+    const h100 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H100_PANEL_V1");
+    expect(h100).toBe(DEFAULT_METHODOLOGY_CONFIG);
+    const h200 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H200_PANEL_V1");
+    expect(h200).toBe(DEFAULT_METHODOLOGY_CONFIG);
 
-    const a100 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "A100_PANEL_V1");
-    expect(a100.gates.minProviders).toBe(3);
-    expect(a100.gates.minObservations).toBe(DEFAULT_METHODOLOGY_CONFIG.gates.minObservations);
-    expect(a100.dispersion).toEqual(DEFAULT_METHODOLOGY_CONFIG.dispersion);
+    const l40s = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "L40S_PANEL_V1");
+    expect(l40s.gates.minProviders).toBe(3);
+    expect(l40s.gates.requireExecutable).toBe(false);
+    expect(l40s.gates.minObservations).toBe(DEFAULT_METHODOLOGY_CONFIG.gates.minObservations);
+    expect(l40s.dispersion).toEqual(DEFAULT_METHODOLOGY_CONFIG.dispersion);
 
-    const gb200 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "GB200_PANEL_V1");
-    expect(gb200.gates.minProviders).toBe(1);
-    expect(gb200.gates.requireExecutable).toBe(false);
-
-    const gb300 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "GB300_PANEL_V1");
-    expect(gb300.dispersion.max).toBe(0.9);
-    expect(gb300.dispersion.warn).toBe(DEFAULT_METHODOLOGY_CONFIG.dispersion.warn);
+    const rtx4090 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "RTX_4090_PANEL_V1");
+    expect(rtx4090.gates.minProviders).toBe(3);
+    expect(rtx4090.gates.requireExecutable).toBe(true);
   });
 
   it("a thin panel passes its relaxed quorum but is capped at degraded", () => {
     // 3 rate-card contributors in a tight cluster (dispersion well under the
     // warn threshold, so the only thing standing between this and `healthy` is
     // the sub-quorum cap: 3 < the global quorum of 4).
-    const prices = ["datacrunch", "lambda", "coreweave"].map((id, i) =>
-      providerPrice(id, [1.3, 1.39, 1.5][i]!, { executable: false, panelId: "A100_PANEL_V1" }),
+    const prices = ["datacrunch", "scaleway", "coreweave"].map((id, i) =>
+      providerPrice(id, [1.3, 1.39, 1.5][i]!, { executable: false, panelId: "L40S_PANEL_V1" }),
     );
     const r = computeIndex(thinInput(prices));
     expect(r.gates.find((g) => g.name === "min_providers")?.passed).toBe(true);
@@ -733,19 +732,26 @@ describe("panelOverrides", () => {
     expect(r.status).toBe("withheld");
   });
 
-  it("a relaxed requireExecutable lets a single-source rate-card panel publish degraded", () => {
-    const gb200 = CATALOG.find((g) => g.id === "GB200_192GB")!;
-    const prices = [providerPrice("oracle-oci", 16.0, { executable: false, panelId: "GB200_PANEL_V1" })];
+  it("an executable-backed thin panel keeps the require_executable floor and still caps at degraded", () => {
+    // RTX 4090: vast + runpod are executable books, akash's rate card
+    // completes the quorum of 3 — the floor stays, the ceiling stays.
+    const rtx4090 = CATALOG.find((g) => g.id === "RTX_4090_24GB")!;
+    const prices = [
+      providerPrice("vast", 0.42, { executable: true, panelId: "RTX_4090_PANEL_V1" }),
+      providerPrice("runpod", 0.44, { executable: true, panelId: "RTX_4090_PANEL_V1" }),
+      providerPrice("akash", 0.4, { executable: false, panelId: "RTX_4090_PANEL_V1" }),
+    ];
     const input: IndexInput = {
       ...makeInput(prices),
-      gpu: gb200,
-      panelId: "GB200_PANEL_V1",
+      gpu: rtx4090,
+      panelId: "RTX_4090_PANEL_V1",
     };
     const r = computeIndex(input);
-    expect(r.gates.find((g) => g.name === "require_executable")).toBeUndefined();
+    // The floor gate is present and passes — the override kept it.
+    expect(r.gates.find((g) => g.name === "require_executable")?.passed).toBe(true);
     expect(r.gates.find((g) => g.name === "min_providers")?.passed).toBe(true);
     expect(r.status).toBe("degraded");
-    expect(r.price).toBe(16);
+    expect(r.price).toBeGreaterThan(0);
   });
 });
 

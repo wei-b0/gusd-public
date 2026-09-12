@@ -51,17 +51,14 @@ The initial GPU catalogue is:
 
 - H100
 - H200
-- B200
-- B300
-- GB200
-- GB300
-- A100
+- L40S
+- RTX 4090
 
 Within the product, individual assets should normally be referred to simply by their GPU name:
 
 - H100
 - H200
-- B200
+- L40S
 - etc.
 
 Collectively, they are referred to as **GPU assets**.
@@ -74,8 +71,8 @@ Examples:
 
 - H100 position
 - H200 market
-- B200 price
-- GB200 exposure
+- L40S price
+- RTX 4090 exposure
 
 rather than repeatedly seeing terminology such as:
 
@@ -94,11 +91,8 @@ Initial markets conceptually include:
 ```text
 H100 / gUSD
 H200 / gUSD
-A100 / gUSD
-B200 / gUSD
-B300 / gUSD
-GB200 / gUSD
-GB300 / gUSD
+L40S / gUSD
+RTX 4090 / gUSD
 ```
 
 These are financial markets.
@@ -120,11 +114,8 @@ Conceptually:
 ```text
 H100 ──────┐
 H200 ──────┤
-A100 ──────┤
-B200 ──────┤
-B300 ──────┼──── gUSD
-GB200 ─────┤
-GB300 ─────┘
+L40S ──────┼──── gUSD
+RTX 4090 ──┘
 ```
 
 This gives GPU markets a shared monetary layer rather than creating a collection of unrelated trading pairs.
@@ -336,7 +327,7 @@ Possible interfaces may eventually include:
 - downloadable datasets
 - historical-data products
 
-**Shipped (2026-09-05):** the oracle's real interfaces exist and the web app consumes them directly — `GET /v1/prices`, `/v1/prices/:gpu`, `/v1/prices/:gpu/history`, `GET /v1/prices/:gpu/candles` (server-bucketed OHLC over the canonical benchmark time series stored in `index_candidates` — open/high/low/close derived from the benchmark observations within each interval, 1m/5m/15m/30m/1h/6h/12h/1d/1w grains, bucket-capped), `/v1/prices/:gpu/providers`, `/v1/providers`, `/v1/health` (all read-only REST, CORS open), an SSE stream at `/v1/stream/sse` carrying each published candidate (WebSocket variant at `/v1/stream`), and the web app's Oracle **Developers tab documents this surface in-app** — the interface catalog, endpoint reference, and code samples are product surfaces, not external docs. Every settlement panel in the catalog (A100/H100/H200/B200/B300/GB200/GB300) is oracle-backed, and the API/data layer is the **single source of truth** for every displayed price: the benchmark it publishes is the one price the market and trading surfaces show — where no venue prices the asset separately the second-price slots do not exist on the surface. Market-layer facts the API does not publish (venue price, trades, volume, liquidity) render as honest empties (`—`, an empty tape) rather than simulated figures. Candles for every chart range, sparklines (the series' last 48 hourly closes), and window statistics derive from the server-bucketed benchmark series; live candidates merge into the trailing bucket as they arrive. Before real swaps exist, candles come from the benchmark series — not fake trades and not oracle publications; once Uniswap v4 pools have indexed swaps, an actual trade-OHLCV market series can be added alongside. On-chain reads stay out of display paths — the chain is touched only where execution, balances, and allowances require it; the onchain `GPUPriceOracle` is a protocol execution primitive (hooks, swaps, issuance, redemption), never the frontend's displayed price. `NEXT_PUBLIC_DATA_SOURCE=mock` restores the fully simulated layer (its one admission lives on the status line).
+**Shipped (2026-09-05):** the oracle's real interfaces exist and the web app consumes them directly — `GET /v1/prices`, `/v1/prices/:gpu`, `/v1/prices/:gpu/history`, `GET /v1/prices/:gpu/candles` (server-bucketed OHLC over the canonical benchmark time series stored in `index_candidates` — open/high/low/close derived from the benchmark observations within each interval, 1m/5m/15m/30m/1h/6h/12h/1d/1w grains, bucket-capped), `/v1/prices/:gpu/providers`, `/v1/providers`, `/v1/health` (all read-only REST, CORS open), an SSE stream at `/v1/stream/sse` carrying each published candidate (WebSocket variant at `/v1/stream`), and the web app's Oracle **Developers tab documents this surface in-app** — the interface catalog, endpoint reference, and code samples are product surfaces, not external docs. Every settlement panel in the catalog (H100/H200/L40S/RTX 4090) is oracle-backed, and the API/data layer is the **single source of truth** for every displayed price: the benchmark it publishes is the one price the market and trading surfaces show — where no venue prices the asset separately the second-price slots do not exist on the surface. Market-layer facts the API does not publish (venue price, trades, volume, liquidity) render as honest empties (`—`, an empty tape) rather than simulated figures. Candles for every chart range, sparklines (the series' last 48 hourly closes), and window statistics derive from the server-bucketed benchmark series; live candidates merge into the trailing bucket as they arrive. Before real swaps exist, candles come from the benchmark series — not fake trades and not oracle publications; once Uniswap v4 pools have indexed swaps, an actual trade-OHLCV market series can be added alongside. On-chain reads stay out of display paths — the chain is touched only where execution, balances, and allowances require it; the onchain `GPUPriceOracle` is a protocol execution primitive (hooks, swaps, issuance, redemption), never the frontend's displayed price. `NEXT_PUBLIC_DATA_SOURCE=mock` restores the fully simulated layer (its one admission lives on the status line).
 
 The exact API design is not yet finalized.
 
@@ -790,6 +781,6 @@ The product hierarchy matters more than preserving these exact URLs.
   reference was only for colors. Not the effects like flicker or whatever";
   front door: straight to the board). The complete product shell ships: every
   surface in Initial Product Surfaces exists and works on mock data behind
-  the ports. The front page presents all seven GPU markets as equals — never
+  the ports. The front page presents all GPU markets as equals — never
   a single leading issue. Consumer dashboard idioms (cards, glows, rounded
   chrome, gradients) are out of world.

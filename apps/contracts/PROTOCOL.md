@@ -173,25 +173,19 @@ They may be:
 The initial onchain/tokenized universe is:
 
 ```text
-A100_SXM_80GB
 H100_SXM_80GB
 H200_141GB
-B200_192GB
-B300_288GB
-GB200_192GB
-GB300_288GB
+L40S_48GB
+RTX_4090_24GB
 ```
 
 Human shorthand:
 
 ```text
-A100
 H100
 H200
-B200
-B300
-GB200
-GB300
+L40S
+RTX 4090
 ```
 
 Canonical IDs must remain SKU-specific.
@@ -409,13 +403,10 @@ Each supported GPU trades against gUSD through Uniswap v4.
 Initial markets:
 
 ```text
-A100 / gUSD
 H100 / gUSD
 H200 / gUSD
-B200 / gUSD
-B300 / gUSD
-GB200 / gUSD
-GB300 / gUSD
+L40S / gUSD
+RTX 4090 / gUSD
 ```
 
 Example purchase:
@@ -701,7 +692,7 @@ Conceptually:
                       │
        ┌──────────────┼──────────────┐
        ▼              ▼              ▼
-   H100/gUSD      H200/gUSD      B200/gUSD
+   H100/gUSD      H200/gUSD      L40S/gUSD
        │              │              │
        └──── other GPU/gUSD pools ───┘
 ```

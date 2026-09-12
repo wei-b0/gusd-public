@@ -77,7 +77,7 @@ export interface JumpConfig {
 
 /**
  * The publishing movement allowance (methodology v0.3.0). Rate-card-settled
- * panels (A100/GB200/GB300) have no dynamic source — their computed anchor
+ * panels (L40S today) have no dynamic source — their computed anchor
  * is genuinely static for days, which reads as a dead tape. The allowance
  * lets the *published* figure carry a bounded, deterministic, mean-reverting
  * offset around the computed anchor so every panel prints a moving series.
@@ -135,7 +135,7 @@ export interface PanelOverride {
 }
 
 export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
-  version: "0.3.0",
+  version: "0.4.0",
   screening: {
     minProvidersForScreen: 4,
     madScale: 1.4826,
@@ -166,33 +166,24 @@ export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
   // ±0.05% of the computed anchor (mean-reverting, deterministic). Confessed
   // on the methodology page; the anchor is never moved by it.
   movement: { allowancePct: 0.0005, slotMs: 30_000, reversion: 0.7, stepPct: 0.4 },
-  // The full PROTOCOL.md §3 universe. The flagship SXM panels keep the full
-  // executable quorum; the thin SKUs run on reduced quorums over named
-  // rate-card principals and are capped at `degraded` by the engine.
+  // The v0.4.0 launch universe (H100/H200/L40S/RTX 4090). H100/H200 keep the
+  // full global quorum; the two thin panels run on reduced quorums over named
+  // principals and are capped at `degraded` by the engine.
   panelOverrides: {
-    A100_PANEL_V1: {
-      additionalProviders: ["datacrunch", "lambda", "coreweave", "crusoe"],
-      // No order-book maker quotes A100 anymore — the executable floor would
-      // make this override unreachable, so it settles on rate cards alone.
+    L40S_PANEL_V1: {
+      // Vast's verified+rentable L40S book is too thin to settle alone and
+      // RunPod lists without stock; DataCrunch/Scaleway/CoreWeave carry live
+      // L40S rate cards, so the panel settles over them (rate-card weights).
+      // Temporary: revert to the global gates once executable L40S order
+      // books deepen.
+      additionalProviders: ["datacrunch", "scaleway", "coreweave"],
       gates: { minProviders: 3, requireExecutable: false },
     },
-    B300_PANEL_V1: {
-      additionalProviders: ["datacrunch", "nebius", "scaleway"],
-      // Same situation as A100: the only executable B300 source (Lium) runs a
-      // thin book, so the panel would be permanently withheld otherwise.
-      gates: { minProviders: 2, requireExecutable: false },
-    },
-    GB200_PANEL_V1: {
-      additionalProviders: ["oracle-oci"],
-      gates: { minProviders: 1, minObservations: 1, requireExecutable: false },
-    },
-    GB300_PANEL_V1: {
-      additionalProviders: ["datacrunch", "oracle-oci"],
-      gates: { minProviders: 2, requireExecutable: false },
-      // Two list prices 2× apart — the wide cap keeps the panel publishable
-      // (at best degraded) instead of permanently withheld while the market
-      // is one principal plus one list price.
-      dispersion: { max: 0.9 },
+    RTX_4090_PANEL_V1: {
+      // Vast + RunPod are executable; Akash's rtx4090 rate card completes the
+      // quorum without giving up the executable floor.
+      additionalProviders: ["akash"],
+      gates: { minProviders: 3, requireExecutable: true },
     },
   },
 };

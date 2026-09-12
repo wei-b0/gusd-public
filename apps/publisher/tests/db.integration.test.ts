@@ -29,7 +29,7 @@ const TEST_URL = new URL(`${BASE}/postgres`);
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 
 const CONFIG: PublisherConfig = {
-  pinnedMethodologyVersion: "0.2.0",
+  pinnedMethodologyVersion: "0.4.0",
   minContributors: null,
   maxDispersion: null,
   maxFreshnessMs: 300_000,
@@ -67,7 +67,7 @@ async function seedCandidate(
     status: candidate.status,
     providersObserved: contributorSlugs.length,
     providersContributing: contributorSlugs.length,
-    methodologyVersion: "0.2.0",
+    methodologyVersion: "0.4.0",
     gates: [],
     contributors: contributorSlugs.map((providerId) => ({
       providerId,
@@ -110,7 +110,7 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
 
     handle = createDb(TEST_URL.toString());
     await ensureMethodologyVersion(handle.db, {
-      version: "0.2.0",
+      version: "0.4.0",
       config: DEFAULT_METHODOLOGY_CONFIG as unknown as Record<string, unknown>,
       configHash: createHash("sha256")
         .update(canonicalJson(DEFAULT_METHODOLOGY_CONFIG))
@@ -131,12 +131,12 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
       calcHash: "hash-withheld",
     });
     await seedCandidate(handle.db, {
-      gpuId: "GB200_192GB",
-      panelId: "GB200_PANEL_V1",
-      price: 16,
+      gpuId: "L40S_48GB",
+      panelId: "L40S_PANEL_V1",
+      price: 0.62,
       status: "degraded",
-      calcHash: "hash-gb200",
-      contributors: ["oracle-oci"],
+      calcHash: "hash-l40s",
+      contributors: ["datacrunch", "scaleway", "coreweave"],
     });
   });
 
@@ -178,9 +178,10 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
   });
 
   it("publishes a thin-panel candidate on its per-panel quorum", async () => {
-    // GB200's methodology override settles on one rate-card source; the
-    // publisher resolves that quorum from the methodology row and publishes.
-    const store = new DrizzlePublisherStore(handle.db, ["GB200_192GB"]);
+    // L40S's methodology override settles on a three-principal rate-card
+    // quorum; the publisher resolves that quorum from the methodology row
+    // and publishes.
+    const store = new DrizzlePublisherStore(handle.db, ["L40S_48GB"]);
     const target = new MockPublisherTarget();
     const poller = new PublisherPoller({
       store,
@@ -192,14 +193,18 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
 
     const result = await poller.tick();
     expect(result.published).toBe(1);
-    expect(target.published[0]?.price).toBe(16);
+    expect(target.published[0]?.price).toBe(0.62);
     const rows = await handle.db.execute<{ c: string }>(
-      `select count(*) c from published_index_values where gpu_id = 'GB200_192GB'`,
+      `select count(*) c from published_index_values where gpu_id = 'L40S_48GB'`,
     );
     expect(Number(rows.rows[0]?.c)).toBe(1);
   });
 
-  it("records a withheld candidate's violations exactly once", async () => {
+  it("publishes a withheld candidate and records its audit annotation once", async () => {
+    // §11 liveness-first: a withheld status is an audit annotation, not a
+    // blocker — a numeric price publishes regardless, and the annotation rides
+    // the publication as one publish_violations row (never duplicated on a
+    // re-tick). The sole hard stop is a null price (see poller.test.ts).
     const store = new DrizzlePublisherStore(handle.db, ["H200_141GB"]);
     const target = new MockPublisherTarget();
     const poller = new PublisherPoller({
@@ -210,9 +215,10 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
       now: () => NOW,
     });
 
-    await poller.tick();
-    await poller.tick();
-    expect(target.published).toHaveLength(0);
+    const first = await poller.tick();
+    expect(first.published).toBe(1);
+    expect(first.flagged).toBe(1);
+    expect(target.published).toHaveLength(1);
 
     const counts = await handle.db.execute<{ c: string }>(
       `select count(*) c from publish_violations where gpu_id = 'H200_141GB'`,
@@ -223,6 +229,15 @@ d("publisher over the real schema (RUN_DB_TESTS=1)", () => {
     );
     const violations = latest.rows[0]?.violations ?? [];
     expect(violations.map((v) => v.code)).toContain("not_publishable_status");
+
+    // Second tick: already published → skipped, no duplicate violation row.
+    const second = await poller.tick();
+    expect(second.skipped).toBe(1);
+    expect(target.published).toHaveLength(1);
+    const recount = await handle.db.execute<{ c: string }>(
+      `select count(*) c from publish_violations where gpu_id = 'H200_141GB'`,
+    );
+    expect(Number(recount.rows[0]?.c)).toBe(1);
   });
 
   it("reads the latest candidate newest-first through the store", async () => {

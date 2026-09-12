@@ -37,13 +37,13 @@ import {Deploy} from "./Deploy.s.sol";
 
 /// @notice Full-catalogue dev/testnet deployment: runs the production Deploy
 ///         unchanged, then seeds EVERYTHING the web app exercises onchain —
-///         all 7 canonical SKUs (oracle price + enabled issuance + canonical
-///         pool), a deterministic mock USDT whitelisted on the StableRouter
-///         with a funded USDT/reserve pool, and a compact demo-activity pass
-///         (genesis backstop buys, bootstrap conversion sells, actor trades,
-///         an instant-reprice proof, distribute + staking) so the tape,
-///         activity ledgers, vault inventory and cost basis are populated
-///         the moment the stack is up.
+///         all 4 launch SKUs (registered, oracle-priced, issuance-enabled,
+///         canonical pools live from Deploy.run), a deterministic mock USDT
+///         whitelisted on the StableRouter with a funded USDT/reserve pool,
+///         and a compact demo-activity pass (genesis backstop buys, bootstrap
+///         conversion sells, actor trades, an instant-reprice proof,
+///         distribute + staking) so the tape, activity ledgers, vault
+///         inventory and cost basis are populated the moment the stack is up.
 ///
 ///         Seeding doctrine (C-max): no treasury LP seeds on GPU pools — the
 ///         vault's inventory originates only from real flows. Genesis buys
@@ -62,23 +62,13 @@ import {Deploy} from "./Deploy.s.sol";
 contract DeployFull is Deploy {
     using PoolIdLibrary for PoolKey;
 
-    // canonical catalogue (PROTOCOL.md §3); H100 is registered by Deploy.run
-    bytes32 constant A100 = bytes32(bytes("A100_SXM_80GB"));
-    bytes32 constant H100 = bytes32(bytes("H100_SXM_80GB"));
-    bytes32 constant H200 = bytes32(bytes("H200_141GB"));
-    bytes32 constant B200 = bytes32(bytes("B200_192GB"));
-    bytes32 constant B300 = bytes32(bytes("B300_288GB"));
-    bytes32 constant GB200 = bytes32(bytes("GB200_192GB"));
-    bytes32 constant GB300 = bytes32(bytes("GB300_288GB"));
+    // launch catalogue (PROTOCOL.md §3) — Deploy.run registers all four; the
+    // aliases keep the demo code readable and the ids single-sourced in Deploy
+    bytes32 constant H100 = H100_ID;
+    bytes32 constant H200 = H200_ID;
+    bytes32 constant L40S = L40S_ID;
+    bytes32 constant RTX_4090 = RTX_4090_ID;
     bytes32[] internal CATALOGUE;
-
-    // oracle seed prices, PRICE_SCALE fixed point (×10_000): $/GPU-hour
-    uint256 constant A100_PRICE = 18_000; // $1.80
-    uint256 constant H200_PRICE = 32_000; // $3.20
-    uint256 constant B200_PRICE = 55_000; // $5.50
-    uint256 constant B300_PRICE = 70_000; // $7.00
-    uint256 constant GB200_PRICE = 85_000; // $8.50
-    uint256 constant GB300_PRICE = 100_000; // $10.00
 
     // the web's mint desk hardcodes this tier for stable funding pools
     // (apps/web/src/data/web3/gusd/actions.ts STABLE_POOL) and StableRouter
@@ -107,13 +97,10 @@ contract DeployFull is Deploy {
     uint256 constant BOB_PK = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
 
     constructor() {
-        CATALOGUE.push(A100);
         CATALOGUE.push(H100);
         CATALOGUE.push(H200);
-        CATALOGUE.push(B200);
-        CATALOGUE.push(B300);
-        CATALOGUE.push(GB200);
-        CATALOGUE.push(GB300);
+        CATALOGUE.push(L40S);
+        CATALOGUE.push(RTX_4090);
     }
 
     function runFull() external returns (Deployment memory d) {
@@ -132,12 +119,12 @@ contract DeployFull is Deploy {
 
         // ------------------------------------------------ 0) production core
         // Deploy.run() self-scopes its own broadcast (deployer must NOT be
-        // broadcasting here) and persists the deployment record. H100 comes
-        // back fully registered: oracle seed, enabled issuance, canonical
-        // pool initialized (empty) at the live oracle price. The entry is
-        // non-virtual, so run it on a local Deploy instance — script
-        // contracts are ephemeral and may not use address(this) (which
-        // rules out a `this.run()` self-call).
+        // broadcasting here) and persists the deployment record. The four
+        // launch SKUs come back fully registered: oracle seeds, enabled
+        // issuance, canonical pools initialized (empty) at the live oracle
+        // prices. The entry is non-virtual, so run it on a local Deploy
+        // instance — script contracts are ephemeral and may not use
+        // address(this) (which rules out a `this.run()` self-call).
         Deploy inner = new Deploy();
         d = inner.run();
         require(d.underlying != address(0), "core deploy");
@@ -164,18 +151,6 @@ contract DeployFull is Deploy {
             posm := posmAddr
         }
 
-        // --------------------------------------- 1) catalogue: 6 new SKUs
-        // Order per SKU mirrors Deploy's H100 quartet: createGpu -> oracle
-        // price -> setIssuanceEnabled -> canonical pool. The oracle seed
-        // MUST precede pool init (oracleSqrtPriceX96 reverts OraclePriceZero
-        // on an unpublished GPU).
-        _createGpu(d, deployer, A100, "A100 SXM 80GB GPU-hour", "A100", A100_PRICE);
-        _createGpu(d, deployer, H200, "H200 141GB GPU-hour", "H200", H200_PRICE);
-        _createGpu(d, deployer, B200, "B200 192GB GPU-hour", "B200", B200_PRICE);
-        _createGpu(d, deployer, B300, "B300 288GB GPU-hour", "B300", B300_PRICE);
-        _createGpu(d, deployer, GB200, "GB200 192GB GPU-hour", "GB200", GB200_PRICE);
-        _createGpu(d, deployer, GB300, "GB300 288GB GPU-hour", "GB300", GB300_PRICE);
-
         // ----------------------------- 2) deployer gUSD working balance
         // Mock reserve funds itself (the Deploy default posture); a real
         // UNDERLYING has no mint — fall back to transferring holdings.
@@ -185,7 +160,7 @@ contract DeployFull is Deploy {
         _fundReserve(d.underlying, deployer, 16_000_000e6, deployer);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
         // Covers the quoter float (2M) + the genesis backstop buys across the
-        // catalogue (~0.45M incl. fees) + slack; the mock reserve mints freely.
+        // catalogue (~0.07M incl. fees) + slack; the mock reserve mints freely.
         gusd.mint(4_000_000e6, deployer);
         gusd.approve(d.router, type(uint256).max);
 
@@ -502,27 +477,6 @@ contract DeployFull is Deploy {
 
     // ------------------------------------------------------------------ helpers
 
-    /// @dev createGpu + oracle seed + enable issuance, in the order Deploy
-    ///      uses for H100. Pool initialization is the caller's step.
-    function _createGpu(
-        Deployment memory d,
-        address deployer,
-        bytes32 gpuId,
-        string memory name,
-        string memory symbol,
-        uint256 price
-    ) internal {
-        GPUIssuance issuance = GPUIssuance(d.issuance);
-        issuance.createGpu(gpuId, name, symbol, 50, 3000, 60);
-        _setPrice(deployer, d.oracle, gpuId, price);
-        issuance.setIssuanceEnabled(gpuId, true);
-        // POL params (see Deploy.run) — the hook is inert without them.
-        GPUHook(d.hook).setPolParams(gpuId, 50, 50, 10);
-        // Deploy's internal helper: initializes the canonical pool from the
-        // (now-seeded) oracle price and asserts hook registration
-        _initializeCanonicalPool(d, gpuId);
-    }
-
     /// @dev Reprice through whichever oracle deployment is live — identical
     ///      dispatch to Demo's helper. Returns the post-reprice issue quote
     ///      for 1 whole GPU (base only, fee excluded).
@@ -583,17 +537,14 @@ contract DeployFull is Deploy {
         posm.modifyLiquidities(plan.finalizeModifyLiquidityWithClose(key), block.timestamp + 3600);
     }
 
-    /// @dev The script's own seed table — the same constants used to seed the
-    ///      oracle, reused for spend caps and sell floors. H100 was seeded by
-    ///      Deploy.run().
+    /// @dev The deploy-time seed table — the same constants Deploy used to seed
+    ///      the oracle, reused for spend caps and sell floors. Single-sourced
+    ///      from Deploy's catalogue: no second price table here.
     function _priceOf(bytes32 gpuId) internal pure returns (uint256) {
-        if (gpuId == A100) return A100_PRICE;
-        if (gpuId == H100) return 25_000; // $2.50 — Deploy's genesis seed
-        if (gpuId == H200) return H200_PRICE;
-        if (gpuId == B200) return B200_PRICE;
-        if (gpuId == B300) return B300_PRICE;
-        if (gpuId == GB200) return GB200_PRICE;
-        if (gpuId == GB300) return GB300_PRICE;
+        GpuCatalogEntry[] memory e = gpuCatalogue();
+        for (uint256 i; i < e.length; ++i) {
+            if (e[i].id == gpuId) return e[i].seedPrice;
+        }
         revert("unknown gpu");
     }
 

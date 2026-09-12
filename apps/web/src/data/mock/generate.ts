@@ -29,8 +29,6 @@ export const SESSION_ANCHOR = Date.UTC(2026, 8, 4, 14, 0, 0);
 const HOUR = 3_600_000;
 const HOUR_POINTS = 90 * 24; // 90 days of hourly closes
 
-export const ASSET_IDS = ["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const;
-
 export const ASSET_SPECS: Record<AssetId, AssetSpec> = {
   H100: {
     id: "H100",
@@ -48,45 +46,21 @@ export const ASSET_SPECS: Record<AssetId, AssetSpec> = {
     formFactor: "SXM",
     note: "Hopper with memory headroom; the large-context inference reference.",
   },
-  B200: {
-    id: "B200",
-    referenceSku: "NVIDIA B200 192GB",
+  L40S: {
+    id: "L40S",
+    referenceSku: "NVIDIA L40S 48GB",
     vendor: "nvidia",
-    vramGb: 192,
-    formFactor: "SXM",
-    note: "Blackwell volume configuration; the densest active training exposure.",
+    vramGb: 48,
+    formFactor: "CARD",
+    note: "The inference workhorse card; steady rental demand at a mid-tier rate.",
   },
-  B300: {
-    id: "B300",
-    referenceSku: "NVIDIA B300 288GB",
+  RTX4090: {
+    id: "RTX4090",
+    referenceSku: "NVIDIA GeForce RTX 4090 24GB",
     vendor: "nvidia",
-    vramGb: 288,
-    formFactor: "SXM",
-    note: "Blackwell Ultra; thinner rental coverage, wider premium.",
-  },
-  GB200: {
-    id: "GB200",
-    referenceSku: "NVIDIA GB200 superchip",
-    vendor: "nvidia",
-    vramGb: 192,
-    formFactor: "SXM",
-    note: "Grace-Blackwell node economics; trades as a node-level composite.",
-  },
-  GB300: {
-    id: "GB300",
-    referenceSku: "NVIDIA GB300 superchip",
-    vendor: "nvidia",
-    vramGb: 288,
-    formFactor: "SXM",
-    note: "Newest capital exposure; shallowest history, widest premium.",
-  },
-  A100: {
-    id: "A100",
-    referenceSku: "NVIDIA A100 SXM 80GB",
-    vendor: "nvidia",
-    vramGb: 80,
-    formFactor: "SXM",
-    note: "The legacy workhorse; aging rental demand, structurally at a discount.",
+    vramGb: 24,
+    formFactor: "CARD",
+    note: "The retail fleet staple; deepest small-operator coverage, priced accordingly.",
   },
 };
 
@@ -94,22 +68,16 @@ export const ASSET_SPECS: Record<AssetId, AssetSpec> = {
 const INDEX_ANCHOR: Record<AssetId, number> = {
   H100: 2.43,
   H200: 2.98,
-  B200: 4.42,
-  B300: 5.61,
-  GB200: 6.31,
-  GB300: 7.52,
-  A100: 1.41,
+  L40S: 0.62,
+  RTX4090: 0.31,
 };
 
 /** Structural basis the market carries around the Index (percent). */
 const BASIS_DRIFT: Record<AssetId, number> = {
   H100: 2.4,
   H200: 1.6,
-  B200: 3.1,
-  B300: 4.2,
-  GB200: 2.8,
-  GB300: 5.4,
-  A100: -3.6,
+  L40S: 2.9,
+  RTX4090: 3.6,
 };
 
 /** Per-asset seed for the random walk. */
@@ -202,11 +170,8 @@ export function buildMarket(id: AssetId): Market {
   const liquidityBase: Record<AssetId, number> = {
     H100: 3_800_000,
     H200: 1_450_000,
-    B200: 2_600_000,
-    B300: 890_000,
-    GB200: 1_120_000,
-    GB300: 610_000,
-    A100: 940_000,
+    L40S: 1_650_000,
+    RTX4090: 1_180_000,
   };
   const r = rng(assetSeed(`vol-${id}`));
   const liquidity = liquidityBase[id] * (1 + r.range(-0.1, 0.1));

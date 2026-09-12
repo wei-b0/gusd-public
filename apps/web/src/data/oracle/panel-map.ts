@@ -20,13 +20,10 @@ export interface PanelRef {
 
 /** Product asset → the catalog SKU its Index settles on. */
 const ASSET_GPU: Record<AssetId, GpuId> = {
-  A100: "A100_SXM_80GB",
   H100: "H100_SXM_80GB",
   H200: "H200_141GB",
-  B200: "B200_192GB",
-  B300: "B300_288GB",
-  GB200: "GB200_192GB",
-  GB300: "GB300_288GB",
+  L40S: "L40S_48GB",
+  RTX4090: "RTX_4090_24GB",
 };
 
 function buildOraclePanels(): Record<AssetId, PanelRef> {

@@ -40,7 +40,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "chainId": 31337,
     "gpuQuoter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
     "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0x35a6c7de4f9f153C5B56412b105a104775dE50Cc",
+    "hook": "0x2B720ace6F9368416cA6B1A1aE73FCE2847490Cc",
     "issuance": "0x9A676e781A523b5d0C0e43731313A708CB607508",
     "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
     "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",

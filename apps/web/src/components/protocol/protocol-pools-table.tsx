@@ -11,12 +11,13 @@
  */
 
 import Link from "next/link";
+import { ASSET_IDS, type AssetId } from "@/domain/types";
 import { assetForGpuId } from "@/data/web3/gpu-id";
 import { useProtocolPools } from "@/data/protocol/hooks";
 import type { PoolDto } from "@/data/protocol/dto";
 
-const CLASSES = ["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const;
-type Cls = (typeof CLASSES)[number];
+const CLASSES = ASSET_IDS;
+type Cls = AssetId;
 
 function volumeOf(pool: PoolDto): number | null {
   try {

@@ -550,7 +550,7 @@ describe("account projection", () => {
         },
         {
           gpuId: "0x03",
-          asset: "A100",
+          asset: "L40S",
           token: GPU_TOKEN,
           size: 1,
           avgEntry: null,
@@ -561,7 +561,7 @@ describe("account projection", () => {
     });
     expect(port.getAccount().positions).toEqual([
       { asset: "H100", size: 2, avgEntry: 2.5, realizedPnl: 0.4, basisReason: null },
-      { asset: "A100", size: 1, avgEntry: null, realizedPnl: null, basisReason: "transfers_missing" },
+      { asset: "L40S", size: 1, avgEntry: null, realizedPnl: null, basisReason: "transfers_missing" },
     ]);
   });
 

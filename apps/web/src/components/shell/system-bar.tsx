@@ -3,7 +3,7 @@
 /**
  * SystemBar — the machine's top rule: wordmark, command line, connection
  * control, live UTC clock. Present on every route. The command line speaks
- * the product's own names — markets, terminal B200, oracle, gusd — and a
+ * the product's own names — markets, terminal H200, oracle, gusd — and a
  * bare GPU asset routes to that market's desk on the Terminal.
  */
 
@@ -114,7 +114,7 @@ export function SystemBar() {
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
             aria-label="Command line — type a product name or GPU asset"
-            placeholder="terminal B200"
+            placeholder="terminal H200"
             spellCheck={false}
             autoCapitalize="none"
             autoComplete="off"

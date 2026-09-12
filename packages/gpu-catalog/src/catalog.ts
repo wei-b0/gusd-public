@@ -322,17 +322,17 @@ export interface SettlementPanel {
 }
 
 /**
- * The full tokenized universe from apps/contracts/PROTOCOL.md §3. Every SKU
- * here is settled each cycle, but panels whose contributor set is thin run on
- * per-panel methodology overrides (reduced quorum, rate-card eligibility —
- * see MethodologyConfig.panelOverrides) and can at best publish `degraded`.
+ * The tokenized/settled universe from apps/contracts/PROTOCOL.md §3: H100,
+ * H200, L40S, RTX 4090. Everything else in CATALOG above remains collection
+ * breadth — those SKUs are still recognized and collected offchain, but they
+ * are not settlement panels, onchain tokens, or tradable product assets.
+ * Panels whose contributor set is thin run on per-panel methodology overrides
+ * (reduced quorum, rate-card eligibility — see MethodologyConfig.panelOverrides)
+ * and can at best publish `degraded`.
  */
 export const SETTLEMENT_PANELS: readonly SettlementPanel[] = [
-  { id: "A100_PANEL_V1", gpuId: "A100_SXM_80GB" },
   { id: "H100_PANEL_V1", gpuId: "H100_SXM_80GB" },
   { id: "H200_PANEL_V1", gpuId: "H200_141GB" },
-  { id: "B200_PANEL_V1", gpuId: "B200_192GB" },
-  { id: "B300_PANEL_V1", gpuId: "B300_288GB" },
-  { id: "GB200_PANEL_V1", gpuId: "GB200_192GB" },
-  { id: "GB300_PANEL_V1", gpuId: "GB300_288GB" },
+  { id: "L40S_PANEL_V1", gpuId: "L40S_48GB" },
+  { id: "RTX_4090_PANEL_V1", gpuId: "RTX_4090_24GB" },
 ];

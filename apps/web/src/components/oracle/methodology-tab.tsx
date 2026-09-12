@@ -249,9 +249,10 @@ function MethodologyVersion() {
           rather than partially applying.
         </p>
         <p>
-          v0.2.0 carries per-panel overrides for the thin SKUs: A100, B300, GB200 and GB300
-          cannot reach the full executable quorum — no order-book maker quotes them — so they
-          settle on reduced panels over named rate-card principals. The override may only ever
+          v0.4.0 settles the launch four: H100 and H200 keep the full executable quorum, while
+          L40S and RTX 4090 cannot reach it on order books alone — L40S settles on a reduced
+          panel over named rate-card principals (no executable floor for now), and RTX 4090
+          promotes Akash alongside its executable venues. The override may only ever
           relax a gate, and the engine caps any panel that computes below the full settlement
           quorum at <span className="num text-amber">degraded</span>: a relaxed panel can
           never claim <span className="num text-up">healthy</span>.

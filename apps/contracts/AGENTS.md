@@ -125,7 +125,7 @@ Start with one GPU, preferably:
 H100_SXM_80GB
 ```
 
-before enabling the full initial catalogue.
+before enabling the remaining launch catalogue (H200, L40S, RTX 4090).
 
 ---
 
@@ -255,13 +255,10 @@ Encoding contract (changing any of it requires cross-stack coordination):
 The initial tokenized/onchain target catalogue is:
 
 ```text
-A100_SXM_80GB
 H100_SXM_80GB
 H200_141GB
-B200_192GB
-B300_288GB
-GB200_192GB
-GB300_288GB
+L40S_48GB
+RTX_4090_24GB
 ```
 
 The oracle/indexer may support many more GPUs.

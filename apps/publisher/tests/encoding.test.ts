@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { encodeGpuId, priceToScaled, updatedAtSeconds } from "../src/encoding.js";
 
 describe("encodeGpuId", () => {
-  // the three settlement panels in packages/gpu-catalog
+  // the launch settlement panels in packages/gpu-catalog
   it("encodes the catalog SKUs to their canonical left-aligned bytes32", () => {
     expect(encodeGpuId("H100_SXM_80GB")).toBe(
       "0x483130305f53584d5f3830474200000000000000000000000000000000000000",
@@ -10,8 +10,11 @@ describe("encodeGpuId", () => {
     expect(encodeGpuId("H200_141GB")).toBe(
       "0x483230305f313431474200000000000000000000000000000000000000000000",
     );
-    expect(encodeGpuId("B200_192GB")).toBe(
-      "0x423230305f313932474200000000000000000000000000000000000000000000",
+    expect(encodeGpuId("L40S_48GB")).toBe(
+      "0x4c3430535f343847420000000000000000000000000000000000000000000000",
+    );
+    expect(encodeGpuId("RTX_4090_24GB")).toBe(
+      "0x5254585f343039305f3234474200000000000000000000000000000000000000",
     );
   });
 

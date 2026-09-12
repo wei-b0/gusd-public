@@ -108,14 +108,14 @@ oracle_healthy() {
   '
 }
 
-pools_ready() { # canonical SKU pools indexed >= 7 (rows include non-SKU pools)
+pools_ready() { # canonical SKU pools indexed >= 4 (rows include non-SKU pools)
   node -e '
     fetch(`http://127.0.0.1:${process.env.ORACLE_PORT || "8080"}/v1/protocol/pools`, { signal: AbortSignal.timeout(5000) })
       .then((r) => r.json())
       .then((j) => {
         const n = (j.pools || []).filter((p) => p.canonical === true && p.gpuId != null).length;
-        console.error("canonical SKU pools indexed: " + n + "/7");
-        process.exit(n >= 7 ? 0 : 1);
+        console.error("canonical SKU pools indexed: " + n + "/4");
+        process.exit(n >= 4 ? 0 : 1);
       })
       .catch(() => process.exit(1));
   '
@@ -186,7 +186,7 @@ fi
 # the recorded calldata verbatim) — wipe it before deploying.
 log "wiping stale Deploy.full broadcast + cache..."
 rm -rf "$CONTRACTS/broadcast/Deploy.full.s.sol" "$CONTRACTS/cache/Deploy.full.s.sol"
-log "deploying full catalogue (~170 txs, a couple of minutes)..."
+log "deploying full catalogue (~140 txs, a couple of minutes)..."
 if ! ( cd "$CONTRACTS" && PRIVATE_KEY="$ANVIL_KEY" forge script script/Deploy.full.s.sol \
       --rpc-url "$RPC_URL" --broadcast --sig "$DEPLOY_SIG" ) >"$LOG_DIR/deploy.log" 2>&1; then
   echo "[start-dev] deploy failed — last 40 lines of $LOG_DIR/deploy.log:" >&2
@@ -264,10 +264,10 @@ if ! wait_until "oracle health" 180 oracle_healthy; then
   docker compose -f "$COMPOSE" logs --tail 40 indexer oracle db-migrate >&2 || true
   exit 7
 fi
-log "waiting for the 7 canonical pools to index (120s cap)..."
+log "waiting for the 4 canonical pools to index (120s cap)..."
 if ! wait_until "pool backfill" 120 pools_ready; then
   pools_ready || true # print the last observed count
-  echo "[start-dev] pools never reached 7 — service logs:" >&2
+  echo "[start-dev] pools never reached 4 — service logs:" >&2
   docker compose -f "$COMPOSE" logs --tail 40 indexer oracle publisher >&2 || true
   exit 7
 fi

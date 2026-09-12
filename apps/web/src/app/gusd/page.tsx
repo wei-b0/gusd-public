@@ -153,7 +153,7 @@ function ModelStrip({ connected }: { connected: boolean }) {
       <CapitalCell
         token="GPU markets"
         role="Market exposure"
-        desc="Positions in H100, B200, A100 and peers — the productive layer."
+        desc="Positions in H100, H200, L40S and peers — the productive layer."
         href="/markets"
       />
       <CapitalCell

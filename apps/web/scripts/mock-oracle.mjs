@@ -59,13 +59,10 @@ const PING_MS = 15_000;
  *  premiums/discounts land in familiar territory. Panel ids mirror
  *  packages/gpu-catalog SETTLEMENT_PANELS. */
 const PANELS = {
-  A100_PANEL_V1: { gpuId: "A100_SXM_80GB", anchor: 1.4092 },
   H100_PANEL_V1: { gpuId: "H100_SXM_80GB", anchor: 2.4312 },
   H200_PANEL_V1: { gpuId: "H200_141GB", anchor: 2.9784 },
-  B200_PANEL_V1: { gpuId: "B200_192GB", anchor: 4.4156 },
-  B300_PANEL_V1: { gpuId: "B300_288GB", anchor: 5.6072 },
-  GB200_PANEL_V1: { gpuId: "GB200_192GB", anchor: 6.3068 },
-  GB300_PANEL_V1: { gpuId: "GB300_288GB", anchor: 7.5238 },
+  L40S_PANEL_V1: { gpuId: "L40S_48GB", anchor: 0.6196 },
+  RTX_4090_PANEL_V1: { gpuId: "RTX_4090_24GB", anchor: 0.3102 },
 };
 
 /** Provider registry — the same panel the product's mock universe names. */

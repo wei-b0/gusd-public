@@ -35,7 +35,7 @@ export default function ProtocolPage() {
         permissioned logic on every swap
               │
               ▼
-     gUSD MARKETS  ·  7 GPU classes
+     gUSD MARKETS  ·  4 GPU classes
      market price ⇄ reference = basis`}
         </pre>
         <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">

@@ -7,25 +7,26 @@ index), `COLLECTED` (stored for coverage, zero settlement weight),
 `WATCHDOG_ONLY` (comparison feeds only — structurally excluded from the
 index), `EXCLUDED`.
 
-## Settlement panels (v0.2.0 — full PROTOCOL.md §3 universe)
+## Settlement panels (v0.4.0 — the launch four)
 
-| Panel | GPU id | Eligible providers | Per-panel quorum (v0.2.0) |
+| Panel | GPU id | Eligible providers | Per-panel quorum (v0.4.0) |
 |---|---|---|---|
-| A100_PANEL_V1 | A100_SXM_80GB | vast, lium, hyperbolic, runpod + datacrunch, lambda, coreweave, crusoe (panel-only) | 3, executable floor lifted |
 | H100_PANEL_V1 | H100_SXM_80GB | vast, lium, hyperbolic, runpod | global (4) |
 | H200_PANEL_V1 | H200_141GB | vast, lium, hyperbolic, runpod | global (4) |
-| B200_PANEL_V1 | B200_192GB | vast, lium, hyperbolic, runpod | global (4) |
-| B300_PANEL_V1 | B300_288GB | vast, lium, hyperbolic, runpod + datacrunch, nebius, scaleway (panel-only) | 2, executable floor lifted |
-| GB200_PANEL_V1 | GB200_192GB | vast, lium, hyperbolic, runpod + oracle-oci (panel-only) | 1, executable floor lifted |
-| GB300_PANEL_V1 | GB300_288GB | vast, lium, hyperbolic, runpod + datacrunch, oracle-oci (panel-only) | 2, executable floor lifted |
+| L40S_PANEL_V1 | L40S_48GB | vast, lium, hyperbolic, runpod + datacrunch, scaleway, coreweave (panel-only) | 3, executable floor lifted (temporary) |
+| RTX_4090_PANEL_V1 | RTX_4090_24GB | vast, lium, hyperbolic, runpod + akash (panel-only) | 3, executable floor kept |
 
 The flagship SXM panels keep the full executable quorum (order-book makers
-vast/lium/hyperbolic are the only `executable` contributors). A100/B300 have
-no executable market left — no order-book maker quotes them and Lium's B300
-book runs thin — so their overrides promote named rate-card principals and
-lift the executable floor; GB200/GB300 are pre-production and settle on a
-minimal quorum of list prices. Any panel contributing fewer than the global
-quorum of 4 is capped at `degraded` by the engine, never `healthy`.
+vast/lium/hyperbolic are the only `executable` contributors). L40S's vast
+verified+rentable book is too thin to settle alone and RunPod lists without
+stock, so its override promotes named rate-card principals and lifts the
+executable floor — **temporary**, to be reverted once executable L40S order
+books deepen. RTX 4090 has an executable market (vast, runpod) plus Akash's
+rate card completing the quorum, so its override keeps the executable floor.
+A100/B200/B300/GB200/GB300 are collection-only since v0.4.0 — their v0.2.0
+overrides are gone and no new candidate rows are computed for them. Any panel
+contributing fewer than the global quorum of 4 is capped at `degraded` by the
+engine, never `healthy`.
 
 Membership changes are config-only (never code): `additionalProviders` in
 `panelOverrides` promotes a `COLLECTED` principal for one panel without
@@ -37,7 +38,7 @@ promoted.
 
 | slug | Source | Type | Role | Endpoint | Auth |
 |---|---|---|---|---|---|
-| `vast` | Vast.ai | marketplace | SETTLEMENT_ELIGIBLE | POST `console.vast.ai/api/v0/bundles/` — q posted **bare** (a `{"q":…}` wrapper 400s), batched per-SKU, ASC+DESC pair for truncation detection, 64-offer server clamp. Live `gpu_name` (2026-09): `H100 SXM`, `H200`, `B200` — legacy dotted spellings kept in the alias list | none |
+| `vast` | Vast.ai | marketplace | SETTLEMENT_ELIGIBLE | POST `console.vast.ai/api/v0/bundles/` — q posted **bare** (a `{"q":…}` wrapper 400s), batched per-SKU, ASC+DESC pair for truncation detection, 64-offer server clamp. Live `gpu_name` (2026-09): `H100 SXM`, `H200`, `L40S`, `RTX 4090` — legacy dotted spellings kept in the alias list | none |
 | `lium` | Lium | marketplace | SETTLEMENT_ELIGIBLE | GET `lium.io/api/executors` — 2026-09 contract: bare array of `{id, machine_name, price_per_gpu (USD/GPU-hr), gpu_count, available_gpu_count, executor_ip_address, tier, location}`; `costPerHr` is gone; `price_per_gpu` is priced directly; executors sharing an IP count as one host (dedup + depth floors) | none |
 | `hyperbolic` | Hyperbolic | principal | SETTLEMENT_ELIGIBLE | GET `api.hyperbolic.ai/v2/alpha/on-demand/rental-options` — 2026-09 contract: bare JSON array, camelCase `{enabled, costPerHourCents (instance total), region, gpuCount, gpuType, gpuFormFactor, totalAvailable?, nodes[]}`; label = `gpuType` + `gpuFormFactor` (`h100 sxm5` → catalog `H100 SXM 5`); availability tri-state from `enabled`/`totalAvailable` | optional key |
 

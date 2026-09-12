@@ -220,44 +220,53 @@ describe("PublisherPoller", () => {
   });
 
   it("publishes a thin panel on its per-panel quorum from the methodology", async () => {
-    // GB200's override settles on a single rate-card source; the methodology
-    // row says quorum 1, so one contributor is not even an annotation.
+    // L40S's override settles on a three-principal rate-card quorum; the
+    // methodology row says quorum 3, so three contributors is not even an
+    // annotation.
     const { target, poller } = makePoller([
       healthyCandidate({
-        gpuId: "GB200_192GB",
-        panelId: "GB200_PANEL_V1",
-        price: 16,
-        confidenceLow: 15.52,
-        confidenceHigh: 16.48,
+        gpuId: "L40S_48GB",
+        panelId: "L40S_PANEL_V1",
+        price: 0.62,
+        confidenceLow: 0.6,
+        confidenceHigh: 0.64,
         status: "degraded",
-        providersContributing: 1,
-        contributors: [{ providerId: "oracle-oci" }],
+        providersContributing: 3,
+        contributors: [
+          { providerId: "datacrunch" },
+          { providerId: "scaleway" },
+          { providerId: "coreweave" },
+        ],
       }),
     ]);
     const result = await poller.tick();
     expect(result.published).toBe(1);
     expect(result.flagged).toBe(0);
-    expect(target.calls[0]?.price).toBe(16);
+    expect(target.calls[0]?.price).toBe(0.62);
   });
 
   it("an explicit env contributor floor tightens the annotation, not the publication", async () => {
     const store = new FakeStore([
       healthyCandidate({
-        gpuId: "GB200_192GB",
-        panelId: "GB200_PANEL_V1",
-        price: 16,
-        confidenceLow: 15.52,
-        confidenceHigh: 16.48,
+        gpuId: "L40S_48GB",
+        panelId: "L40S_PANEL_V1",
+        price: 0.62,
+        confidenceLow: 0.6,
+        confidenceHigh: 0.64,
         status: "degraded",
-        providersContributing: 1,
-        contributors: [{ providerId: "oracle-oci" }],
+        providersContributing: 3,
+        contributors: [
+          { providerId: "datacrunch" },
+          { providerId: "scaleway" },
+          { providerId: "coreweave" },
+        ],
       }),
     ]);
     const target = new FakeTarget();
     const poller = new PublisherPoller({
       store,
       target,
-      config: { ...CONFIG, minContributors: 3 },
+      config: { ...CONFIG, minContributors: 4 },
       logger: silence(),
       now: () => NOW,
     });

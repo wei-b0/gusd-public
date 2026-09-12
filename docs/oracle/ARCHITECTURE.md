@@ -119,14 +119,15 @@ Key integrity devices:
 ## Index engine
 
 `computeIndex` (pure; clock and config injected) per settlement panel — the
-full PROTOCOL.md §3 universe since v0.2.0: A100_PANEL_V1, H100_PANEL_V1,
-H200_PANEL_V1, B200_PANEL_V1, B300_PANEL_V1, GB200_PANEL_V1, GB300_PANEL_V1:
+launch four since v0.4.0: H100_PANEL_V1, H200_PANEL_V1, L40S_PANEL_V1,
+RTX_4090_PANEL_V1 (the panels derive from `SETTLEMENT_PANELS`; other catalog
+SKUs are collection-only):
 
 0. **Per-panel overrides** (v0.2.0): the runner merges the panel's
    `panelOverrides` patch over the global methodology (`effectiveConfigFor`)
    — `additionalProviders` promote named `COLLECTED` rate-card principals to
    settlement-eligible for that panel only, and sparse gates/dispersion
-   patches relax (never tighten) the quorum for thin SKUs.
+   patches relax (never tighten) the quorum for thin panels.
 1. Filter provider prices to `SETTLEMENT_ELIGIBLE` (global role or panel-only
    promotion) with non-null price.
 2. **Jump screen** vs the provider's own trailing median: ≥25% with <2

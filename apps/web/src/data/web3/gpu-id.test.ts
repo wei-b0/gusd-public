@@ -4,9 +4,9 @@ import {
   gpuIdForAsset,
   gpuIdToString,
 } from "./gpu-id";
-import type { AssetId } from "@/domain/types";
+import { ASSET_IDS, type AssetId } from "@/domain/types";
 
-const ASSETS: AssetId[] = ["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"];
+const ASSETS: AssetId[] = [...ASSET_IDS];
 
 describe("gpu-id", () => {
   it("round-trips every settlement SKU through the bytes32 form", () => {
@@ -27,8 +27,8 @@ describe("gpu-id", () => {
   });
 
   it("matches the contract's bytes32(bytes(...)) encoding", () => {
-    // GpuId.sol encodes left-aligned ASCII; spot-check GB300's exact hex.
-    expect(gpuIdToString(gpuIdForAsset("GB300"))).toBe("GB300_288GB");
+    // GpuId.sol encodes left-aligned ASCII; spot-check RTX 4090's exact SKU.
+    expect(gpuIdToString(gpuIdForAsset("RTX4090"))).toBe("RTX_4090_24GB");
   });
 
   it("refuses assets without an oracle settlement panel", () => {

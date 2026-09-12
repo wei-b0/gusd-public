@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { pairName } from "@/domain/types";
+import { ASSET_IDS, pairName } from "@/domain/types";
 
 /** In-world 404: the code resolved to nothing on this machine. */
 export default function NotFound() {
@@ -16,7 +16,7 @@ export default function NotFound() {
             live market:
           </p>
           <p className="num mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] font-bold">
-            {(["H100", "H200", "B200", "B300", "GB200", "GB300", "A100"] as const).map((id) => (
+            {ASSET_IDS.map((id) => (
               <Link key={id} href={`/terminal/${id}`} className="whitespace-nowrap text-data underline decoration-rule-strong underline-offset-4 transition-colors hover:text-bright">
                 {pairName(id)}
               </Link>

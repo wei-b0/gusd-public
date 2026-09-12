@@ -24,30 +24,30 @@ describe("resolvePanelThresholds", () => {
   });
 
   it("a thin panel publishes on its per-panel quorum and dispersion cap", () => {
-    const gb200 = resolvePanelThresholds(BASE, DEFAULT_METHODOLOGY_CONFIG, "GB200_PANEL_V1");
-    expect(gb200.minContributors).toBe(1);
-    expect(gb200.maxDispersion).toBe(0.45);
+    const l40s = resolvePanelThresholds(BASE, DEFAULT_METHODOLOGY_CONFIG, "L40S_PANEL_V1");
+    expect(l40s.minContributors).toBe(3);
+    expect(l40s.maxDispersion).toBe(0.45);
 
-    const gb300 = resolvePanelThresholds(BASE, DEFAULT_METHODOLOGY_CONFIG, "GB300_PANEL_V1");
-    expect(gb300.minContributors).toBe(2);
-    expect(gb300.maxDispersion).toBe(0.9);
-    expect(gb300.maxBandWidthPct).toBe(0.9);
+    const rtx4090 = resolvePanelThresholds(BASE, DEFAULT_METHODOLOGY_CONFIG, "RTX_4090_PANEL_V1");
+    expect(rtx4090.minContributors).toBe(3);
+    expect(rtx4090.maxDispersion).toBe(0.45);
+    expect(rtx4090.maxBandWidthPct).toBe(0.45);
   });
 
   it("an explicit env floor tightens but never relaxes the panel quorum", () => {
     const t = resolvePanelThresholds(
-      { ...BASE, minContributors: 3 },
+      { ...BASE, minContributors: 4 },
       DEFAULT_METHODOLOGY_CONFIG,
-      "GB200_PANEL_V1",
+      "L40S_PANEL_V1",
     );
-    expect(t.minContributors).toBe(3);
+    expect(t.minContributors).toBe(4);
   });
 
   it("an explicit env ceiling tightens but never relaxes the panel dispersion cap", () => {
     const t = resolvePanelThresholds(
       { ...BASE, maxDispersion: 0.3, maxBandWidthPct: 0.2 },
       DEFAULT_METHODOLOGY_CONFIG,
-      "GB300_PANEL_V1",
+      "RTX_4090_PANEL_V1",
     );
     expect(t.maxDispersion).toBe(0.3);
     expect(t.maxBandWidthPct).toBe(0.2);
