@@ -9,6 +9,7 @@
  */
 
 import type { PrivyClientConfig } from "@privy-io/react-auth";
+import { getActiveChain } from "@/data/web3/chains";
 
 /** Build-time Privy app id. Empty ⇒ Privy disabled ⇒ demo mode. */
 export const privyAppId = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
@@ -31,9 +32,16 @@ export const WALLETCONNECT_PROJECT_ID =
  * wallet only when they have no wallet — which is exactly Web2 users, since
  * a Web3 login already carries its external wallet. `showWalletUIs: false`
  * keeps every auth and wallet state in this app's own surfaces.
+ *
+ * The chain pins matter as much: without them Privy's embedded wallets boot
+ * on its own default (Ethereum mainnet) — the session then reads "unknown
+ * network" — and `switchChain` throws for any chain outside `supportedChains`,
+ * so the network strip's SWITCH could never land on the desk's chain.
  */
 export const PRIVY_PROVIDER_CONFIG = {
   loginMethods: [...PRIVY_LOGIN_METHODS],
+  supportedChains: [getActiveChain()],
+  defaultChain: getActiveChain(),
   embeddedWallets: {
     ethereum: { createOnLogin: "users-without-wallets" },
     showWalletUIs: false,
