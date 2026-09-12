@@ -1,6 +1,11 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "tui",
+  // Web (and any build) env: turbo's strict env mode passes only declared
+  // vars into tasks, so NEXT_PUBLIC_* must be declared or `next build`
+  // never sees them. Server-only secrets (PRIVY_*, DATABASE_URL) are read
+  // at runtime by route handlers, declared here to keep strict mode and
+  // the Vercel warning honest.
   "globalEnv": [
     "ENVIO_API_TOKEN",
     "ENVIO_PG_SCHEMA",
@@ -10,7 +15,17 @@
     "INDEXER_OFFLINE_CODEGEN",
     "INDEXER_RPC_URL",
     "RUN_ANVIL_TESTS",
-    "RUN_DB_TESTS"
+    "RUN_DB_TESTS",
+    "NEXT_PUBLIC_CHAIN_ID",
+    "NEXT_PUBLIC_RPC_URL_4663",
+    "NEXT_PUBLIC_ORACLE_URL",
+    "NEXT_PUBLIC_INDEXER_URL",
+    "NEXT_PUBLIC_PRIVY_APP_ID",
+    "NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID",
+    "PRIVY_APP_ID",
+    "PRIVY_APP_SECRET",
+    "PRIVY_VERIFICATION_KEY",
+    "DATABASE_URL"
   ],
   "tasks": {
     "build": {
