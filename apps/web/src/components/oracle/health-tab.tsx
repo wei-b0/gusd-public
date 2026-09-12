@@ -1,15 +1,20 @@
 /**
- * Health — the oracle reporting itself. Publication identity and source
- * counts from the feed's latest candidates, the collector registry's breakers
- * from GET /v1/health, and per-panel freshness. Every figure here is the
- * oracle's own verdict; the page renders it without softening.
+ * Health — three layers, reported separately: the benchmark engine's
+ * candidates (publication identity, source counts, per-panel freshness), the
+ * collectors behind them (breakers from GET /v1/health), and the onchain
+ * publication layer (what the publisher has written to GPUPriceOracle, from
+ * the indexed oracle state). A candidate's status is not the publisher's
+ * verdict, and neither is the onchain state — every figure here says which
+ * layer it belongs to.
  */
 
 import { ASSET_IDS, indexName, type AssetId } from "@/domain/types";
-import { fmtAge, fmtStamp } from "@/domain/format";
+import { fmtAge, fmtUsdPrecise, fmtStamp } from "@/domain/format";
 import { DATA_SOURCE } from "@/data/oracle/config";
 import { ORACLE_PANELS } from "@/data/oracle/panel-map";
 import { mapIndexStatus } from "@/data/oracle/map";
+import { protocolEnabled } from "@/data/protocol/enabled";
+import { useOraclePublication } from "@/data/protocol/hooks";
 import type { CandidateDto, CollectorHealthDto } from "@/data/oracle/dto";
 import {
   useNowTick,
@@ -25,13 +30,16 @@ export function HealthTab() {
   return (
     <>
       <p className="max-w-prose mb-5 text-[12.5px] leading-relaxed text-primary">
-        The oracle reporting itself — not a dashboard's opinion of the oracle. Publication
-        identity, source counts, collector breakers, and per-panel freshness all come off the
-        same wire the benchmarks do, refreshed every minute.
+        The stack reporting itself — not a dashboard's opinion of it. Benchmark health comes off
+        the same wire the benchmarks do: candidate freshness, contributing providers, collector
+        breakers, per-panel verdicts. Onchain publication health comes from the indexed
+        GPUPriceOracle state — what the publisher last wrote, and how the benchmark has moved
+        since. The layers report separately because they are separate: a candidate's status is
+        not the publisher's verdict, and neither is the onchain state.
       </p>
 
-      {/* 01 — publication status, from the latest candidates */}
-      <TuiPanel no="01" title="Publication status" meta="GET /v1/prices · /v1/health">
+      {/* 01 — benchmark candidates, from the latest publications */}
+      <TuiPanel no="01" title="Benchmark feed" meta="candidate layer · GET /v1/prices · /v1/health">
         <PublicationStatus />
       </TuiPanel>
 
@@ -46,6 +54,17 @@ export function HealthTab() {
       <div className="mt-5">
         <TuiPanel no="03" title="Panel freshness" meta="the oracle's own verdict">
           <PanelFreshness />
+        </TuiPanel>
+      </div>
+
+      {/* 04 — the onchain publication layer */}
+      <div className="mt-5">
+        <TuiPanel
+          no="04"
+          title="Onchain publication"
+          meta="GPUPriceOracle · indexed state · GET /v1/protocol/oracle/:gpu"
+        >
+          <OnchainPublication />
         </TuiPanel>
       </div>
     </>
@@ -93,7 +112,7 @@ function PublicationStatus() {
   return (
     <div>
       <dl className="grid grid-cols-2 gap-x-8 p-3.5 md:grid-cols-5">
-        <HealthCell label="Publication" value={newest ? `#${newest.calcHash.slice(0, 7)}` : "—"} />
+        <HealthCell label="Latest receipt" value={newest ? `#${newest.calcHash.slice(0, 7)}` : "—"} />
         <HealthCell label="Updated" value={newest ? fmtStamp(safeParse(newest.computedAt) ?? 0) : "—"} />
         <HealthCell
           label="Live sources"
@@ -108,7 +127,7 @@ function PublicationStatus() {
       </dl>
       <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">
         {candidates.length > 0
-          ? `Source counts sum the panels' latest publications — a provider observing several classes is counted per class. A 503 from GET /v1/health is data, not an error: the oracle reporting a database outage.`
+          ? `Candidate-layer health only — this row says nothing about the publisher or the chain. Source counts sum the panels' latest candidates — a provider observing several classes is counted per class. A 503 from GET /v1/health is data, not an error: the oracle reporting a database outage.`
           : DATA_SOURCE === "oracle"
             ? "No publication has reached this session yet — the cells fill with the first candidate."
             : "The oracle's health document prints when the oracle is connected."}
@@ -262,11 +281,129 @@ function PanelFreshness() {
         </table>
       </div>
       <p className="max-w-prose px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
-        Freshness is the oracle's own verdict, not the page's: LIVE sits inside the
-        publisher's age gate, STALE inside the carry-forward window, WITHHELD when the gates
-        refused to assert a price. A dash means no publication has reached this session.
+        Freshness is the oracle's own verdict on the candidate layer, not the page's: LIVE sits
+        inside the publisher's freshness gate, STALE inside the carry-forward window, WITHHELD
+        when the gates refused to assert a price. A dash means no publication has reached this
+        session. What the publisher did with these candidates is the next panel's question.
       </p>
     </div>
+  );
+}
+
+/**
+ * The onchain publication layer: what the publisher has written to
+ * GPUPriceOracle, from the Envio-indexed oracle state (a publication is
+ * policy-driven — ~0.5% deviation from the last published value, or a ~24 h
+ * heartbeat — so a gap between benchmark and onchain price within policy is
+ * expected, not a fault). Price is stored as USD/GPU-hr × 10⁴ and printed at
+ * that scale for audit; it is never a market price.
+ */
+function OnchainPublication() {
+  const latest = useWireLatest();
+  const now = useNowTick();
+
+  if (!protocolEnabled()) {
+    return (
+      <p className="num p-6 text-center text-[11.5px] text-dim">
+        {DATA_SOURCE === "oracle"
+          ? "Indexed publication state prints when the indexer is configured (NEXT_PUBLIC_INDEXER_URL)."
+          : "Indexed publication state prints when the indexer is configured."}
+      </p>
+    );
+  }
+
+  const assets = ASSET_IDS.filter((id) => id in ORACLE_PANELS);
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-[12px]">
+          <thead>
+            <tr className="border-b border-rule-strong text-left">
+              <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Panel</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="The value currently published onchain — USD/GPU-hr × 10⁴, printed at scale">Onchain</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Benchmark</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="Benchmark candidate vs the onchain publication — within the publisher's deviation policy it is expected, not an error">Gap</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Publication</th>
+              <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((asset) => (
+              <OnchainRow
+                key={asset}
+                asset={asset}
+                candidate={latest[ORACLE_PANELS[asset]!.gpuId] ?? null}
+                now={now}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="max-w-prose px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
+        The publisher audits every candidate against the stored methodology and records
+        violations in its own ledger (not exposed here); publication itself follows the
+        deviation/heartbeat policy, so the onchain value lags the benchmark by design. Stale
+        means the publication outlived the protocol's staleness window; a dash means the indexer
+        has seen no publication for that panel. Blocks, not client clocks, date a publication.
+      </p>
+    </div>
+  );
+}
+
+function OnchainRow({
+  asset,
+  candidate,
+  now,
+}: {
+  asset: AssetId;
+  candidate: CandidateDto | null;
+  now: number | null;
+}) {
+  const state = useOraclePublication(asset);
+  // The wire stores USD/GPU-hr × PRICE_SCALE (10_000) — printed at scale.
+  const onchain = state?.price != null ? Number(state.price) / state.priceScale : null;
+  const publishedAt = state?.updatedAtSec != null ? state.updatedAtSec * 1000 : null;
+  const gap =
+    onchain !== null && candidate?.price != null && onchain > 0
+      ? (candidate.price / onchain - 1) * 100
+      : null;
+  const age = publishedAt !== null && now !== null ? now - publishedAt : null;
+
+  return (
+    <tr className="border-b border-rule last:border-b-0">
+      <td className="num py-2.5 pl-3.5 pr-4 text-[13px] font-bold text-data">{indexName(asset)}</td>
+      <td className={`num px-2.5 py-2.5 text-right text-[13px] font-bold ${onchain === null ? "text-dim" : "text-wire"}`}>
+        {onchain === null ? "—" : fmtUsdPrecise(onchain)}
+      </td>
+      <td className="num px-2.5 py-2.5 text-right text-data">
+        {candidate?.price == null ? <span className="text-dim">—</span> : fmtUsdPrecise(candidate.price)}
+      </td>
+      <td className={`num px-2.5 py-2.5 text-right ${gap === null ? "text-dim" : "text-data"}`}>
+        {gap === null ? "—" : `${gap >= 0 ? "+" : ""}${gap.toFixed(3)}%`}
+      </td>
+      <td className="px-2.5 py-2.5">
+        {state === null ? (
+          <span className="num text-[11px] text-dim">none indexed</span>
+        ) : state.staleness === "fresh" ? (
+          <span className="slug text-up">fresh</span>
+        ) : state.staleness === "stale" ? (
+          <span className="slug text-amber">stale</span>
+        ) : (
+          <span className="slug text-dim">unknown</span>
+        )}
+        {state?.lastPublishedBlockNumber != null && (
+          <span className="num ml-2 text-[10px] text-dim">blk {state.lastPublishedBlockNumber}</span>
+        )}
+      </td>
+      <td className="num py-2.5 pr-3.5 text-right text-[11px] text-dim">
+        {age === null || publishedAt === null
+          ? "—"
+          : now === null
+            ? fmtStamp(publishedAt)
+            : fmtAge(publishedAt, now)}
+      </td>
+    </tr>
   );
 }
 

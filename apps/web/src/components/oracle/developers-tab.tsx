@@ -1,9 +1,9 @@
 /**
- * Developers — the oracle as a data product. The interface catalog (nothing
- * invented), the endpoint reference with a live payload, code samples against
- * this deployment's base URL, the stream's exact semantics, the candles'
- * contract, and access. Wire truth throughout: every path listed here is
- * served by apps/oracle as shipped.
+ * Developers — the oracle as both protocol infrastructure and a public data
+ * product. The interface catalog (nothing invented), the endpoint reference
+ * with a live payload, code samples against this deployment's base URL, the
+ * stream's exact semantics, the candles' contract, and access. Wire truth
+ * throughout: every path listed here is served by apps/oracle as shipped.
  */
 
 import Link from "next/link";
@@ -14,73 +14,77 @@ import { useWireCandidate } from "@/components/oracle/use-oracle-feed";
 import { CodeBlock } from "@/components/oracle/code-block";
 import { TuiPanel } from "@/components/ui/panel";
 
-/** The interface catalog, status as shipped — the server's route table,
- *  verbatim. LIVE rows are served today and consumed by this app; PLANNED
- *  rows are not promised. */
-const CATALOG = [
-  { name: "Latest candidates", method: "REST", status: "live" as const, note: "GET /v1/prices — the newest published candidate for every settlement panel" },
-  { name: "Candidate", method: "REST", status: "live" as const, note: "GET /v1/prices/:gpu — one panel's latest; accepts the panel id or the gpu id; 404 means none was ever computed" },
-  { name: "Candidate history", method: "REST", status: "live" as const, note: "GET /v1/prices/:gpu/history?limit — recent publications, default 100, clamped to 500, served oldest-first" },
-  { name: "Reference candles", method: "REST", status: "live" as const, note: "GET /v1/prices/:gpu/candles — server-bucketed OHLC over the canonical benchmark series" },
-  { name: "Panel receipt", method: "REST", status: "live" as const, note: "GET /v1/prices/:gpu/providers — the contributors, weights, and screens behind the latest candidate" },
-  { name: "Provider registry", method: "REST", status: "live" as const, note: "GET /v1/providers — sources, roles, cadence tiers; metadata only, no prices" },
-  { name: "Health", method: "REST", status: "live" as const, note: "GET /v1/health — collector breakers and database state; a 503 body is data, not an error" },
-  { name: "Stream", method: "SSE", status: "live" as const, note: "GET /v1/stream/sse — event: candidate frames as publications land" },
-  { name: "Stream", method: "WS", status: "live" as const, note: "GET /v1/stream — the same candidates as WebSocket text frames, envelope-wrapped" },
-  { name: "Market snapshots", method: "REST", status: "prototype" as const, note: "Per-market quote, stats, and candles — the web's data seam; venue fields await a market feed" },
-  { name: "History datasets", method: "Download", status: "planned" as const, note: "Bulk candles, index series, provider panels" },
-  { name: "Protocol data", method: "RPC", status: "planned" as const, note: "Pools, hooks, issuance state on-chain" },
+/**
+ * The interface catalog, status as shipped — the server's route table,
+ * verbatim. Benchmark data comes from the pricing engine's own database;
+ * protocol data is indexed chain state, served when this deployment's
+ * indexer is wired up (INDEXER_SCHEMA). Nothing promised: if it isn't
+ * served, it isn't listed.
+ */
+const BENCHMARK_CATALOG = [
+  { name: "Latest benchmarks", method: "REST", note: "GET /v1/prices — the newest published candidate for every settlement panel" },
+  { name: "Benchmark", method: "REST", note: "GET /v1/prices/:gpu — one panel's latest; accepts the panel id or the gpu id; 404 means none was ever computed" },
+  { name: "Benchmark history", method: "REST", note: "GET /v1/prices/:gpu/history?limit — recent candidates, default 100, clamped to 500, served oldest-first" },
+  { name: "Reference candles", method: "REST", note: "GET /v1/prices/:gpu/candles — server-bucketed OHLC over the canonical benchmark series" },
+  { name: "Panel receipt", method: "REST", note: "GET /v1/prices/:gpu/providers — the contributors, weights, and screens behind the latest candidate" },
+  { name: "Provider registry", method: "REST", note: "GET /v1/providers — sources, roles, cadence tiers; metadata only, no prices" },
+  { name: "Oracle health", method: "REST", note: "GET /v1/health — collector breakers, database state, indexer lag; a 503 body is data, not an error" },
+  { name: "Stream", method: "SSE", note: "GET /v1/stream/sse — event: candidate frames as publications land" },
+  { name: "Stream", method: "WS", note: "GET /v1/stream — the same candidates as WebSocket text frames, envelope-wrapped" },
+] as const;
+
+const PROTOCOL_CATALOG = [
+  { name: "Pools", method: "REST", note: "GET /v1/protocol/pools · /pools/:poolId — registered pools with derived execution state" },
+  { name: "Pool stats", method: "REST", note: "GET /v1/protocol/pools/:poolId/stats — hourly volume/fee buckets (intervalSec=3600, the stored grain)" },
+  { name: "Pool swaps", method: "REST", note: "GET /v1/protocol/pools/:poolId/swaps — the AMM primitive tape, newest first; never merged with routed executions" },
+  { name: "GPU assets", method: "REST", note: "GET /v1/protocol/gpus · /gpus/:gpu — per-asset protocol stats; :gpu takes the hex id or the catalog SKU" },
+  { name: "Protocol stats", method: "REST", note: "GET /v1/protocol/stats · /stats/history — protocol aggregates, the sgUSD vault, and daily buckets" },
+  { name: "Wallet state", method: "REST", note: "GET /v1/protocol/wallets/:address/balances · /positions · /executions — balances, cost basis, routed executions" },
+  { name: "User events", method: "REST", note: "GET /v1/protocol/user-events?address= — the wallet's indexed protocol events, filterable by type" },
+  { name: "Oracle state", method: "REST", note: "GET /v1/protocol/oracle/:gpu — the indexed onchain publication per GPU (health/comparison only, never a display price)" },
 ] as const;
 
 const PARAM_ROWS = [
   { param: ":gpu", routes: "all /v1/prices/:gpu/*", note: "panel id (H100_PANEL_V1) or gpu id (H100_SXM_80GB); anything else is a 404" },
-  { param: "limit", routes: "history", note: "1–500 candidates, default 100" },
+  { param: "limit", routes: "history · protocol lists", note: "benchmark history 1–500, default 100; protocol pages 1–200, default 100" },
   { param: "intervalSec", routes: "candles", note: "one of 60 · 300 · 900 · 1800 · 3600 · 14400 · 21600 · 43200 · 86400 · 604800 (seconds)" },
-  { param: "from · to", routes: "candles", note: "epoch ms or ISO instants; absent → trailing 24 h; a window may span at most 2000 buckets" },
+  { param: "from · to", routes: "candles · stats", note: "candles take epoch ms or ISO instants (absent → trailing 24 h, ≤2000 buckets); protocol stats take epoch seconds, hourly grain" },
+  { param: "cursor", routes: "protocol lists", note: "keyset cursor from the previous page's nextCursor — no offsets, stable under inserts" },
+  { param: "chainId", routes: "protocol lookups", note: "disambiguates a pool/gpu id that exists on more than one indexed chain" },
 ] as const;
 
 export function DevelopersTab() {
   // The wire sample is the H100 panel's latest candidate.
   const candidate = useWireCandidate(ORACLE_PANELS.H100?.gpuId ?? "");
   const payload = candidate ?? SAMPLE_CANDIDATE;
+  const version = candidate?.methodologyVersion ?? "0.4.0";
 
   return (
     <>
       <p className="max-w-prose mb-5 text-[12.5px] leading-relaxed text-primary">
-        The oracle is a data product, and this tab is its manual. Every endpoint below is
-        served today and consumed by this site — there is no private path the app keeps for
-        itself. Point a client at the base URL and read the benchmarks.
+        The oracle is both protocol infrastructure and a public data product. This tab documents
+        the read interfaces exposed by this deployment: benchmark data from the GPU pricing
+        engine, and indexed protocol state from the chain. Every endpoint below is served today
+        and consumed by this site — there is no private path the app keeps for itself. Point a
+        client at the base URL and read.
       </p>
 
       {/* 01 — what exists, and only what exists */}
       <TuiPanel no="01" title="Interface catalog" meta="status as shipped">
         <div className="border-t border-rule">
-          {CATALOG.map((row, i) => (
-            <div
-              key={`${row.name}-${row.method}-${i}`}
-              className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-rule px-3.5 py-2.5 last:border-b-0"
-            >
-              <span className="w-44 shrink-0 text-[13px] font-bold text-data">{row.name}</span>
-              <span className="num w-24 shrink-0 text-[11px] text-dim">{row.method}</span>
-              <span
-                className={`slug border px-1.5 py-0.5 text-[8.5px] ${
-                  row.status === "live"
-                    ? "border-up text-up"
-                    : row.status === "prototype"
-                      ? "border-amber text-amber"
-                      : "border-rule-strong text-dim"
-                }`}
-              >
-                {row.status === "live" ? "LIVE" : row.status === "prototype" ? "PROTOTYPE" : "PLANNED"}
-              </span>
-              <span className="min-w-0 flex-1 text-[11.5px] text-dim">{row.note}</span>
-            </div>
+          <p className="slug px-3.5 pb-1 pt-3 text-amber">Benchmark data — the pricing engine</p>
+          {BENCHMARK_CATALOG.map((row, i) => (
+            <CatalogRow key={`b-${row.name}-${row.method}-${i}`} row={row} />
+          ))}
+          <p className="slug px-3.5 pb-1 pt-4 text-amber">Protocol data — indexed chain state</p>
+          {PROTOCOL_CATALOG.map((row, i) => (
+            <CatalogRow key={`p-${row.name}-${row.method}-${i}`} row={row} />
           ))}
         </div>
         <p className="px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
-          LIVE rows are served by the oracle today; PROTOTYPE rows are wired but await a
-          market feed for their venue fields; PLANNED rows are not promised. Nothing here
-          invents endpoints that don't exist.
+          All rows are live. Protocol routes are registered when this deployment indexes chain
+          state; without the indexer they answer 404 rather than pretending. Nothing here invents
+          endpoints that don't exist.
         </p>
       </TuiPanel>
 
@@ -123,7 +127,7 @@ export function DevelopersTab() {
   status: "healthy",      // healthy · degraded · stale · withheld
   providersObserved: 10,  // panel size this window
   providersContributing: 9, // votes that survived the screens
-  methodologyVersion: "0.2.0",
+  methodologyVersion: "${version}",
   calcHash: "3f9c1ab…",   // sha256 receipt — the publication's identity
   computedAt: "2026-09-04T14:00:00.000Z",
   windowStart: "2026-09-04T13:00:00.000Z",
@@ -165,7 +169,8 @@ export function DevelopersTab() {
           <p className="px-3.5 pb-3.5 pt-2.5 text-[11px] leading-relaxed text-dim">
             All endpoints are plain GETs, CORS is open, and there are no keys. The base URL
             shown is this deployment's — set <span className="num">NEXT_PUBLIC_ORACLE_URL</span>{" "}
-            to point the samples elsewhere.
+            to point the samples elsewhere. Protocol routes hang off the same host under{" "}
+            <span className="num">/v1/protocol</span>.
           </p>
         </TuiPanel>
       </div>
@@ -231,23 +236,35 @@ data: {"gpuId":"H100_SXM_80GB",
             <p>
               Every endpoint on this tab is open today — plain GETs, CORS open, no keys, no
               account. There is no separate public tier to opt into: the feed that serves you
-              is the feed this site runs on.
+              is the feed this site runs on, and the protocol routes are the same interfaces the
+              app reads its indexed state from.
             </p>
             <p className="text-dim">
-              Tiered access (higher limits, deeper history, SLAs) finalizes with the protocol
-              integrations. Until then the{" "}
+              The{" "}
               <Link
                 href="/protocol"
                 className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright"
               >
                 protocol page
               </Link>{" "}
-              describes the architecture the data flows through.
+              describes the architecture the data flows through — how benchmarks become reference
+              prices, and how execution consumes them.
             </p>
           </div>
         </TuiPanel>
       </div>
     </>
+  );
+}
+
+function CatalogRow({ row }: { row: { name: string; method: string; note: string } }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-rule px-3.5 py-2.5 last:border-b-0">
+      <span className="w-44 shrink-0 text-[13px] font-bold text-data">{row.name}</span>
+      <span className="num w-24 shrink-0 text-[11px] text-dim">{row.method}</span>
+      <span className="slug border border-up px-1.5 py-0.5 text-[8.5px] text-up">LIVE</span>
+      <span className="min-w-0 flex-1 text-[11.5px] text-dim">{row.note}</span>
+    </div>
   );
 }
 
@@ -266,7 +283,7 @@ const HISTORY_ROWS = [
   },
   {
     label: "What it is",
-    body: "The benchmark's own history — every gated computation aggregated per interval. Observations, not trades; trade OHLCV arrives with the market layer.",
+    body: "The benchmark's own history — every gated computation aggregated per interval. These are observations, not trades: execution OHLC is a different series, served from the indexed swap tape under /v1/protocol/pools/:poolId.",
   },
 ] as const;
 
@@ -280,6 +297,11 @@ curl $BASE/v1/prices/H100_PANEL_V1/providers
 
 # 1-hour reference candles for the trailing week (epoch ms)
 curl "$BASE/v1/prices/H100_PANEL_V1/candles?intervalSec=3600&from=$(($(date +%s)000-604800000))&to=$(date +%s)000"
+
+# indexed protocol state — pools, per-asset stats, the onchain publication
+curl $BASE/v1/protocol/pools
+curl $BASE/v1/protocol/gpus/H100_SXM_80GB
+curl $BASE/v1/protocol/oracle/H100_SXM_80GB
 
 # live publications
 curl -N $BASE/v1/stream/sse`;
@@ -298,6 +320,9 @@ type Candidate = {
 const res = await fetch(\`\${BASE}/v1/prices/H100_PANEL_V1\`);
 const candidate = (await res.json()) as Candidate;
 
+// indexed protocol state lives under /v1/protocol on the same host
+const gpus = await fetch(\`\${BASE}/v1/protocol/gpus\`).then((r) => r.json());
+
 // live publications
 const stream = new EventSource(\`\${BASE}/v1/stream/sse\`);
 stream.addEventListener("candidate", (e) => {
@@ -314,6 +339,10 @@ BASE = "${ORACLE_BASE_URL}"
 
 # one-shot read
 candidate = requests.get(f"{BASE}/v1/prices/H100_PANEL_V1", timeout=5).json()
+
+# indexed protocol state — pools, per-asset stats, the onchain publication
+pools = requests.get(f"{BASE}/v1/protocol/pools", timeout=5).json()
+oracle = requests.get(f"{BASE}/v1/protocol/oracle/H100_SXM_80GB", timeout=5).json()
 
 # live publications — re-read REST on connect; the stream is lossy
 stream = requests.get(f"{BASE}/v1/stream/sse", stream=True, timeout=None)

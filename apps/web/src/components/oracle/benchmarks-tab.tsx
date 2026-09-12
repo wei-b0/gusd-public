@@ -4,7 +4,7 @@
  * Benchmarks — the published reference prices. Panel 01 is the board: one
  * row per GPU-hour class, and selecting a row opens its panel receipt inline
  * (the contributors, weights, methods, and exclusions behind the latest
- * candidate — there is no per-asset route). Panel 02 is the reference
+ * candidate — there is no per-asset route). Panel 02 is the benchmark
  * series itself, fed from the feed's server-bucketed candles.
  */
 
@@ -44,27 +44,28 @@ const RANGES = CHART_RANGES;
 
 export function BenchmarksTab({ bench, onBench }: { bench: AssetId; onBench: (id: AssetId) => void }) {
   const markets = useMarkets();
-  // Venue columns exist only where a market layer prices the rows (mock
-  // universe); in oracle mode the board stays pure reference infrastructure.
+  // Venue columns exist only in the mock data source's simulated universe
+  // (its venue fields are the demo's own); the oracle-mode board is pure
+  // reference infrastructure — no venue price is invented beside it.
   const hasVenue = markets.some((m) => m.marketPrice !== null);
 
   return (
     <>
       {/* 01 — the board + the selected benchmark's panel receipt */}
-      <TuiPanel no="01" title="Index board" meta="weighted reference · not a market price">
+      <TuiPanel no="01" title="Benchmark board" meta="USD / GPU-hour · reference price">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-[12px]">
             <thead>
               <tr className="border-b border-rule-strong text-left">
                 <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Benchmark</th>
-                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Index Price / GPU-hour</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Reference / GPU-hour</th>
                 <th scope="col" className="slug px-2.5 py-2 text-right text-dim">24h</th>
                 {hasVenue && (
-                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Premium / Discount</th>
+                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Basis</th>
                 )}
                 {hasVenue && (
                   <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
-                    Market Price <span className="tracking-normal normal-case">/ gUSD</span>
+                    Venue <span className="tracking-normal normal-case">/ gUSD</span>
                   </th>
                 )}
                 <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Sources</th>
@@ -86,10 +87,9 @@ export function BenchmarksTab({ bench, onBench }: { bench: AssetId; onBench: (id
         </div>
         <PanelReceipt bench={bench} />
         <p className="px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
-          Each benchmark is the weighted reference for its GPU-hour, built from provider
-          observations. Select a benchmark to read its panel receipt — the contributors,
-          weights, and screens behind the latest publication. Where a venue prices the asset
-          separately, the gap to the Index prints as a premium or a discount.
+          Each benchmark is the engine's USD-per-GPU-hour reference for its class, built from
+          provider observations. Select a benchmark to read its panel receipt — the
+          contributors, weights, methods, screens, and exclusions behind the latest candidate.
         </p>
       </TuiPanel>
 
@@ -329,7 +329,7 @@ function ReferenceHistory({ bench, onBench }: { bench: AssetId; onBench: (id: As
       no="02"
       title={
         <>
-          <Gusd /> {bench} Index
+          <Gusd /> {bench} benchmark
         </>
       }
       meta="reference series"
@@ -387,7 +387,7 @@ function ReferenceHistory({ bench, onBench }: { bench: AssetId; onBench: (id: As
             the selected range; the series fills as candidates accrue.
           </p>
         )}
-        <p className="slug text-dim">The Index alone — market price charts live on each market's desk</p>
+        <p className="slug text-dim">The benchmark's own series — execution tapes live under Protocol data (Developers tab) and on each market's desk</p>
       </div>
     </TuiPanel>
   );

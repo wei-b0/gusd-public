@@ -4,8 +4,9 @@ import type { CandidateDto } from "@/data/oracle/dto";
  * Static stand-in for a live candidate, used where the feed has nothing
  * (mock data source, SSR, oracle never reached). Plausible shape, clearly
  * sample values — the real thing replaces it verbatim once a candidate
- * lands. The methodology version tracks the engine's published spec
- * (packages/pricing-engine, currently 0.2.0).
+ * lands. The methodology version tracks the engine's shipped default
+ * (DEFAULT_METHODOLOGY_CONFIG.version in packages/pricing-engine); the live
+ * value on the wire supersedes it everywhere the candidate renders.
  */
 export const SAMPLE_CANDIDATE: CandidateDto = {
   gpuId: "H100_SXM_80GB",
@@ -17,7 +18,7 @@ export const SAMPLE_CANDIDATE: CandidateDto = {
   status: "healthy",
   providersObserved: 10,
   providersContributing: 9,
-  methodologyVersion: "0.2.0",
+  methodologyVersion: "0.4.0",
   calcHash: "sample00calculatehash0000000000000000000000000000",
   computedAt: "2026-09-04T14:00:00.000Z",
   windowStart: "2026-09-04T13:00:00.000Z",

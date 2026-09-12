@@ -7,21 +7,32 @@
 
 import { DATA_SOURCE } from "@/data/oracle/config";
 import { ORACLE_PANELS } from "@/data/oracle/panel-map";
-import type { ProviderDto } from "@/data/oracle/dto";
+import type { CandidateDto, ProviderDto } from "@/data/oracle/dto";
 import { useWireCandidate, useWireProviders } from "@/components/oracle/use-oracle-feed";
 import { TuiPanel } from "@/components/ui/panel";
 
 export function MethodologyTab() {
+  // One candidate is enough — every panel in a window publishes under the
+  // same methodology version, and each candidate names the one that produced
+  // it. H100 is the flagship panel and publishes first. The live version is
+  // threaded down so no panel hardcodes it.
+  const candidate = useWireCandidate(ORACLE_PANELS.H100?.gpuId ?? "");
+  const version = candidate?.methodologyVersion ?? null;
+
   return (
     <>
       <p className="max-w-prose mb-5 text-[12.5px] leading-relaxed text-primary">
         These are the rules the oracle runs as shipped — not a summary of intent. Every
         threshold below is the value in the published methodology configuration; a change to
-        any of them is a new version, and every receipt records the one that produced it.
+        any of them is a new version, and every candidate records the one that produced it.
       </p>
 
       {/* 01 — the parameters, stage by stage */}
-      <TuiPanel no="01" title="Pipeline stages" meta="v0.2.0 · thresholds live in config, never in code">
+      <TuiPanel
+        no="01"
+        title="Pipeline stages"
+        meta={version !== null ? `v${version} · thresholds live in config, never in code` : "thresholds live in config, never in code"}
+      >
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-[12px]">
             <thead>
@@ -75,7 +86,7 @@ export function MethodologyTab() {
       {/* 03 — the versioned methodology itself */}
       <div className="mt-5">
         <TuiPanel no="03" title="Methodology version" meta="versioned, never mutated">
-          <MethodologyVersion />
+          <MethodologyVersion candidate={candidate} />
         </TuiPanel>
       </div>
     </>
@@ -90,7 +101,7 @@ const STAGE_ROWS = [
   },
   {
     stage: "Panel",
-    rule: "One vote per provider: the median of that provider's observations, taken over a book that clears the depth floors. A thinner book than the floors is not priced.",
+    rule: "One vote per provider: the median of that provider's observations — volume-weighted by machine count for order books, a plain median over listed prices for rate cards — taken over a book that clears the depth floors. A thinner book than the floors is held out, not priced.",
     params: "≥5 machines · ≥3 hosts",
   },
   {
@@ -105,13 +116,13 @@ const STAGE_ROWS = [
   },
   {
     stage: "Aggregate",
-    rule: "Weighted mean of the capped weights over the per-provider medians, with a confidence band around it; dispersion is 1.4826·MAD / median. Each contributor's σ enters the band floored at 3% of its price.",
-    params: "mean · dispersion · σ floor 0.03",
+    rule: "Weighted mean of the capped weights over the per-provider medians — that is the published price. The confidence band comes from p±σ votes: each contributor casts three votes at p(1−σ), p, p(1+σ) with σ = max(0.03, its own historical dispersion); the band's centre is the weighted mean of the central third of all votes, and its half-width the distance to the 25th/75th weighted quantiles. Dispersion is 1.4826·MAD / median.",
+    params: "mean · vote-IQM band · σ floor 0.03",
   },
   {
     stage: "Gates",
-    rule: "Publishing requires 4+ providers, 3+ observations behind every vote, observations no older than 30 minutes, executable pricing, and dispersion ≤ 0.45. Any gate failing ⇒ the figure is withheld.",
-    params: "4 · 3 · 30 min · ≤0.45",
+    rule: "Publishing requires 4+ providers, 3+ observations behind every vote, observations no older than 30 minutes, at least one executable contributor, and dispersion ≤ 0.45. Any gate failing ⇒ the figure is withheld (the receipt still records why).",
+    params: "4 · 3 · 30 min · 1 exe · ≤0.45",
   },
   {
     stage: "Stale",
@@ -120,7 +131,7 @@ const STAGE_ROWS = [
   },
   {
     stage: "Movement",
-    rule: "Publishing allowance (v0.3.0): the printed figure carries a bounded, deterministic, mean-reverting offset within ±0.05% of the computed anchor, so rate-card-settled panels (whose sources are static list prices) still print a moving series. The anchor itself is untouched — screens, band and gates compute on real data — and every publication records its exact offset in the receipt.",
+    rule: "Publishing allowance: the printed figure carries a bounded, deterministic, mean-reverting offset within ±0.05% of the computed anchor, so rate-card-settled panels (whose sources are static list prices) still print a moving series. The anchor itself is untouched — screens, band and gates compute on real data — and every publication records its exact offset in the receipt. The first publication prints the pure anchor; stale and withheld figures never drift.",
     params: "±0.05% · mean-reverting · recorded",
   },
 ] as const;
@@ -183,10 +194,10 @@ function ProviderRegistry() {
       <div className="max-w-prose space-y-2 px-3.5 pb-3.5 pt-3 text-[12px] leading-relaxed">
         <p className="text-data">
           Collection breadth is not settlement eligibility. Only sources marked{" "}
-          <span className="num text-data">SETTLEMENT_ELIGIBLE</span> vote on the Index;
+          <span className="num text-data">SETTLEMENT_ELIGIBLE</span> vote on the benchmark;
           everything else is collected for transparency and cross-checking, and the two
-          watchdog feeds are structurally excluded — they exist to contradict the Index, never
-          to average into it.
+          watchdog feeds are structurally excluded — they exist to contradict the benchmark,
+          never to average into it.
         </p>
         <p className="text-dim">
           Cadence tiers: FAST polls every 15 s, MEDIUM every 60 s, SLOW every 900 s. The FX
@@ -216,10 +227,7 @@ function RegistryRow({ provider: p }: { provider: ProviderDto }) {
   );
 }
 
-function MethodologyVersion() {
-  // One candidate is enough — every panel in a window publishes under the
-  // same methodology version. H100 is the flagship panel and publishes first.
-  const candidate = useWireCandidate(ORACLE_PANELS.H100?.gpuId ?? "");
+function MethodologyVersion({ candidate }: { candidate: CandidateDto | null }) {
   const version = candidate?.methodologyVersion ?? null;
 
   return (
@@ -249,18 +257,19 @@ function MethodologyVersion() {
           rather than partially applying.
         </p>
         <p>
-          v0.4.0 settles the launch four: H100 and H200 keep the full executable quorum, while
-          L40S and RTX 4090 cannot reach it on order books alone — L40S settles on a reduced
-          panel over named rate-card principals (no executable floor for now), and RTX 4090
-          promotes Akash alongside its executable venues. The override may only ever
-          relax a gate, and the engine caps any panel that computes below the full settlement
-          quorum at <span className="num text-amber">degraded</span>: a relaxed panel can
-          never claim <span className="num text-up">healthy</span>.
+          Per-panel overrides are part of the versioned config, never side channels: a panel
+          that cannot reach the full settlement quorum may carry explicit, versioned relief —
+          named additional sources, a lower provider floor, executable pricing relaxed — and
+          the override may only ever relax a gate. The engine caps any panel that computes
+          below the full settlement quorum at <span className="num text-amber">degraded</span>:
+          a relaxed panel can never claim <span className="num text-up">healthy</span>. Which
+          panels carry which relief prints with the registry and receipts — the config, not
+          this page, is the record.
         </p>
-        <p className="text-dim">
-          Every figure this site prints carries the methodologyVersion that produced it, on
-          the wire and in the receipts. Older receipts stay readable against the version that
-          made them — history is never re-interpreted under new rules.
+        <p>
+          Historical receipts stay tied to the version that produced them — the wire stamps
+          every candidate with its methodologyVersion, and older receipts stay readable against
+          their own rules. History is never re-interpreted under new rules.
         </p>
       </div>
     </div>

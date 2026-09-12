@@ -49,8 +49,10 @@ export function useProtocolStats(): StatsBody | null {
 }
 
 /** The indexed oracle publication state behind one asset — transparency
- *  only. Consumers render health fields (staleness/age/block); the
- *  published `price` must never render (four-price-notions doctrine). */
+ *  only. Consumers render health/comparison fields (publication value at
+ *  PRICE_SCALE, staleness/age/block, benchmark-vs-onchain gap on the Health
+ *  tab); it must never render as a market or display price — the four
+ *  price notions stay apart. */
 export function useOraclePublication(asset: AssetId): OracleStateDto | null {
   return useProtocolSlice(
     (store) => {

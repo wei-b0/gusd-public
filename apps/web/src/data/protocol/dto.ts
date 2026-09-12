@@ -287,7 +287,8 @@ export interface OracleStateDto {
   chainId: number;
   gpuId: string;
   /** The onchain published value — USD/GPU-hr × 10_000 (PRICE_SCALE).
-   *  Transparency/health/comparison ONLY; never rendered as a number. */
+   *  Health/comparison rendering only (the oracle Health tab prints it at
+   *  scale, labeled); never a market or display price. */
   price: string | null;
   previousPrice: string | null;
   updatedAtSec: number | null;
