@@ -1,7 +1,7 @@
 /**
  * Wallet-state write helpers — the DB legs of the balance / cost-basis /
  * vault projections (pure math in src/projections/cost-basis.ts). Every
- * helper is read-then-write inside Ponder's per-event transaction: handlers
+ * helper is read-then-write inside Envio's event transaction: handlers
  * run sequentially per chain and reorg replay re-runs them over rolled-back
  * state, so the absolute rewrites converge (same pattern as the pools
  * counters).
@@ -11,7 +11,7 @@ import {
   walletBalances,
   walletCostBasis,
   walletVaultPositions,
-} from "ponder:schema";
+} from "../schema.js";
 import { ZERO_ADDRESS } from "../projections/balances.js";
 import {
   acquireBasis,
@@ -29,10 +29,10 @@ import {
 import type { EventKeys } from "../events.js";
 
 /**
- * Minimal structural view of Ponder's context.db — what these helpers need,
+ * Minimal structural view of the entity context — what these helpers need,
  * no more, so call sites pass context.db straight through.
  *
- * find's return is deliberately loose: Ponder's `Find` is a single generic
+ * find's return is deliberately loose because entity types vary by table
  * signature, and checking it against specific interface overloads
  * instantiates the select model to an open record. Strong typing lives in
  * the pure projections (cost-basis.ts); reads here cast the fields they
@@ -81,12 +81,13 @@ function asBasisState(value: unknown): BasisState {
   return value === "complete" ? "complete" : "partial";
 }
 
-/** The protocol contract addresses registered in ponder.config — the set a
+/** The protocol contract addresses registered in generated config — the set a
  *  raw transfer must avoid on BOTH sides to count as a user-to-user move
  *  (and thus demote basis). Anything from/to a protocol contract is a
  *  protocol flow (PM-held pool liquidity, router forwarding, issuance
- *  mint, vault mint/burn), never a demotion. GPUToken's config address is
- *  a Factory object, not an address — runtime narrowing skips it. */
+ *  mint, vault mint/burn), never a demotion. PROTOCOL_ADDRESSES (generated
+ *  at boot) has no GPUToken entry — tokens are dynamic, not
+ *  config-registered. */
 export function protocolContractAddresses(context: {
   contracts: object;
 }): Set<string> {
@@ -115,7 +116,7 @@ export function isUserWallet(address: string, contracts: Set<string>): boolean {
 
 /** Apply one signed transfer delta to (chainId, wallet, token). A negative
  *  delta below zero is a loud invariant break (a wallet cannot send tokens
- *  it never received — under Ponder's sequential, per-event processing
+ *  it never received — under Envio's sequential event processing
  *  this means the projections diverged and indexing must stop). */
 export async function applyBalanceDelta(
   db: WalletStateDb,

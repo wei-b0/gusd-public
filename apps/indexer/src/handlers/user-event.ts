@@ -2,32 +2,17 @@
  * The user_events write helper — the DB leg of the projection (the pure row
  * build lives in src/projections/user-event.ts). Called by exactly the seven
  * user-facing event handlers; every write is one user_events insert plus the
- * wallets registry stamp, inside Ponder's per-event transaction.
+ * wallets registry stamp, inside Envio's event transaction.
  */
-import { userEvents, wallets } from "ponder:schema";
+import { userEvents, wallets } from "../schema.js";
 import {
   projectUserEvent,
   type UserEventInput,
 } from "../projections/user-event.js";
 
-/** Minimal structural view of Ponder's context.db — what this helper needs,
+/** Minimal structural view of the entity context — what this helper needs,
  *  no more, so call sites pass their context.db straight through. */
-interface UserEventDb {
-  insert(table: typeof userEvents): {
-    values(value: typeof userEvents.$inferInsert): Promise<unknown>;
-  };
-  insert(table: typeof wallets): {
-    values(value: typeof wallets.$inferInsert): {
-      onConflictDoUpdate(
-        set: Partial<typeof wallets.$inferInsert>,
-      ): Promise<unknown>;
-    };
-  };
-  find(
-    table: typeof wallets,
-    key: { chainId: number; address: string },
-  ): Promise<{ [column: string]: any } | null>;
-}
+type UserEventDb = any;
 
 /**
  * Write one user-attributed evidence row and stamp the wallet registry.

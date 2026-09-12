@@ -7,8 +7,8 @@
  * issuanceFee instead. Routed volume lands on gpu_assets/protocol_stats
  * only; pool volume stays on the Swap + GpuFill path exclusively.
  */
-import { ponder } from "ponder:registry";
-import { gpuAssets, protocolStats, routerBuy, routerSell } from "ponder:schema";
+import { handlers } from "../envio-compat.js";
+import { gpuAssets, protocolStats, routerBuy, routerSell } from "../schema.js";
 import { eventKeys, eventTxHash } from "../events.js";
 import { bumpDailyBucket } from "./buckets.js";
 import { recordUserEvent } from "./user-event.js";
@@ -18,7 +18,7 @@ import {
 } from "./wallet-state.js";
 import { zeroProtocolStats } from "./stats.js";
 
-ponder.on("GpuRouter:Buy", async ({ event, context }) => {
+handlers.on("GpuRouter:Buy", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const {
     gpuId,
@@ -73,7 +73,7 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
   await context.db
     .insert(protocolStats)
     .values({ ...zeroProtocolStats(keys.chainId), buyCount: 1, buyVolumeGusd: paid })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       buyCount: row.buyCount + 1,
       buyVolumeGusd: row.buyVolumeGusd + paid,
     }));
@@ -84,7 +84,7 @@ ponder.on("GpuRouter:Buy", async ({ event, context }) => {
   });
 });
 
-ponder.on("GpuRouter:Sell", async ({ event, context }) => {
+handlers.on("GpuRouter:Sell", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, recipient, gpuIn, out, polFeeGusd, hookFeeGusd } = event.args;
 
@@ -120,7 +120,7 @@ ponder.on("GpuRouter:Sell", async ({ event, context }) => {
   await context.db
     .insert(protocolStats)
     .values({ ...zeroProtocolStats(keys.chainId), sellCount: 1, sellVolumeGusd: out })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       sellCount: row.sellCount + 1,
       sellVolumeGusd: row.sellVolumeGusd + out,
     }));

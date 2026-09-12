@@ -2,33 +2,34 @@
  * The gated onchain suites (RUN_ANVIL_TESTS=1): reorg rollback, determinism
  * of full re-backfills, and views rotation. Self-contained — the harness
  * boots its own anvil, deploys + churns from a throwaway copy of the
- * contracts app, and runs its own `ponder start` instances in scratch
+ * contracts app, and runs its own Envio instances in scratch
  * schemas (see ./harness.ts). Gated because it needs foundry, Postgres, and
  * minutes of wall clock:
  *
  *   RUN_ANVIL_TESTS=1 pnpm --filter @gusd/indexer test:anvil
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createWalletClient, http, parseAbi } from "viem";
+import { createPublicClient, createWalletClient, http, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
 import {
   ANVIL_URL,
   DEPLOYER_PK,
   SCRATCH_SCHEMAS,
+  anvilRpc,
   connectPg,
   dropScratchSchemas,
   dumpSchema,
   evmRevert,
   evmSnapshot,
+  envioProcessedBlock,
   expectDumpsEqual,
   readDeployment,
   runForgeScript,
   spawnAnvil,
-  spawnPonder,
+  spawnEnvio,
   teardown,
-  viewDefinition,
-  type PonderInstance,
+  type EnvioInstance,
   type TableDump,
 } from "./harness.js";
 
@@ -41,8 +42,9 @@ const PUBLISH_ABI = parseAbi(["function publish(bytes32 gpuId, uint256 price, ui
 const run = process.env.RUN_ANVIL_TESTS === "1";
 const d = run ? describe : describe.skip;
 
-const instances: PonderInstance[] = [];
+const instances: EnvioInstance[] = [];
 let pg: Awaited<ReturnType<typeof connectPg>> | null = null;
+let primary: EnvioInstance | null = null;
 
 async function schemaQuery<T extends Record<string, unknown>>(
   sql: string,
@@ -69,13 +71,17 @@ async function publishPrice(price: number): Promise<void> {
     args: [H100_GPU_ID as `0x${string}`, BigInt(price), BigInt(Math.floor(Date.now() / 1000))],
   });
   expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+  const publicClient = createPublicClient({ chain: foundry, transport: http(ANVIL_URL) });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  expect(receipt.status).toBe("success");
+  await anvilRpc("evm_mine", []);
 }
 
 async function waitForSchema(
   label: string,
   probe: () => Promise<boolean>,
 ): Promise<void> {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 150_000;
   for (;;) {
     if (await probe()) return;
     if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`);
@@ -106,33 +112,33 @@ d("indexer onchain suites (gated)", () => {
   it(
     "indexes the deployed + churned chain to realtime",
     async () => {
-      const instA = await spawnPonder({
-        schema: "gusd_index_e2e_a",
-        viewsSchema: "gusd_index_e2e_rot",
+      const instA = await spawnEnvio({
+        schema: "gusd_index_envio_e2e_a",
         port: 42481,
       });
       instances.push(instA);
+      primary = instA;
 
       // Deploy.full's closing stake + distribute are the chain's
       // last-landed protocol events; their presence in the derived state
       // means the historical backfill reached the churn's final blocks. The
       // figures are the script's deterministic closing state (the same
-      // numbers two independent Deploy.full replays landed). 12,014.37 gUSD
-      // vault share: the pre-fee figure 1,942.04 grew by half the 50 bps
-      // GUSD mint fees the script's mints now pay (the other half goes to
-      // the treasury).
+      // numbers two independent Deploy.full replays landed) — 10,397.45 gUSD
+      // vault share under the four-SKU universe, recomputed when Deploy.full
+      // slimmed from seven SKUs (the pre-cut figure was 12,014.37 and is
+      // what the stale pin on main still names).
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
-        `select revenue_gusd, deposit_count from "gusd_index_e2e_a".sgusd_vault`,
+        `select revenue_gusd, deposit_count from "gusd_index_envio_e2e_a"."SgusdVault"`,
         [],
       );
       expect(closing).toHaveLength(1);
       expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
-      expect(closing[0]!.revenue_gusd).toBe("12014372236");
+      expect(closing[0]!.revenue_gusd).toBe("10397454680");
 
       const swaps = await schemaQuery<{ count: string }>(
-        `select count(*)::text as count from "gusd_index_e2e_a".pm_swap`,
+        `select count(*)::text as count from "gusd_index_envio_e2e_a"."PmSwap"`,
         [],
       );
       expect(Number(swaps[0]!.count)).toBeGreaterThan(0);
@@ -152,7 +158,7 @@ d("indexer onchain suites (gated)", () => {
         deposit_count: string;
         withdraw_count: string;
         revenue_gusd: string;
-      }>(`select * from "gusd_index_e2e_a".sgusd_vault`, []);
+      }>(`select * from "gusd_index_envio_e2e_a"."SgusdVault"`, []);
       expect(vault).toHaveLength(1);
       const sums = await schemaQuery<{
         seeded: string;
@@ -165,14 +171,14 @@ d("indexer onchain suites (gated)", () => {
         revenue: string;
       }>(
         `select
-           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_seeded) as seeded,
-           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_deposited where lower(owner) <> $1) as deposit_assets_user,
-           (select coalesce(sum(shares), 0)::text from "gusd_index_e2e_a".sgusd_deposited) as deposit_shares,
-           (select count(*)::text from "gusd_index_e2e_a".sgusd_deposited) as deposit_count,
-           (select coalesce(sum(assets), 0)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_assets,
-           (select coalesce(sum(shares), 0)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_shares,
-           (select count(*)::text from "gusd_index_e2e_a".sgusd_withdrawn) as withdraw_count,
-           (select coalesce(sum(to_vault), 0)::text from "gusd_index_e2e_a".revenue_distributed) as revenue`,
+           (select coalesce(sum(assets), 0)::text from "gusd_index_envio_e2e_a"."SgusdSeeded") as seeded,
+           (select coalesce(sum(assets), 0)::text from "gusd_index_envio_e2e_a"."SgusdDeposited" where lower(owner) <> $1) as deposit_assets_user,
+           (select coalesce(sum(shares), 0)::text from "gusd_index_envio_e2e_a"."SgusdDeposited") as deposit_shares,
+           (select count(*)::text from "gusd_index_envio_e2e_a"."SgusdDeposited") as deposit_count,
+           (select coalesce(sum(assets), 0)::text from "gusd_index_envio_e2e_a"."SgusdWithdrawn") as withdraw_assets,
+           (select coalesce(sum(shares), 0)::text from "gusd_index_envio_e2e_a"."SgusdWithdrawn") as withdraw_shares,
+           (select count(*)::text from "gusd_index_envio_e2e_a"."SgusdWithdrawn") as withdraw_count,
+           (select coalesce(sum(to_vault), 0)::text from "gusd_index_envio_e2e_a"."RevenueDistributed") as revenue`,
         [sgusd],
       );
       expect(BigInt(vault[0]!.seeded_gusd)).toBe(BigInt(sums[0]!.seeded));
@@ -190,14 +196,13 @@ d("indexer onchain suites (gated)", () => {
   it(
     "re-backfills byte-identically into a fresh schema (determinism)",
     async () => {
-      const dumpA: TableDump = await dumpSchema(pg!, "gusd_index_e2e_a");
-      const instB = await spawnPonder({
-        schema: "gusd_index_e2e_b",
-        viewsSchema: "gusd_index_e2e_rot",
+      const dumpA: TableDump = await dumpSchema(pg!, "gusd_index_envio_e2e_a");
+      const instB = await spawnEnvio({
+        schema: "gusd_index_envio_e2e_b",
         port: 42482,
       });
       instances.push(instB);
-      const dumpB = await dumpSchema(pg!, "gusd_index_e2e_b");
+      const dumpB = await dumpSchema(pg!, "gusd_index_envio_e2e_b");
       expectDumpsEqual(dumpA, dumpB, "fresh re-backfill");
       await instB.kill();
     },
@@ -207,14 +212,14 @@ d("indexer onchain suites (gated)", () => {
   it(
     "restarts on an existing schema and changes nothing (checkpoint resume)",
     async () => {
-      const dumpA: TableDump = await dumpSchema(pg!, "gusd_index_e2e_a");
-      const restarted = await spawnPonder({
-        schema: "gusd_index_e2e_a",
-        viewsSchema: "gusd_index_e2e_rot",
+      const dumpA: TableDump = await dumpSchema(pg!, "gusd_index_envio_e2e_a");
+      await primary!.kill();
+      const restarted = await spawnEnvio({
+        schema: "gusd_index_envio_e2e_a",
         port: 42481,
       });
       instances.push(restarted);
-      const dumpA2 = await dumpSchema(pg!, "gusd_index_e2e_a");
+      const dumpA2 = await dumpSchema(pg!, "gusd_index_envio_e2e_a");
       expectDumpsEqual(dumpA, dumpA2, "restart resume");
       await restarted.kill();
     },
@@ -222,51 +227,10 @@ d("indexer onchain suites (gated)", () => {
   );
 
   it(
-    "re-points the stable views schema to a newer deployment on ready",
-    async () => {
-      const instC = await spawnPonder({
-        schema: "gusd_index_e2e_c",
-        viewsSchema: "gusd_index_e2e_rot",
-        port: 42483,
-      });
-      instances.push(instC);
-      const defC = await viewDefinition(pg!, "gusd_index_e2e_rot", "pm_swap");
-      expect(defC).toContain("gusd_index_e2e_c");
-
-      const instD = await spawnPonder({
-        schema: "gusd_index_e2e_d",
-        viewsSchema: "gusd_index_e2e_rot",
-        port: 42484,
-      });
-      instances.push(instD);
-      const defD = await viewDefinition(pg!, "gusd_index_e2e_rot", "pm_swap");
-      expect(defD).toContain("gusd_index_e2e_d");
-      expect(defD).not.toContain("gusd_index_e2e_c");
-
-      // The Fastify query path is plain SQL over the views schema — it must
-      // keep answering with identical data across the rotation.
-      const viaViews = await schemaQuery<{ count: string }>(
-        `select count(*)::text as count from "gusd_index_e2e_rot".pm_swap`,
-        [],
-      );
-      const viaTables = await schemaQuery<{ count: string }>(
-        `select count(*)::text as count from "gusd_index_e2e_d".pm_swap`,
-        [],
-      );
-      expect(viaViews[0]!.count).toBe(viaTables[0]!.count);
-
-      await instC.kill();
-      await instD.kill();
-    },
-    300_000,
-  );
-
-  it(
     "rolls back event + derived state across a chain reorg",
     async () => {
-      const instE = await spawnPonder({
-        schema: "gusd_index_e2e_e",
-        viewsSchema: "gusd_index_e2e_rot",
+      const instE = await spawnEnvio({
+        schema: "gusd_index_envio_e2e_e",
         port: 42485,
       });
       instances.push(instE);
@@ -275,7 +239,7 @@ d("indexer onchain suites (gated)", () => {
         Number(
           (
             await schemaQuery<{ count: string }>(
-              `select count(*)::text as count from "gusd_index_e2e_e".pm_swap`,
+              `select count(*)::text as count from "gusd_index_envio_e2e_e"."PmSwap"`,
               [],
             )
           )[0]!.count,
@@ -287,17 +251,21 @@ d("indexer onchain suites (gated)", () => {
       await publishPrice(31_000);
       await waitForSchema("price 31000 indexed", async () => {
         const rows = await schemaQuery<{ price: string }>(
-          `select price from "gusd_index_e2e_e".oracle_state where gpu_id = $1`,
+          `select price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
           [H100_GPU_ID],
         );
         return rows[0]?.price === "31000";
       });
+      const replacedForkTip = await envioProcessedBlock(instE);
 
       await evmRevert(snapshot);
       await publishPrice(32_000);
+      while (Number(BigInt(await anvilRpc<string>("eth_blockNumber", []))) <= replacedForkTip) {
+        await anvilRpc("evm_mine", []);
+      }
       await waitForSchema("price 32000 indexed", async () => {
         const rows = await schemaQuery<{ price: string }>(
-          `select price from "gusd_index_e2e_e".oracle_state where gpu_id = $1`,
+          `select price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
           [H100_GPU_ID],
         );
         return rows[0]?.price === "32000";
@@ -306,14 +274,14 @@ d("indexer onchain suites (gated)", () => {
       // The reverted publication is gone from history AND derived state;
       // everything else (the churn's swaps) survived the rollback.
       const published = await schemaQuery<{ price: string }>(
-        `select price from "gusd_index_e2e_e".oracle_price_published where gpu_id = $1 order by block_number`,
+        `select price from "gusd_index_envio_e2e_e"."OraclePricePublished" where gpu_id = $1 order by block_number`,
         [H100_GPU_ID],
       );
       expect(published.map((r) => r.price)).not.toContain("31000");
       expect(published.map((r) => r.price)).toContain("32000");
 
       const state = await schemaQuery<{ price: string; previous_price: string | null }>(
-        `select price, previous_price from "gusd_index_e2e_e".oracle_state where gpu_id = $1`,
+        `select price, previous_price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
         [H100_GPU_ID],
       );
       expect(state[0]!.price).toBe("32000");
@@ -332,7 +300,7 @@ d("indexer onchain suites (gated)", () => {
 d("scratch schema hygiene", () => {
   it("only uses suite-owned schema names", () => {
     for (const name of SCRATCH_SCHEMAS) {
-      expect(name).toMatch(/^gusd_index_e2e_[a-z_]+$/);
+      expect(name).toMatch(/^gusd_index_envio_e2e_[a-z_]+$/);
       expect(name.length).toBeLessThanOrEqual(30);
     }
   });

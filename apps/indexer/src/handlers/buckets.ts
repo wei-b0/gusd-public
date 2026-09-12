@@ -6,11 +6,11 @@
  * Bucket starts derive from the event's block timestamp via
  * projections/buckets (chain time only).
  *
- * The structural Db view mirrors wallet-state.ts: Ponder's context.db is
+ * The structural Db view mirrors wallet-state.ts: Envio's entity context is
  * declared by exactly the shape these helpers use.
  */
 import type { Hex } from "viem";
-import { poolStatsHourly, protocolStatsDaily } from "ponder:schema";
+import { poolStatsHourly, protocolStatsDaily } from "../schema.js";
 import { dayBucketStart, hourBucketStart } from "../projections/buckets.js";
 
 interface BucketDb {

@@ -10,14 +10,14 @@
  * Buy (all-in cost), the same single-attribution rule as router-mediated
  * issuance legs.
  */
-import { ponder } from "ponder:registry";
+import { handlers } from "../envio-compat.js";
 import {
   gpuAssets,
   gpuCreated,
   gpuIssued,
   gpuTokens,
   protocolStats,
-} from "ponder:schema";
+} from "../schema.js";
 import { eventKeys, eventTxHash } from "../events.js";
 import { decodeGpuId } from "../format.js";
 import { bumpDailyBucket } from "./buckets.js";
@@ -25,7 +25,7 @@ import { recordUserEvent } from "./user-event.js";
 import { recordGpuAcquisition } from "./wallet-state.js";
 import { zeroProtocolStats } from "./stats.js";
 
-ponder.on("GPUIssuance:GpuCreated", async ({ event, context }) => {
+handlers.on("GPUIssuance:GpuCreated", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, token, feeBps, poolFee, tickSpacing } = event.args;
 
@@ -78,7 +78,7 @@ ponder.on("GPUIssuance:GpuCreated", async ({ event, context }) => {
     .onConflictDoUpdate({ gpuId });
 });
 
-ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
+handlers.on("GPUIssuance:Issued", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, amount, base, fee } = event.args;
 
@@ -129,7 +129,7 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
       issuanceProceedsGusd: base,
       issuanceFeesGusd: fee,
     })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       issuedGpu: row.issuedGpu + amount,
       issuedCount: row.issuedCount + 1,
       issuanceProceedsGusd: row.issuanceProceedsGusd + base,
@@ -148,7 +148,7 @@ ponder.on("GPUIssuance:Issued", async ({ event, context }) => {
   // issuance leg of a router Buy.
   const routerAddress = context.contracts.GpuRouter?.address;
   if (typeof routerAddress !== "string") {
-    throw new Error("GpuRouter address missing from ponder config");
+    throw new Error("GpuRouter address missing from generated Envio config");
   }
   const caller = event.args.caller.toLowerCase();
   if (
@@ -181,7 +181,7 @@ function isInSwapBackstop(
   );
 }
 
-ponder.on("GPUIssuance:MaxOracleStalenessSet", async ({ event, context }) => {
+handlers.on("GPUIssuance:MaxOracleStalenessSet", async ({ event, context }) => {
   const { seconds_ } = event.args;
   await context.db
     .insert(protocolStats)
@@ -192,7 +192,7 @@ ponder.on("GPUIssuance:MaxOracleStalenessSet", async ({ event, context }) => {
     .onConflictDoUpdate({ maxOracleStalenessSec: Number(seconds_) });
 });
 
-ponder.on("GPUIssuance:IssuanceEnabledSet", async ({ event, context }) => {
+handlers.on("GPUIssuance:IssuanceEnabledSet", async ({ event, context }) => {
   const { gpuId, enabled } = event.args;
   const asset = await context.db.find(gpuAssets, {
     chainId: context.chain.id,
@@ -206,7 +206,7 @@ ponder.on("GPUIssuance:IssuanceEnabledSet", async ({ event, context }) => {
     .set({ issuanceEnabled: enabled });
 });
 
-ponder.on("GPUIssuance:IssuanceFeeSet", async ({ event, context }) => {
+handlers.on("GPUIssuance:IssuanceFeeSet", async ({ event, context }) => {
   const { gpuId, feeBps } = event.args;
   const asset = await context.db.find(gpuAssets, {
     chainId: context.chain.id,

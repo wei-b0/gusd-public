@@ -217,7 +217,7 @@ describe("projectUserEvent", () => {
 });
 
 describe("eventKeys", () => {
-  it("extracts the PK + settlement time from Ponder's event meta", () => {
+  it("extracts the PK + settlement time from event metadata", () => {
     const keys = eventKeys(
       {
         block: { number: 285n, timestamp: 1788698065n },

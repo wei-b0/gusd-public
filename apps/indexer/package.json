@@ -4,20 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "ponder dev",
-    "start": "ponder start",
-    "serve": "ponder serve",
-    "codegen": "ponder codegen",
-    "build": "tsc -p tsconfig.json",
+    "config:generate": "tsx scripts/emit-abis.ts && tsx scripts/generate-config.ts",
+    "dev": "pnpm config:generate && envio dev",
+    "start": "pnpm config:generate && envio start",
+    "codegen": "pnpm config:generate && envio codegen",
+    "build": "INDEXER_OFFLINE_CODEGEN=1 pnpm codegen && tsc -p tsconfig.json",
     "lint": "eslint . --max-warnings 0",
-    "check-types": "tsc -p tsconfig.check.json --noEmit",
+    "check-types": "INDEXER_OFFLINE_CODEGEN=1 pnpm codegen && tsc -p tsconfig.check.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:anvil": "RUN_ANVIL_TESTS=1 vitest run --passWithNoTests"
   },
   "dependencies": {
-    "hono": "^4.13.5",
-    "pg": "^8.16.0",
-    "ponder": "0.17.9",
     "viem": "^2.56.3"
   },
   "devDependencies": {
@@ -27,6 +24,7 @@
     "@types/pg": "^8.15.0",
     "envio": "3.10.0",
     "eslint": "10.9.1",
+    "pg": "^8.16.0",
     "tsx": "^4.20.0",
     "typescript": "7.0.2",
     "vitest": "^3.2.7"

@@ -16,7 +16,7 @@
  * = native-leg gUSD (the Swap handler) + Σ GpuFill.gusdAmount; hook fees =
  * Σ GpuFill.protocolFee — no cross-handler netting pass, ever.
  */
-import { ponder } from "ponder:registry";
+import { handlers } from "../envio-compat.js";
 import {
   gpuAssets,
   gpuFill,
@@ -24,12 +24,12 @@ import {
   hookSwap,
   pools,
   protocolStats,
-} from "ponder:schema";
+} from "../schema.js";
 import { eventKeys } from "../events.js";
 import { bumpDailyBucket, bumpPoolHourBucket } from "./buckets.js";
 import { zeroProtocolStats } from "./stats.js";
 
-ponder.on("GPUHook:PoolRegistered", async ({ event, context }) => {
+handlers.on("GPUHook:PoolRegistered", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, poolId } = event.args;
   const chainId = context.chain.id;
@@ -101,7 +101,7 @@ ponder.on("GPUHook:PoolRegistered", async ({ event, context }) => {
   }
 });
 
-ponder.on("GPUHook:GpuFill", async ({ event, context }) => {
+handlers.on("GPUHook:GpuFill", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { poolId, gpuId, sender, isBuy, gpuAmount, gusdAmount, protocolFee, source } =
     event.args;
@@ -148,7 +148,7 @@ ponder.on("GPUHook:GpuFill", async ({ event, context }) => {
   await context.db
     .insert(protocolStats)
     .values({ ...zeroProtocolStats(keys.chainId), hookFeesGusd: protocolFee })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       hookFeesGusd: row.hookFeesGusd + protocolFee,
     }));
 
@@ -168,7 +168,7 @@ ponder.on("GPUHook:GpuFill", async ({ event, context }) => {
   });
 });
 
-ponder.on("GPUHook:HookSwap", async ({ event, context }) => {
+handlers.on("GPUHook:HookSwap", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { id, sender, amount0, amount1, swapFee } = event.args;
   // Lens/conformance tape only — volume and fees come from GpuFill.
@@ -177,7 +177,7 @@ ponder.on("GPUHook:HookSwap", async ({ event, context }) => {
     .values({ ...keys, poolId: id, sender, amount0, amount1, swapFee });
 });
 
-ponder.on("GPUHook:HookFeeBpsSet", async ({ event, context }) => {
+handlers.on("GPUHook:HookFeeBpsSet", async ({ event, context }) => {
   const { newFeeBps } = event.args;
   await context.db
     .insert(protocolStats)

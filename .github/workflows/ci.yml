@@ -74,3 +74,35 @@ jobs:
         run: pnpm --filter @gusd/publisher test
       - name: replay byte-compare of stored candidates
         run: node apps/oracle/dist/replay-candidate.js
+
+  indexer-anvil:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gusd
+          POSTGRES_PASSWORD: gusd
+          POSTGRES_DB: gusd
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U gusd"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: pnpm install --frozen-lockfile
+      - name: Envio accounting, replay, restart, and rollback
+        run: RUN_ANVIL_TESTS=1 pnpm --filter @gusd/indexer test:anvil

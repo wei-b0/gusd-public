@@ -1,0 +1,101 @@
+[
+  {
+    "name": "PoolRegistered",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "poolId",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      }
+    ]
+  },
+  {
+    "name": "HookSwap",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "id",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "sender",
+        "indexed": true
+      },
+      {
+        "type": "int128",
+        "name": "amount0"
+      },
+      {
+        "type": "int128",
+        "name": "amount1"
+      },
+      {
+        "type": "uint24",
+        "name": "swapFee"
+      }
+    ]
+  },
+  {
+    "name": "GpuFill",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "poolId",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "sender",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "isBuy"
+      },
+      {
+        "type": "uint256",
+        "name": "gpuAmount"
+      },
+      {
+        "type": "uint256",
+        "name": "gusdAmount"
+      },
+      {
+        "type": "uint256",
+        "name": "protocolFee"
+      },
+      {
+        "type": "uint8",
+        "name": "source"
+      }
+    ]
+  },
+  {
+    "name": "HookFeeBpsSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint16",
+        "name": "oldFeeBps"
+      },
+      {
+        "type": "uint16",
+        "name": "newFeeBps"
+      }
+    ]
+  }
+]

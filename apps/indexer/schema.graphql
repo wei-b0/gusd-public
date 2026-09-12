@@ -1,0 +1,514 @@
+enum BasisState {
+  complete
+  partial
+  unknown
+}
+
+type GusdMinted @index(fields: ["user", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  user: String! @index
+  underlyingIn: BigInt!
+  gusdOut: BigInt!
+  fee: BigInt!
+}
+
+type GusdRedeemed @index(fields: ["user", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  user: String! @index
+  gusdIn: BigInt!
+  underlyingOut: BigInt!
+  fee: BigInt!
+}
+
+type SgusdDeposited @index(fields: ["owner", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  sender: String!
+  owner: String! @index
+  assets: BigInt!
+  shares: BigInt!
+}
+
+type SgusdWithdrawn @index(fields: ["owner", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  sender: String!
+  receiver: String!
+  owner: String! @index
+  assets: BigInt!
+  shares: BigInt!
+}
+
+type SgusdSeeded {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  assets: BigInt!
+}
+
+type GpuCreated {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  gpuSku: String!
+  token: String! @index
+  feeBps: Int!
+  poolFee: Int!
+  tickSpacing: Int!
+}
+
+type GpuIssued
+  @index(fields: ["gpuId", "blockNumber", "logIndex"])
+  @index(fields: ["user", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  caller: String!
+  gpuId: String! @index
+  user: String! @index
+  amount: BigInt!
+  base: BigInt!
+  fee: BigInt!
+}
+
+type RouterBuy
+  @index(fields: ["gpuId", "blockNumber", "logIndex"])
+  @index(fields: ["recipient", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  recipient: String! @index
+  payer: String!
+  gpuOut: BigInt!
+  paid: BigInt!
+  polFeeGusd: BigInt!
+  hookFeeGusd: BigInt!
+  issuanceFee: BigInt!
+}
+
+type RouterSell
+  @index(fields: ["gpuId", "blockNumber", "logIndex"])
+  @index(fields: ["recipient", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  recipient: String! @index
+  gpuIn: BigInt!
+  out: BigInt!
+  polFeeGusd: BigInt!
+  hookFeeGusd: BigInt!
+}
+
+type StableMintViaSwap {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  stable: String!
+  user: String!
+  amountIn: BigInt!
+  underlyingOut: BigInt!
+  gusdOut: BigInt!
+}
+
+type StableRedeemViaSwap {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  stable: String!
+  user: String!
+  gusdIn: BigInt!
+  underlyingIn: BigInt!
+  stableOut: BigInt!
+}
+
+type RevenueDistributed {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  amount: BigInt!
+  toVault: BigInt!
+  toTreasury: BigInt!
+}
+
+type HookPoolRegistered {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  gpuId: String! @index
+}
+
+type HookSwap @index(fields: ["poolId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  sender: String!
+  amount0: BigInt!
+  amount1: BigInt!
+  swapFee: Int!
+}
+
+type GpuFill
+  @index(fields: ["gpuId", "blockNumber", "logIndex"])
+  @index(fields: ["poolId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  gpuId: String! @index
+  sender: String!
+  isBuy: Boolean!
+  gpuAmount: BigInt!
+  gusdAmount: BigInt!
+  protocolFee: BigInt!
+  source: Int!
+}
+
+type OraclePricePublished @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  price: BigInt!
+  previousPrice: BigInt!
+  updatedAtSec: BigInt!
+}
+
+type OraclePriceOverridden @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  price: BigInt!
+  updatedAtSec: BigInt!
+}
+
+type OraclePublisherAccepted {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  previousPublisher: String!
+  newPublisher: String!
+}
+
+type PmPoolInitialized {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  currency0: String!
+  currency1: String!
+  fee: Int!
+  tickSpacing: Int!
+  hooks: String!
+  sqrtPriceX96: BigInt!
+  tick: Int!
+}
+
+type PmSwap @index(fields: ["poolId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  sender: String!
+  amount0: BigInt!
+  amount1: BigInt!
+  sqrtPriceX96: BigInt!
+  liquidity: BigInt!
+  tick: Int!
+  fee: Int!
+}
+
+type PmLiquidityModified @index(fields: ["poolId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  sender: String!
+  tickLower: Int!
+  tickUpper: Int!
+  liquidityDelta: BigInt!
+  salt: String!
+}
+
+type PmDonate {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  sender: String!
+  amount0: BigInt!
+  amount1: BigInt!
+}
+
+type PosmPositionModified @index(fields: ["poolId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  poolId: String! @index
+  sender: String!
+  tickLower: Int!
+  tickUpper: Int!
+  liquidityDelta: BigInt!
+  salt: String!
+}
+
+type TokenTransfer
+  @index(fields: ["token", "from", "blockNumber"])
+  @index(fields: ["token", "to", "blockNumber"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  token: String! @index
+  from: String! @index
+  to: String! @index
+  value: BigInt!
+}
+
+type Pool {
+  id: ID!
+  poolId: String! @index
+  gpuId: String @index
+  canonical: Boolean!
+  registeredBlockNumber: Int
+  registeredAtSec: BigInt
+  currency0: String
+  currency1: String
+  fee: Int
+  tickSpacing: Int
+  hooks: String
+  gusdIsCurrency0: Boolean
+  sqrtPriceX96: BigInt
+  tick: Int
+  liquidity: BigInt
+  swapCount: BigInt!
+  volumeGusd: BigInt!
+  buyVolumeGusd: BigInt!
+  sellVolumeGusd: BigInt!
+  hookFeesGusd: BigInt!
+  lpFeesGusdEst: BigInt!
+  lastSwapAtSec: BigInt
+  lastSwapBlockNumber: Int
+}
+
+type GpuAsset {
+  id: ID!
+  gpuId: String! @index
+  token: String! @index
+  gpuSku: String!
+  issuanceFeeBps: Int!
+  issuanceEnabled: Boolean!
+  poolFee: Int!
+  tickSpacing: Int!
+  canonicalPoolId: String
+  issuedGpu: BigInt!
+  issuedCount: BigInt!
+  issuanceProceedsGusd: BigInt!
+  issuanceFeesGusd: BigInt!
+  principalContributedGusd: BigInt!
+  polGusd: BigInt!
+  polGpu: BigInt!
+  polFeesGusd: BigInt!
+  firstIssuedAtSec: BigInt
+  lastIssuedAtSec: BigInt
+  buyCount: BigInt!
+  sellCount: BigInt!
+  volumeGusd: BigInt!
+  lastTradeAtSec: BigInt
+}
+
+type OracleState {
+  id: ID!
+  gpuId: String! @index
+  price: BigInt
+  previousPrice: BigInt
+  updatedAtSec: BigInt
+  overriddenPrice: BigInt
+  overriddenAtSec: BigInt
+  lastPublishedBlockNumber: Int
+}
+
+type GpuToken {
+  id: ID!
+  token: String! @index
+  gpuId: String! @index
+}
+
+type WalletBalance @index(fields: ["wallet", "token"]) {
+  id: ID!
+  wallet: String! @index
+  token: String! @index
+  balance: BigInt!
+  transferCount: BigInt!
+  lastTransferAtSec: BigInt
+  lastTransferBlockNumber: Int
+}
+
+type WalletCostBasis @index(fields: ["wallet", "gpuId"]) {
+  id: ID!
+  wallet: String! @index
+  gpuId: String! @index
+  qtyGpu: BigInt!
+  costGusd: BigInt!
+  realizedPnlGusd: BigInt!
+  basisState: BasisState!
+  acquisitions: BigInt!
+  disposals: BigInt!
+  firstActivityAtSec: BigInt
+  lastActivityAtSec: BigInt
+}
+
+type WalletVaultPosition {
+  id: ID!
+  wallet: String! @index
+  shares: BigInt!
+  assetsCost: BigInt!
+  realizedPnlGusd: BigInt!
+  basisState: BasisState!
+  deposits: BigInt!
+  withdraws: BigInt!
+  firstActivityAtSec: BigInt
+  lastActivityAtSec: BigInt
+}
+
+type Wallet {
+  id: ID!
+  address: String! @index
+  firstSeenBlockNumber: Int!
+  lastSeenBlockNumber: Int!
+  eventCount: BigInt!
+}
+
+type UserEvent @index(fields: ["user", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  contract: String!
+  event: String!
+  user: String! @index
+  txHash: String!
+  data: Json!
+}
+
+type PoolStatsHourly @index(fields: ["poolId", "bucketStart"]) {
+  id: ID!
+  poolId: String! @index
+  bucketStart: BigInt! @index
+  volumeGusd: BigInt!
+  buyVolumeGusd: BigInt!
+  sellVolumeGusd: BigInt!
+  buys: BigInt!
+  sells: BigInt!
+  hookFeesGusd: BigInt!
+  lpFeesGusdEst: BigInt!
+  swaps: BigInt!
+}
+
+type PoolLiquidityPosition {
+  id: ID!
+  poolId: String! @index
+  tickLower: Int!
+  tickUpper: Int!
+  salt: String!
+  liquidity: BigInt!
+  firstModifier: String!
+  lastModifier: String!
+  modifyCount: BigInt!
+  firstModifiedAtSec: BigInt
+  lastModifiedAtSec: BigInt
+}
+
+type ProtocolStats {
+  id: ID!
+  gusdMintedGusd: BigInt!
+  gusdRedeemedGusd: BigInt!
+  mintCount: BigInt!
+  redeemCount: BigInt!
+  issuedGpu: BigInt!
+  issuedCount: BigInt!
+  issuanceProceedsGusd: BigInt!
+  issuanceFeesGusd: BigInt!
+  buyCount: BigInt!
+  sellCount: BigInt!
+  buyVolumeGusd: BigInt!
+  sellVolumeGusd: BigInt!
+  hookFeesGusd: BigInt!
+  lpFeesGusdEst: BigInt!
+  revenueDistributedGusd: BigInt!
+  revenueToVaultGusd: BigInt!
+  revenueToTreasuryGusd: BigInt!
+  mintFeeBps: Int
+  redeemFeeBps: Int
+  hookFeeBps: Int
+  maxOracleStalenessSec: BigInt
+  maxDeviationBps: Int
+  sgusdSplitBps: Int
+  vault: String
+  treasury: String
+  publisher: String
+}
+
+type SgusdVault {
+  id: ID!
+  seededGusd: BigInt!
+  depositsGusd: BigInt!
+  withdrawsGusd: BigInt!
+  sharesMinted: BigInt!
+  sharesBurned: BigInt!
+  depositCount: BigInt!
+  withdrawCount: BigInt!
+  revenueGusd: BigInt!
+}
+
+type ProtocolStatsDaily {
+  id: ID!
+  bucketStart: BigInt! @index
+  mintedGusd: BigInt!
+  redeemedGusd: BigInt!
+  mintCount: BigInt!
+  redeemCount: BigInt!
+  issuedGpu: BigInt!
+  issuedCount: BigInt!
+  issuanceProceedsGusd: BigInt!
+  buyVolumeGusd: BigInt!
+  sellVolumeGusd: BigInt!
+  buyCount: BigInt!
+  sellCount: BigInt!
+  hookFeesGusd: BigInt!
+  revenueDistributedGusd: BigInt!
+}

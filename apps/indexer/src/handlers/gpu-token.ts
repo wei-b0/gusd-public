@@ -5,8 +5,8 @@
  * transfers never move basis with invented cost — they only destroy its
  * completeness). Never projected into user activity directly.
  */
-import { ponder } from "ponder:registry";
-import { gpuTokens, tokenTransfer } from "ponder:schema";
+import { handlers } from "../envio-compat.js";
+import { gpuTokens, tokenTransfer } from "../schema.js";
 import { eventKeys } from "../events.js";
 import { balanceChanges } from "../projections/balances.js";
 import {
@@ -16,7 +16,7 @@ import {
   protocolContractAddresses,
 } from "./wallet-state.js";
 
-ponder.on("GPUToken:Transfer", async ({ event, context }) => {
+handlers.on("GPUToken:Transfer", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { from, to, value } = event.args;
   const token = event.log.address;

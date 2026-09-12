@@ -1,7 +1,7 @@
 /**
  * Bucket aggregate tests — pure bucket-start math plus the net-add upsert
  * contract of the DB helpers, checked against a capturing fake db (no
- * network, no real Ponder runtime).
+ * network, no Envio runtime).
  */
 import { describe, expect, it } from "vitest";
 import {

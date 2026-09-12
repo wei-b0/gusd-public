@@ -4,11 +4,11 @@
  * PoolManager's drags hundreds of unused items into the bundler — so the
  * indexer carries exactly the events it indexes. If a contract emits a new
  * event version, the forge artifact diff is the source of truth for updating
- * these (an out-of-sync ABI fails loudly: Ponder cannot decode unknown topic
+ * these (an out-of-sync ABI fails loudly: Envio cannot decode unknown topic
  * hashes and logs the mismatch).
  */
 
-import { parseAbi, parseAbiItem } from "viem";
+import { parseAbi } from "viem";
 
 /** gUSD — Minted/Redeemed user flows, fees config, raw transfers. */
 export const gusdAbi = parseAbi([
@@ -119,8 +119,3 @@ export const issuanceReadAbi = parseAbi([
   "function poolParamsOf(bytes32 gpuId) view returns (uint24, int24)",
   "function tokenOf(bytes32 gpuId) view returns (address)",
 ]);
-
-/** The GpuCreated event object the GPUToken factory watches. */
-export const gpuCreatedEvent = parseAbiItem(
-  "event GpuCreated(bytes32 indexed gpuId, address token, uint16 feeBps, uint24 poolFee, int24 tickSpacing)",
-);

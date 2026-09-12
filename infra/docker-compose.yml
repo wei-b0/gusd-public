@@ -19,11 +19,8 @@ services:
     networks:
       - gusd-internal
 
-  # Protocol indexer (Ponder). Writes ONLY its gusd_index_* schemas in the
-  # same Postgres; its HTTP surface (/health /ready /status /metrics) stays
-  # on the private network — publish nothing. Healthcheck is Ponder's
-  # /health LIVENESS (200 immediately), so a long backfill never restarts
-  # the container; readiness/alerting rides /ready + /metrics internally.
+  # Protocol indexer (Envio HyperIndex). Writes only its dedicated schema in
+  # the same Postgres; its health and metrics surface stays private.
   indexer:
     build:
       context: ..
@@ -32,19 +29,20 @@ services:
     container_name: gusd-indexer
     restart: unless-stopped
     environment:
-      INDEXER_DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
-      # Per-deployment + stable views schemas (gusd_index_<env>_v<n> /
-      # gusd_index_<env>). Override both together in infra/.env.
-      DATABASE_SCHEMA: ${INDEXER_DEPLOYMENT_SCHEMA:-gusd_index_docker_v3}
-      DATABASE_VIEWS_SCHEMA: ${INDEXER_VIEWS_SCHEMA:-gusd_index_docker}
-      # One chain per process. INDEXER_RPC_URL_<id> must exist for every id
-      # in this list — add lines to infra/.env when changing it.
-      INDEXER_CHAINS: ${INDEXER_CHAINS:-31337}
-      INDEXER_RPC_URL_31337: ${INDEXER_RPC_URL_31337:-http://host.docker.internal:8545}
-      INDEXER_MAX_BLOCK_RANGE_31337: ${INDEXER_MAX_BLOCK_RANGE_31337:-}
+      ENVIO_PG_HOST: postgres
+      ENVIO_PG_PORT: 5432
+      ENVIO_PG_USER: gusd
+      ENVIO_PG_PASSWORD: gusd
+      ENVIO_PG_DATABASE: gusd
+      ENVIO_PG_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v1}
+      ENVIO_PG_SSL_MODE: "false"
+      ENVIO_HASURA: "false"
+      ENVIO_INDEXER_PORT: 9898
+      ENVIO_API_TOKEN: ${ENVIO_API_TOKEN:-}
+      INDEXER_CHAIN_ID: ${INDEXER_CHAIN_ID:-31337}
+      INDEXER_RPC_URL: ${INDEXER_RPC_URL:-http://host.docker.internal:8545}
       INDEXER_DEPLOYMENTS_DIR: /repo/apps/contracts/deployments
-      PORT: ${INDEXER_PORT:-42069}
-      PONDER_LOG_LEVEL: ${PONDER_LOG_LEVEL:-info}
+      LOG_LEVEL: ${INDEXER_LOG_LEVEL:-info}
     volumes:
       # The deployment record is baked into the image as a build-time
       # fallback, but redeploys rewrite it on the host — mount it read-only
@@ -60,7 +58,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${PORT:-42069}/health >/dev/null 2>&1 || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9898/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -93,10 +91,9 @@ services:
   # ${ORACLE_PORT:-8080} (the web default base is http://127.0.0.1:8080 —
   # stop a host-run `pnpm dev:oracle` or remap if they collide). Collectors
   # scrape provider APIs outbound; the indexer wiring mirrors host dev:
-  # INDEXER_SCHEMA is the stable views schema (same value as the indexer's
-  # DATABASE_VIEWS_SCHEMA — override both together in infra/.env) and
-  # INDEXER_INTERNAL_URL reaches Ponder's PRIVATE surface, reachable only
-  # inside this network. /v1/health stays 200 while Ponder backfills (the
+  # INDEXER_SCHEMA is the Envio entity schema and INDEXER_INTERNAL_URL reaches
+  # Envio's private metrics surface inside this network. /v1/health stays 200
+  # while Envio backfills (the
   # indexer subsection degrades, never flips unhealthy), so this healthcheck
   # never fights a long backfill.
   # Env pass-through is intentionally minimal: only `||`-tolerant vars are
@@ -118,8 +115,10 @@ services:
       PORT: 8080
       HYPERBOLIC_API_KEY: ${HYPERBOLIC_API_KEY:-}
       PRIMEINTELLECT_API_KEY: ${PRIMEINTELLECT_API_KEY:-}
-      INDEXER_SCHEMA: ${INDEXER_VIEWS_SCHEMA:-gusd_index_docker}
-      INDEXER_INTERNAL_URL: http://indexer:${INDEXER_PORT:-42069}
+      INDEXER_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v1}
+      INDEXER_INTERNAL_URL: http://indexer:9898
+      INDEXER_STATUS_RPC_URL: ${INDEXER_STATUS_RPC_URL:-http://host.docker.internal:8545}
+      INDEXER_CHAIN_ID: ${INDEXER_CHAIN_ID:-31337}
     ports:
       - "${ORACLE_PORT:-8080}:8080"
     depends_on:
@@ -127,9 +126,9 @@ services:
         condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
-      # started, NOT healthy: Ponder exits when the chain RPC is unreachable
+      # started, NOT healthy: Envio exits when the chain RPC is unreachable
       # (e.g. no local Anvil), and the oracle's indexer wiring degrades by
-      # design (unreachable Ponder → "degraded", never unhealthy). Gating on
+      # design (unreachable Envio → "degraded", never unhealthy). Gating on
       # liveness would hold the whole oracle hostage to a chain that may not
       # be running.
       indexer:

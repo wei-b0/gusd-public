@@ -1,0 +1,102 @@
+[
+  {
+    "name": "GpuCreated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "token"
+      },
+      {
+        "type": "uint16",
+        "name": "feeBps"
+      },
+      {
+        "type": "uint24",
+        "name": "poolFee"
+      },
+      {
+        "type": "int24",
+        "name": "tickSpacing"
+      }
+    ]
+  },
+  {
+    "name": "Issued",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "caller",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount"
+      },
+      {
+        "type": "uint256",
+        "name": "base"
+      },
+      {
+        "type": "uint256",
+        "name": "fee"
+      }
+    ]
+  },
+  {
+    "name": "IssuanceEnabledSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "enabled"
+      }
+    ]
+  },
+  {
+    "name": "IssuanceFeeSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint16",
+        "name": "feeBps"
+      }
+    ]
+  },
+  {
+    "name": "MaxOracleStalenessSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "seconds_"
+      }
+    ]
+  }
+]

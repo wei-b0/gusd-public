@@ -5,11 +5,11 @@
  * double-counted. StableUpdated (whitelist config, no consumer) is
  * deliberately not fetched — see abis.ts.
  */
-import { ponder } from "ponder:registry";
-import { stableMintViaSwap, stableRedeemViaSwap } from "ponder:schema";
+import { handlers } from "../envio-compat.js";
+import { stableMintViaSwap, stableRedeemViaSwap } from "../schema.js";
 import { eventKeys } from "../events.js";
 
-ponder.on("StableRouter:MintedViaSwap", async ({ event, context }) => {
+handlers.on("StableRouter:MintedViaSwap", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { stable, to, amountIn, underlyingOut, gusdOut } = event.args;
   await context.db
@@ -17,7 +17,7 @@ ponder.on("StableRouter:MintedViaSwap", async ({ event, context }) => {
     .values({ ...keys, stable, user: to, amountIn, underlyingOut, gusdOut });
 });
 
-ponder.on("StableRouter:RedeemedViaSwap", async ({ event, context }) => {
+handlers.on("StableRouter:RedeemedViaSwap", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { stable, to, gusdIn, underlyingIn, stableOut } = event.args;
   await context.db

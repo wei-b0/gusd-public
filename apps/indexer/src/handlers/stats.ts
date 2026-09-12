@@ -1,12 +1,12 @@
 /**
  * Singleton aggregate rows (protocol_stats, sgusd_vault). Counters are
  * delta-based upserts — the event's own delta rides the insert VALUES too
- * (Ponder inserts `values` verbatim when the row is absent, so an all-zero
+ * (the entity insert writes `values` verbatim when the row is absent, so an all-zero
  * insert silently drops the first event's delta), then add deltas on
  * conflict — so reorg rollback + replay converges (never SET x = total).
  * Config mirrors (fee bps, recipients) are last-write-wins by event order.
  */
-import { protocolStats, sgusdVault } from "ponder:schema";
+import { protocolStats, sgusdVault } from "../schema.js";
 
 type ProtocolStatsInsert = typeof protocolStats.$inferInsert;
 type SgusdVaultInsert = typeof sgusdVault.$inferInsert;

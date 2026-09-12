@@ -1,7 +1,17 @@
 {
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "tui",
-  "globalEnv": ["RUN_ANVIL_TESTS", "RUN_DB_TESTS"],
+  "globalEnv": [
+    "ENVIO_API_TOKEN",
+    "ENVIO_PG_SCHEMA",
+    "INDEXER_CHAIN_ID",
+    "INDEXER_CONFIG_PATH",
+    "INDEXER_DEPLOYMENTS_DIR",
+    "INDEXER_OFFLINE_CODEGEN",
+    "INDEXER_RPC_URL",
+    "RUN_ANVIL_TESTS",
+    "RUN_DB_TESTS"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

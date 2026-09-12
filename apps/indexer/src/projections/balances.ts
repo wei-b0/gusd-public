@@ -3,7 +3,7 @@
  * event produces. Mint legs (from = zero) credit the receiver only; burn
  * legs (to = zero) debit the sender only; the zero address itself never
  * becomes a wallet row. Handlers apply each delta through
- * wallet-state.applyBalanceDelta inside Ponder's per-event transaction.
+ * wallet-state.applyBalanceDelta inside Envio's event transaction.
  */
 
 import type { Address } from "viem";

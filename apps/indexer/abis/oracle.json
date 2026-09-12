@@ -1,0 +1,70 @@
+[
+  {
+    "name": "PricePublished",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "price"
+      },
+      {
+        "type": "uint256",
+        "name": "updatedAt"
+      },
+      {
+        "type": "uint256",
+        "name": "previousPrice"
+      }
+    ]
+  },
+  {
+    "name": "PriceOverridden",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "price"
+      },
+      {
+        "type": "uint256",
+        "name": "updatedAt"
+      }
+    ]
+  },
+  {
+    "name": "PublisherAccepted",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "previousPublisher",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "newPublisher",
+        "indexed": true
+      }
+    ]
+  },
+  {
+    "name": "MaxDeviationBpsSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint16",
+        "name": "bps"
+      }
+    ]
+  }
+]

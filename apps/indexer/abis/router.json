@@ -1,0 +1,75 @@
+[
+  {
+    "name": "Buy",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "recipient",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "payer",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "gpuOut"
+      },
+      {
+        "type": "uint256",
+        "name": "paid"
+      },
+      {
+        "type": "uint256",
+        "name": "polFeeGusd"
+      },
+      {
+        "type": "uint256",
+        "name": "hookFeeGusd"
+      },
+      {
+        "type": "uint256",
+        "name": "issuanceFee"
+      }
+    ]
+  },
+  {
+    "name": "Sell",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "recipient",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "gpuIn"
+      },
+      {
+        "type": "uint256",
+        "name": "out"
+      },
+      {
+        "type": "uint256",
+        "name": "polFeeGusd"
+      },
+      {
+        "type": "uint256",
+        "name": "hookFeeGusd"
+      }
+    ]
+  }
+]

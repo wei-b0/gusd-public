@@ -1,0 +1,55 @@
+[
+  {
+    "name": "BidCredited",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount"
+      }
+    ]
+  },
+  {
+    "name": "GpuNoted",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount"
+      }
+    ]
+  },
+  {
+    "name": "InventoryPulled",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "token"
+      },
+      {
+        "type": "uint256",
+        "name": "amount"
+      },
+      {
+        "type": "bool",
+        "name": "isGusd"
+      }
+    ]
+  }
+]

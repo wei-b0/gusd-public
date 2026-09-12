@@ -15,7 +15,7 @@
  * only; their economics arrive through GpuFill on the same tx (never
  * double-counted here).
  */
-import { ponder } from "ponder:registry";
+import { handlers } from "../envio-compat.js";
 import {
   pmDonate,
   pmLiquidityModified,
@@ -24,7 +24,7 @@ import {
   poolLiquidityPositions,
   pools,
   protocolStats,
-} from "ponder:schema";
+} from "../schema.js";
 import { eventKeys } from "../events.js";
 import { bumpPoolHourBucket } from "./buckets.js";
 import { zeroProtocolStats } from "./stats.js";
@@ -32,7 +32,7 @@ import { zeroProtocolStats } from "./stats.js";
 /** v4 fee units: 1_000_000 = 100% (3000 = 0.3%). */
 const FEE_DENOMINATOR = 1_000_000n;
 
-ponder.on("PoolManager:Initialize", async ({ event, context }) => {
+handlers.on("PoolManager:Initialize", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const {
     id,
@@ -68,6 +68,8 @@ ponder.on("PoolManager:Initialize", async ({ event, context }) => {
       fee,
       tickSpacing,
       hooks,
+      gusdIsCurrency0:
+        currency0.toLowerCase() === context.contracts.GUSD.address.toLowerCase(),
       sqrtPriceX96,
       tick,
       swapCount: 0,
@@ -76,7 +78,6 @@ ponder.on("PoolManager:Initialize", async ({ event, context }) => {
       sellVolumeGusd: 0n,
       hookFeesGusd: 0n,
       lpFeesGusdEst: 0n,
-      harvestedFeesGusd: 0n,
     })
     .onConflictDoUpdate({
       currency0,
@@ -89,7 +90,7 @@ ponder.on("PoolManager:Initialize", async ({ event, context }) => {
     });
 });
 
-ponder.on("PoolManager:Swap", async ({ event, context }) => {
+handlers.on("PoolManager:Swap", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { id, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee } =
     event.args;
@@ -159,7 +160,7 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
   await context.db
     .insert(protocolStats)
     .values({ ...zeroProtocolStats(keys.chainId), lpFeesGusdEst: lpFeeEst })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       lpFeesGusdEst: row.lpFeesGusdEst + lpFeeEst,
     }));
 
@@ -184,7 +185,7 @@ ponder.on("PoolManager:Swap", async ({ event, context }) => {
   );
 });
 
-ponder.on("PoolManager:ModifyLiquidity", async ({ event, context }) => {
+handlers.on("PoolManager:ModifyLiquidity", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { id, sender, tickLower, tickUpper, liquidityDelta, salt } = event.args;
 
@@ -217,14 +218,14 @@ ponder.on("PoolManager:ModifyLiquidity", async ({ event, context }) => {
       firstModifiedAtSec: keys.blockTimestamp,
       lastModifiedAtSec: keys.blockTimestamp,
     })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       liquidity: row.liquidity + liquidityDelta,
       modifyCount: row.modifyCount + 1,
       lastModifiedAtSec: keys.blockTimestamp,
     }));
 });
 
-ponder.on("PoolManager:Donate", async ({ event, context }) => {
+handlers.on("PoolManager:Donate", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { id, sender, amount0, amount1 } = event.args;
 

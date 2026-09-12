@@ -5,7 +5,7 @@
  * reorg tests must be free to revert the chain), a THROWAWAY copy of
  * apps/contracts in /tmp (so `forge script Deploy` cannot clobber the real
  * apps/contracts/deployments/31337.json the dev stack points at), its own
- * forge churn, and its own `ponder start` instances in scratch schemas.
+ * forge churn, and its own Envio instances in scratch schemas.
  * Nothing here touches the dev deployment schema, the dev views, or public.*.
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -27,19 +27,18 @@ export const DEPLOYER_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae
 
 /** Scratch schemas the suite owns; dropped before and after each run. */
 export const SCRATCH_SCHEMAS = [
-  "gusd_index_e2e_a",
-  "gusd_index_e2e_b",
-  "gusd_index_e2e_c",
-  "gusd_index_e2e_d",
-  "gusd_index_e2e_e",
-  "gusd_index_e2e_rot",
+  "gusd_index_envio_e2e_a",
+  "gusd_index_envio_e2e_b",
+  "gusd_index_envio_e2e_c",
+  "gusd_index_envio_e2e_d",
+  "gusd_index_envio_e2e_e",
+  "gusd_index_envio_e2e_rot",
 ];
 
-export interface PonderInstance {
+export interface EnvioInstance {
   proc: ChildProcess;
   baseUrl: string;
   schema: string;
-  viewsSchema: string;
   output: string;
   kill(): Promise<void>;
 }
@@ -172,31 +171,39 @@ export function readDeployment(chainId = 31337): Record<string, string | number>
   ) as Record<string, string | number>;
 }
 
-export interface SpawnPonderOptions {
+export interface SpawnEnvioOptions {
   schema: string;
-  viewsSchema: string;
   port: number;
 }
 
-/** Boots `ponder start` in a scratch schema and waits for /ready (200 =
- *  backfill complete + realtime on all chains). */
-export async function spawnPonder(opts: SpawnPonderOptions): Promise<PonderInstance> {
-  const proc = spawn(path.join(INDEXER_DIR, "node_modules/.bin/ponder"), ["start"], {
+/** Boots Envio in a scratch schema and waits for committed readiness. */
+export async function spawnEnvio(opts: SpawnEnvioOptions): Promise<EnvioInstance> {
+  const runtimeEnv = {
+    ...process.env,
+    ENVIO_PG_HOST: "127.0.0.1",
+    ENVIO_PG_PORT: "54329",
+    ENVIO_PG_USER: "gusd",
+    ENVIO_PG_PASSWORD: "gusd",
+    ENVIO_PG_DATABASE: "gusd",
+    ENVIO_PG_SCHEMA: opts.schema,
+    ENVIO_PG_SSL_MODE: "false",
+    ENVIO_HASURA: "false",
+    ENVIO_INDEXER_PORT: String(opts.port),
+    INDEXER_CHAIN_ID: "31337",
+    INDEXER_RPC_URL: ANVIL_URL,
+    INDEXER_DEPLOYMENTS_DIR: path.join(prepareContractsCopy(), "deployments"),
+    LOG_LEVEL: "warn",
+  };
+  const generated = await spawnAndCollect("pnpm", ["config:generate"], {
     cwd: INDEXER_DIR,
-    env: {
-      ...process.env,
-      DATABASE_URL,
-      DATABASE_SCHEMA: opts.schema,
-      DATABASE_VIEWS_SCHEMA: opts.viewsSchema,
-      INDEXER_RPC_URL_31337: ANVIL_URL,
-      // The suite chain's deployment is the COPY's (fresh Deploy there) — the
-      // repo's deployments/31337.json describes the DEV chain and its
-      // addresses don't exist on the private anvil, which fails the boot-time
-      // canonical-pool derivation (gpuIds() → 0x).
-      INDEXER_DEPLOYMENTS_DIR: path.join(prepareContractsCopy(), "deployments"),
-      PORT: String(opts.port),
-      PONDER_LOG_LEVEL: "warn",
-    },
+    env: runtimeEnv,
+  });
+  if (generated.code !== 0) {
+    throw new Error(`Envio config generation failed (${generated.code}):\n${generated.output}`);
+  }
+  const proc = spawn(path.join(INDEXER_DIR, "node_modules/.bin/envio"), ["start"], {
+    cwd: INDEXER_DIR,
+    env: runtimeEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -209,15 +216,16 @@ export async function spawnPonder(opts: SpawnPonderOptions): Promise<PonderInsta
   const baseUrl = `http://127.0.0.1:${opts.port}`;
   proc.on("close", (code) => {
     if (code !== null && code !== 0) {
-      output += `\n[ponder exited ${code}]\n`;
+      output += `\n[envio exited ${code}]\n`;
     }
   });
-  const instance: PonderInstance = {
+  const instance: EnvioInstance = {
     proc,
     baseUrl,
     schema: opts.schema,
-    viewsSchema: opts.viewsSchema,
-    output,
+    get output() {
+      return output;
+    },
     kill: async () => {
       if (proc.exitCode !== null || proc.signalCode !== null) return;
       proc.kill("SIGTERM");
@@ -231,13 +239,14 @@ export async function spawnPonder(opts: SpawnPonderOptions): Promise<PonderInsta
   await waitFor(
     async () => {
       try {
-        const res = await fetch(`${baseUrl}/ready`);
-        return res.ok;
+        const res = await fetch(`${baseUrl}/metrics`);
+        const metrics = await res.text();
+        return res.ok && /envio_progress_ready\{chainId="31337"\}\s+1/.test(metrics);
       } catch {
         return false;
       }
     },
-    { timeoutMs: 180_000, label: `ponder ready (${opts.schema})`, failOutput: () => instance.output },
+    { timeoutMs: 180_000, label: `envio ready (${opts.schema})`, failOutput: () => instance.output },
   );
   const waiter = new pg.Client({ connectionString: DATABASE_URL });
   await waiter.connect();
@@ -249,36 +258,32 @@ export async function spawnPonder(opts: SpawnPonderOptions): Promise<PonderInsta
   return instance;
 }
 
-/** Ponder's checkpoint composite is {timestamp(10)}{chainId(16)}{blockNumber(16)}…,
- *  the blockNumber segment being a zero-padded decimal. The 999…999 sentinel
- *  ("indexed through infinity") parses as 0 here — which is exactly the state
- *  /ready fires in on anvil, see waitForCaughtUp. */
-export async function ponderProcessedBlock(client: pg.Client, schema: string): Promise<number> {
-  const res = await client.query<{ latest_checkpoint: string }>(
-    `select latest_checkpoint from "${schema}"._ponder_checkpoint where chain_name = 'anvil'`,
-  );
-  const checkpoint = res.rows[0]?.latest_checkpoint ?? "";
-  if (checkpoint.length < 42) return -1;
-  return Number(checkpoint.slice(26, 42));
+/** Reads Envio's committed progress metric for the private chain. */
+export async function envioProcessedBlock(inst: EnvioInstance): Promise<number> {
+  const response = await fetch(`${inst.baseUrl}/metrics`);
+  if (!response.ok) return -1;
+  const metrics = await response.text();
+  const match = metrics.match(/envio_progress_block\{chainId="31337"\}\s+([^\s]+)/);
+  return match ? Number(match[1]) : -1;
 }
 
 /**
- * /ready is NOT a data barrier on anvil: with no finality ponder's backfill
+ * Readiness alone is not a data barrier on Anvil: with no finality Envio's backfill
  * range is [startBlock, finalized] = [0, 0] — a no-op — and ready fires while
  * live indexing has not yet walked to the boot head (observed: ready with
  * zero rows, then history indexed over the following seconds). So: mine one
- * empty block and wait until ponder's live checkpoint passes it. Live
+ * empty block and wait until Envio's committed progress passes it. Live
  * indexing walks blocks sequentially, so passing the new head guarantees the
  * entire history landed in this instance's schema.
  */
-export async function waitForCaughtUp(inst: PonderInstance, client: pg.Client): Promise<void> {
+export async function waitForCaughtUp(inst: EnvioInstance, _client: pg.Client): Promise<void> {
   await anvilRpc("evm_mine", []);
   const head = Number(BigInt(await anvilRpc<string>("eth_blockNumber", [])));
   await waitFor(
-    async () => (await ponderProcessedBlock(client, inst.schema)) >= head,
+    async () => (await envioProcessedBlock(inst)) >= head,
     {
       timeoutMs: 120_000,
-      label: `ponder caught up to mined head ${head} (${inst.schema})`,
+      label: `envio caught up to mined head ${head} (${inst.schema})`,
       failOutput: () => inst.output,
     },
   );
@@ -304,26 +309,32 @@ export async function connectPg(): Promise<pg.Client> {
 
 export type TableDump = Record<string, string>;
 
+const ENTITY_TABLES = [
+  "GpuAsset", "GpuCreated", "GpuFill", "GpuIssued", "GpuToken", "GusdMinted",
+  "GusdRedeemed", "HookPoolRegistered", "HookSwap", "OraclePriceOverridden",
+  "OraclePricePublished", "OraclePublisherAccepted", "OracleState", "PmDonate",
+  "PmLiquidityModified", "PmPoolInitialized", "PmSwap", "Pool",
+  "PoolLiquidityPosition", "PoolStatsHourly", "PosmPositionModified", "ProtocolStats",
+  "ProtocolStatsDaily", "RevenueDistributed", "RouterBuy", "RouterSell",
+  "SgusdDeposited", "SgusdSeeded", "SgusdVault", "SgusdWithdrawn",
+  "StableMintViaSwap", "StableRedeemViaSwap", "TokenTransfer", "UserEvent", "Wallet",
+  "WalletBalance", "WalletCostBasis", "WalletVaultPosition",
+] as const;
+
 /** Dumps every chain-derived table of a deployment schema to a canonical
  *  (key-sorted, row-sorted) JSON string per table — the byte-identical
- *  comparison substrate for the determinism tests. Ponder's own bookkeeping
- *  (_ponder_meta/_ponder_checkpoint/_reorg__*) is excluded: it tracks
+ *  comparison substrate for the determinism tests. Envio's bookkeeping is
+ *  excluded because it tracks
  *  process progress, not chain-derived state. */
 export async function dumpSchema(client: pg.Client, schema: string): Promise<TableDump> {
-  const tables = await client.query<{ table_name: string }>(
-    `select table_name from information_schema.tables
-     where table_schema = $1 and table_type = 'BASE TABLE'
-       and table_name not like '%ponder%' and table_name not like '%reorg%'`,
-    [schema],
-  );
   const dump: TableDump = {};
-  for (const { table_name } of tables.rows) {
-    const rows = await client.query(`select * from "${schema}"."${table_name}"`);
+  for (const tableName of ENTITY_TABLES) {
+    const rows = await client.query(`select * from "${schema}"."${tableName}"`);
     const canonical = rows.rows
       .map((r) => canonicalJson(r))
       .sort()
       .join("\n");
-    dump[table_name] = canonical;
+    dump[tableName] = canonical;
   }
   return dump;
 }
@@ -359,20 +370,10 @@ export function expectDumpsEqual(a: TableDump, b: TableDump, label: string): voi
   }
 }
 
-/** The view schema's stored definition for one view — which deployment the
- *  views currently re-point to. */
-export async function viewDefinition(client: pg.Client, viewsSchema: string, view: string): Promise<string> {
-  const res = await client.query<{ definition: string }>(
-    `select definition from pg_views where schemaname = $1 and viewname = $2`,
-    [viewsSchema, view],
-  );
-  return res.rows[0]?.definition ?? "";
-}
-
 /** Tears the suite's world down: processes, tmp contracts copy, scratch schemas. */
 export async function teardown(
   client: pg.Client | null,
-  instances: PonderInstance[],
+  instances: EnvioInstance[],
 ): Promise<void> {
   for (const inst of instances) await inst.kill();
   if (client !== null) await client.end();

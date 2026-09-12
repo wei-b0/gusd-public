@@ -4,14 +4,14 @@
  * contract addresses from wallet-facing surfaces). Revenue arrives at the
  * vault as bare gUSD transfers correlated with RevenueLedger.Distributed.
  */
-import { ponder } from "ponder:registry";
+import { handlers } from "../envio-compat.js";
 import {
   sgusdDeposited,
   sgusdSeeded,
   sgusdVault,
   sgusdWithdrawn,
   tokenTransfer,
-} from "ponder:schema";
+} from "../schema.js";
 import { eventKeys, eventTxHash } from "../events.js";
 import { balanceChanges } from "../projections/balances.js";
 import { recordUserEvent } from "./user-event.js";
@@ -25,7 +25,7 @@ import {
 } from "./wallet-state.js";
 import { zeroSgusdVault } from "./stats.js";
 
-ponder.on("sgUSD:Deposit", async ({ event, context }) => {
+handlers.on("SgUSD:Deposit", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { sender, owner, assets, shares } = event.args;
 
@@ -47,7 +47,7 @@ ponder.on("sgUSD:Deposit", async ({ event, context }) => {
 
   // The seed's Deposit (owner = this sgUSD contract, emitted before Seeded)
   // contributes its SHARES but not its assets — seededGusd counts those once
-  // via Seeded. The event's own delta rides the insert VALUES too: Ponder
+  // via Seeded. The event's own delta rides the insert VALUES too: Envio
   // inserts `values` verbatim on first sight, so an all-zero insert silently
   // drops the first event's delta.
   const isSeedDeposit = owner.toLowerCase() === event.log.address.toLowerCase();
@@ -60,14 +60,14 @@ ponder.on("sgUSD:Deposit", async ({ event, context }) => {
       sharesMinted: shares,
       depositCount: 1,
     })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       depositsGusd: row.depositsGusd + depositsDelta,
       sharesMinted: row.sharesMinted + shares,
       depositCount: row.depositCount + 1,
     }));
 });
 
-ponder.on("sgUSD:Withdraw", async ({ event, context }) => {
+handlers.on("SgUSD:Withdraw", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { sender, receiver, owner, assets, shares } = event.args;
 
@@ -95,14 +95,14 @@ ponder.on("sgUSD:Withdraw", async ({ event, context }) => {
       sharesBurned: shares,
       withdrawCount: 1,
     })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       withdrawsGusd: row.withdrawsGusd + assets,
       sharesBurned: row.sharesBurned + shares,
       withdrawCount: row.withdrawCount + 1,
     }));
 });
 
-ponder.on("sgUSD:Seeded", async ({ event, context }) => {
+handlers.on("SgUSD:Seeded", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { assets } = event.args;
 
@@ -111,12 +111,12 @@ ponder.on("sgUSD:Seeded", async ({ event, context }) => {
   await context.db
     .insert(sgusdVault)
     .values({ ...zeroSgusdVault(keys.chainId), seededGusd: assets })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       seededGusd: row.seededGusd + assets,
     }));
 });
 
-ponder.on("sgUSD:Transfer", async ({ event, context }) => {
+handlers.on("SgUSD:Transfer", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { from, to, value } = event.args;
   await context.db

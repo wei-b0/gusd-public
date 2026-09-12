@@ -10,8 +10,8 @@
  * principalContributedGusd (same amount, same tx — direct and in-swap
  * issuance both flow through notePrincipal).
  */
-import { ponder } from "ponder:registry";
-import { gpuAssets } from "ponder:schema";
+import { handlers } from "../envio-compat.js";
+import { gpuAssets } from "../schema.js";
 import { eventKeys } from "../events.js";
 
 /** Fetches the asset row or fails loudly — every vault event postdates
@@ -29,7 +29,7 @@ async function requireAsset(
   return asset;
 }
 
-ponder.on("GPUMarketLiquidity:BidCredited", async ({ event, context }) => {
+handlers.on("GPUMarketLiquidity:BidCredited", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, amount } = event.args;
   const asset = await requireAsset(context, keys.chainId, gpuId, "BidCredited");
@@ -38,7 +38,7 @@ ponder.on("GPUMarketLiquidity:BidCredited", async ({ event, context }) => {
   });
 });
 
-ponder.on("GPUMarketLiquidity:GpuNoted", async ({ event, context }) => {
+handlers.on("GPUMarketLiquidity:GpuNoted", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, amount } = event.args;
   const asset = await requireAsset(context, keys.chainId, gpuId, "GpuNoted");
@@ -47,7 +47,7 @@ ponder.on("GPUMarketLiquidity:GpuNoted", async ({ event, context }) => {
   });
 });
 
-ponder.on("GPUMarketLiquidity:InventoryPulled", async ({ event, context }) => {
+handlers.on("GPUMarketLiquidity:InventoryPulled", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, token, amount, isGusd } = event.args;
   // token is the pulled currency's address; isGusd is the authoritative flag.

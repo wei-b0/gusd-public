@@ -2,9 +2,8 @@
   "extends": "./tsconfig.json",
   "include": [
     "src",
-    "ponder.config.ts",
-    "ponder.schema.ts",
-    "ponder-env.d.ts"
+    "scripts",
+    "envio-env.d.ts"
   ],
   "exclude": [
     "node_modules",

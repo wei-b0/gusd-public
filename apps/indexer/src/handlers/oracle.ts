@@ -4,18 +4,18 @@
  * display prices, which come from the offchain benchmark pipeline. The
  * oracle's `updatedAt` is the contract's staleness input, not a market tick.
  */
-import { ponder } from "ponder:registry";
+import { handlers } from "../envio-compat.js";
 import {
   oraclePriceOverridden,
   oraclePricePublished,
   oraclePublisherAccepted,
   oracleState,
   protocolStats,
-} from "ponder:schema";
+} from "../schema.js";
 import { eventKeys } from "../events.js";
 import { zeroProtocolStats } from "./stats.js";
 
-ponder.on("GPUPriceOracle:PricePublished", async ({ event, context }) => {
+handlers.on("GPUPriceOracle:PricePublished", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, price, updatedAt, previousPrice } = event.args;
 
@@ -45,7 +45,7 @@ ponder.on("GPUPriceOracle:PricePublished", async ({ event, context }) => {
     });
 });
 
-ponder.on("GPUPriceOracle:PriceOverridden", async ({ event, context }) => {
+handlers.on("GPUPriceOracle:PriceOverridden", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { gpuId, price, updatedAt } = event.args;
 
@@ -79,7 +79,7 @@ ponder.on("GPUPriceOracle:PriceOverridden", async ({ event, context }) => {
     });
 });
 
-ponder.on("GPUPriceOracle:PublisherAccepted", async ({ event, context }) => {
+handlers.on("GPUPriceOracle:PublisherAccepted", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { previousPublisher, newPublisher } = event.args;
 
@@ -95,7 +95,7 @@ ponder.on("GPUPriceOracle:PublisherAccepted", async ({ event, context }) => {
     .onConflictDoUpdate({ publisher: newPublisher });
 });
 
-ponder.on("GPUPriceOracle:MaxDeviationBpsSet", async ({ event, context }) => {
+handlers.on("GPUPriceOracle:MaxDeviationBpsSet", async ({ event, context }) => {
   const { bps } = event.args;
   await context.db
     .insert(protocolStats)

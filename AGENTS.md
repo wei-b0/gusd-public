@@ -20,7 +20,7 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 | `apps/contracts` | Foundry: GUSD, GPUIssuance, GPUMarketLiquidity, GPUToken, RevenueLedger, sgUSD, GPUHook, GpuRouter, GpuQuoter, StableRouter, `GPUPriceOracle`. `deployments/<chainId>.json` is the one shared address record |
 | `apps/oracle` | Fastify price API: collectors → benchmark engine → `/v1/prices*`, `/v1/providers`, `/v1/health`, WS `/v1/stream`, SSE `/v1/stream/sse`. Also proxies the indexer as `/v1/protocol/*` (registered only when `INDEXER_SCHEMA` is set) |
 | `apps/publisher` | oracle → `GPUPriceOracle.publish()` loop, gated by PROTOCOL.md §11 |
-| `apps/indexer` | Ponder: chain events → `gusd_index_*` Postgres schemas. Its HTTP surface stays private to the compose network — reachable only through the oracle's `/v1/protocol` proxy |
+| `apps/indexer` | Envio HyperIndex: chain events → `gusd_index_envio_<env>_v<n>` Postgres schemas; config + ABI JSON + address constants generated at boot from the deployment record (`scripts/generate-config.ts`). Chain 4663 via HyperSync (`ENVIO_API_TOKEN` required, optional RPC fallback), 31337/46630 RPC-only; Hasura disabled, healthz/metrics on :9898. Its HTTP surface stays private to the compose network — reachable only through the oracle's `/v1/protocol` proxy |
 | `apps/web` | Next.js trading desk — the only component NOT containerized |
 | `packages/db` | Drizzle schema, migrations, append-only triggers, repos |
 | `packages/pricing-engine` | the methodology: pure `computeIndex` + versioned, allowlist-validated config |
@@ -31,7 +31,7 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 
 One Postgres serves everything (host port 54329): `public.*` is the oracle's
 market data — the authoritative source for every displayed price — and
-`gusd_index_*` is Ponder's protocol history + derived views. The indexer
+`gusd_index_envio_*` is Envio's protocol history + derived views. The indexer
 never touches `public.*`; benchmark prices never come from the indexer URL.
 
 ## The asset universe
@@ -118,7 +118,7 @@ pnpm install                       # corepack enable for pnpm 11.25.0
 ```
 
 `./start-dev.sh` = fresh Anvil on :8545 + full `Deploy.full` redeploy
-(addresses rotate every run; stale broadcast/cache wiped; ~140 txs) + Ponder
+(addresses rotate every run; stale broadcast/cache wiped; ~140 txs) + Envio
 schema drop + compose backend up with the publisher's oracle address
 injected + web `abi:sync` + a health/4-canonical-pools data barrier.
 `--build` rebuilds the docker images (`gusd-indexer:local`,
@@ -208,10 +208,10 @@ Postgres 16 service.
 - Raw observations are immutable; every derived row carries the inputs that
   produced it (candidates carry receipts; the replay byte-compare audit
   depends on this).
-- Indexer schemas rotate: `gusd_index_<env>_v<n>` (deployment history) +
-  `gusd_index_<env>` (stable views). A schema change = a new `v<n+1>` and a
-  fresh backfill — Ponder cannot resume across a chain reset or schema
-  rotation.
+- Indexer schemas rotate: one dedicated `gusd_index_envio_<env>_v<n>` per
+  deployment (env vars `INDEXER_SCHEMA` / `ENVIO_PG_SCHEMA`). A schema change
+  = a new `v<n+1>` and a fresh backfill — the indexer cannot resume across a
+  chain reset or schema rotation.
 
 ## Docs map
 

@@ -1,0 +1,82 @@
+[
+  {
+    "name": "Minted",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "underlyingIn"
+      },
+      {
+        "type": "uint256",
+        "name": "gusdOut"
+      },
+      {
+        "type": "uint256",
+        "name": "fee"
+      }
+    ]
+  },
+  {
+    "name": "Redeemed",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "from",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "gusdIn"
+      },
+      {
+        "type": "uint256",
+        "name": "underlyingOut"
+      },
+      {
+        "type": "uint256",
+        "name": "fee"
+      }
+    ]
+  },
+  {
+    "name": "FeesUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint16",
+        "name": "mintFeeBps"
+      },
+      {
+        "type": "uint16",
+        "name": "redeemFeeBps"
+      }
+    ]
+  },
+  {
+    "name": "Transfer",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "from",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "value"
+      }
+    ]
+  }
+]

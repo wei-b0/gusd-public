@@ -58,7 +58,7 @@ export interface LoadedDeployment {
   startBlock: number;
   canonicalPools: CanonicalPool[];
   /** Where the pool ids came from — for the boot log. */
-  poolsSource: "deployment-json" | "derived-onchain";
+  poolsSource: "deployment-json" | "derived-onchain" | "offline-codegen";
 }
 
 interface RawDeployment {
@@ -248,6 +248,7 @@ function canonicalPoolsFromJson(raw: RawDeployment, chainId: number): CanonicalP
 export async function loadDeployment(
   chain: IndexerChain,
   env: NodeJS.ProcessEnv = process.env,
+  discoverPools = true,
 ): Promise<LoadedDeployment> {
   const deploymentsDir = findDeploymentsDir(env);
   const raw = loadDeploymentJson(chain.id, deploymentsDir);
@@ -274,10 +275,18 @@ export async function loadDeployment(
   const fromJson = canonicalPoolsFromJson(raw, chain.id);
   let canonicalPools: CanonicalPool[];
   let poolsSource: LoadedDeployment["poolsSource"];
-  if (fromJson !== null && fromJson.length > 0) {
+  if (fromJson !== null && (fromJson.length > 0 || chain.id === 31337)) {
     canonicalPools = fromJson;
     poolsSource = "deployment-json";
+  } else if (!discoverPools) {
+    canonicalPools = [];
+    poolsSource = "offline-codegen";
   } else {
+    if (!chain.rpcUrl) {
+      throw new Error(
+        `deployments/${chain.id}.json must include canonical pools when INDEXER_RPC_URL is unset`,
+      );
+    }
     const client = createPublicClient({ transport: http(chain.rpcUrl) });
     canonicalPools = await deriveCanonicalPools(client, addresses);
     poolsSource = "derived-onchain";

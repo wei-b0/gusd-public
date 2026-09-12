@@ -45,3 +45,8 @@ deployments
 broadcast
 
 charting_library
+apps/indexer/config.yaml
+apps/indexer/generated
+apps/indexer/src/runtime-config.ts
+apps/indexer/.envio
+apps/indexer/envio-env.d.ts

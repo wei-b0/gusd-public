@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # start-dev.sh — the whole local posture in one command: fresh Anvil, a full
-# Deploy.full redeploy (addresses rotate every run), stale Ponder schemas
+# Deploy.full redeploy (addresses rotate every run), stale indexer schemas
 # dropped, and the compose backend up with the publisher's oracle address
 # injected. The web dev server stays manual (command printed at the end).
 #
@@ -60,7 +60,7 @@ env_var() { # env_var NAME DEFAULT
 }
 ORACLE_PORT="$(env_var ORACLE_PORT 8080)"
 export ORACLE_PORT
-VIEWS_BASE="$(env_var INDEXER_VIEWS_SCHEMA gusd_index_docker)"
+INDEXER_SCHEMA="$(env_var INDEXER_SCHEMA gusd_index_envio_docker_v1)"
 
 wait_until() { # wait_until DESC TIMEOUT_S CMD... — poll every 2s
   local desc="$1" timeout="$2" start
@@ -204,20 +204,16 @@ ORACLE_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.arg
 USDT_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.stables[1])' "$RECORD")
 log "deployed — oracle $ORACLE_ADDR"
 
-# --- 6. postgres first, then drop the Ponder schemas ------------------------------------
+# --- 6. postgres first, then reset the selected indexer schemas --------------------------
 log "starting postgres..."
 docker compose -f "$COMPOSE" up -d postgres >>"$LOG_DIR/stack.log" 2>&1 \
   || { tail -n 40 "$LOG_DIR/stack.log" >&2 || true; die "postgres failed to start" 5; }
 wait_until "postgres healthy" 60 container_healthy gusd-postgres \
   || { docker logs --tail 40 gusd-postgres >&2 || true; die "postgres never went healthy" 5; }
 
-# Dynamic drop: every schema in the views family (<base>%) plus ponder_sync.
-# Fixed names rot (the volume has held v1..v3 rotations); the prefix never
-# matches public/drizzle (the drizzle journal lives in `drizzle` — dropping it
-# would silently re-run every migration).
 schema_list=$(docker exec gusd-postgres psql -U gusd -d gusd -Atc \
   "SELECT string_agg(quote_ident(nspname), ', ') FROM pg_namespace
-   WHERE nspname = 'ponder_sync' OR nspname LIKE '${VIEWS_BASE}%';")
+   WHERE nspname = '${INDEXER_SCHEMA}' OR nspname = 'ponder_sync' OR nspname LIKE 'gusd_index_docker%';")
 if [ -n "$schema_list" ]; then
   log "dropping indexer schemas: $schema_list"
   # client_min_messages=warning keeps the ~100-line CASCADE notice spam off
@@ -230,7 +226,7 @@ else
 fi
 other_schemas=$(docker exec gusd-postgres psql -U gusd -d gusd -Atc \
   "SELECT string_agg(nspname, ', ') FROM pg_namespace
-   WHERE nspname LIKE 'gusd_index_%' AND nspname NOT LIKE '${VIEWS_BASE}%' AND nspname <> 'ponder_sync';")
+   WHERE nspname LIKE 'gusd_index_%' AND nspname <> '${INDEXER_SCHEMA}' AND nspname NOT LIKE 'gusd_index_docker%' AND nspname <> 'ponder_sync';")
 if [ -n "$other_schemas" ]; then
   log "note: leaving host-dev schemas untouched: $other_schemas"
 fi
@@ -258,7 +254,7 @@ if ! pnpm --filter @gusd/web abi:sync; then
 fi
 
 # --- 9. health + data barrier --------------------------------------------------------------------
-log "waiting for oracle + indexer health (180s cap; Ponder backfills from block 0)..."
+log "waiting for oracle + indexer health (180s cap; Envio backfills from the deployment block)..."
 if ! wait_until "oracle health" 180 oracle_healthy; then
   echo "[start-dev] oracle health timeout — last 40 lines per service:" >&2
   docker compose -f "$COMPOSE" logs --tail 40 indexer oracle db-migrate >&2 || true

@@ -4,13 +4,13 @@
  * carries the split amounts and is the correlated accrual signal (added to
  * sgusd_vault.revenueGusd here).
  */
-import { ponder } from "ponder:registry";
-import { protocolStats, revenueDistributed, sgusdVault } from "ponder:schema";
+import { handlers } from "../envio-compat.js";
+import { protocolStats, revenueDistributed, sgusdVault } from "../schema.js";
 import { eventKeys } from "../events.js";
 import { bumpDailyBucket } from "./buckets.js";
 import { zeroProtocolStats, zeroSgusdVault } from "./stats.js";
 
-ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
+handlers.on("RevenueLedger:Distributed", async ({ event, context }) => {
   const keys = eventKeys(event, context.chain.id);
   const { amount, toVault, toTreasury } = event.args;
 
@@ -26,7 +26,7 @@ ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
       revenueToVaultGusd: toVault,
       revenueToTreasuryGusd: toTreasury,
     })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       revenueDistributedGusd: row.revenueDistributedGusd + amount,
       revenueToVaultGusd: row.revenueToVaultGusd + toVault,
       revenueToTreasuryGusd: row.revenueToTreasuryGusd + toTreasury,
@@ -35,7 +35,7 @@ ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
   await context.db
     .insert(sgusdVault)
     .values({ ...zeroSgusdVault(keys.chainId), revenueGusd: toVault })
-    .onConflictDoUpdate((row) => ({
+    .onConflictDoUpdate((row: any) => ({
       revenueGusd: row.revenueGusd + toVault,
     }));
 
@@ -44,7 +44,7 @@ ponder.on("RevenueLedger:Distributed", async ({ event, context }) => {
   });
 });
 
-ponder.on("RevenueLedger:SplitUpdated", async ({ event, context }) => {
+handlers.on("RevenueLedger:SplitUpdated", async ({ event, context }) => {
   const { sgUSDBps } = event.args;
   await context.db
     .insert(protocolStats)
@@ -52,7 +52,7 @@ ponder.on("RevenueLedger:SplitUpdated", async ({ event, context }) => {
     .onConflictDoUpdate({ sgusdSplitBps: sgUSDBps });
 });
 
-ponder.on("RevenueLedger:RecipientsUpdated", async ({ event, context }) => {
+handlers.on("RevenueLedger:RecipientsUpdated", async ({ event, context }) => {
   const { vault, treasury } = event.args;
   await context.db
     .insert(protocolStats)

@@ -11,7 +11,7 @@ apps/contracts   Foundry: GUSD, GPUIssuance, GPUPriceOracle, routers, hook,
                  deployments/<chainId>.json (the shared address record)
 apps/oracle      Fastify price API — collectors → benchmark → /v1/prices*
 apps/publisher   oracle → GPUPriceOracle publish loop (methodology-gated)
-apps/indexer     Ponder — chain events → gusd_index_* Postgres schemas
+apps/indexer     Envio HyperIndex — chain events → native Postgres entities
 apps/web         Next.js trading desk (the only component NOT containerized)
 packages/        db (drizzle), pricing-engine, collectors, normalize, types …
 infra/           docker-compose stack + env files
@@ -20,7 +20,7 @@ infra/           docker-compose stack + env files
 ## The stack
 
 `infra/docker-compose.yml` is the whole backend. One Postgres serves both the
-oracle's `public.*` market data and Ponder's `gusd_index_*` schemas; Ponder's
+oracle's `public.*` market data and Envio's `gusd_index_envio_*` schemas; Envio's
 HTTP surface stays private to the compose network and is reachable only
 through the oracle's `/v1/protocol` proxy.
 
@@ -28,7 +28,7 @@ through the oracle's `/v1/protocol` proxy.
 | ----------- | ------------------------------------------------------------- | --------- |
 | postgres    | the one Postgres                                              | 54329     |
 | db-migrate  | one-shot drizzle migrations (runs on every `up`, journaled)    | —         |
-| indexer     | Ponder; reads `deployments/<id>.json` at boot (mounted ro)     | — private |
+| indexer     | Envio; generates config from `deployments/<id>.json` at boot  | — private |
 | oracle      | `/v1/prices*`, `/v1/protocol` proxy, `/v1/health`              | 8080      |
 | publisher   | publishes the benchmark to `GPUPriceOracle` (chain by default) | —         |
 
@@ -101,12 +101,12 @@ curl -s http://127.0.0.1:8080/v1/health | head -c 200
 
 ## Redeploy ritual (fresh / reset chain)
 
-The chain was reset under an existing index? Drop Ponder's state first —
-it cannot resume across a chain reset:
+The chain was reset under an existing index? Drop the selected Envio schema
+first; an indexer cannot resume checkpoints across a chain reset:
 
 ```sh
 docker exec gusd-postgres psql -U gusd -d gusd \
-  -c "DROP SCHEMA gusd_index_docker_v1, gusd_index_docker, ponder_sync CASCADE;"
+  -c 'DROP SCHEMA gusd_index_envio_docker_v1 CASCADE;'
 ```
 
 Then: redeploy (step above) → `pnpm stack:up` → `docker compose restart

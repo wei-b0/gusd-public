@@ -3,7 +3,7 @@ import { config } from "@gusd/eslint-config/base";
 export default [
   ...config,
   {
-    ignores: [".ponder/**", "generated/**", "ponder-env.d.ts"],
+    ignores: [".envio/**", "envio-env.d.ts", "src/runtime-config.ts"],
   },
   {
     // Core `no-undef` cannot see TypeScript: the house babel parser strips

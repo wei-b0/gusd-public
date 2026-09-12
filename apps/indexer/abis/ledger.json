@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Distributed",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "amount"
+      },
+      {
+        "type": "uint256",
+        "name": "toVault"
+      },
+      {
+        "type": "uint256",
+        "name": "toTreasury"
+      }
+    ]
+  },
+  {
+    "name": "SplitUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint16",
+        "name": "sgUSDBps"
+      }
+    ]
+  },
+  {
+    "name": "RecipientsUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "vault"
+      },
+      {
+        "type": "address",
+        "name": "treasury"
+      }
+    ]
+  }
+]
