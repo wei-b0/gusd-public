@@ -10,7 +10,7 @@
  *               Bridging and the en-route conversion are machinery: the
  *               ledger's route row and the bridge lane, never a second
  *               interface. Its tab also carries the mint activity ledger.
- *   Earn with sGUSD — liquid gUSD becomes earning capital. Its tab also
+ *   Earn with sgUSD — liquid gUSD becomes earning capital. Its tab also
  *               carries the earning ledger.
  *
  * Minting never converts market positions at the Index — that model does
@@ -63,7 +63,7 @@ export default function GusdPage() {
 
       <p className="max-w-prose text-[12.5px] leading-relaxed text-primary">
         Every GPU market settles in gUSD. gUSD is liquid protocol capital — it acquires GPU
-        assets, receives the proceeds when positions sell, and deploys into sGUSD to earn. New
+        assets, receives the proceeds when positions sell, and deploys into sgUSD to earn. New
         gUSD enters through the desk below — from any supported stable, already here or
         bridged in from another chain; it exits by redeeming back.
       </p>
@@ -100,7 +100,7 @@ export default function GusdPage() {
           {/* Earn — staking and its ledger */}
           <div
             role="tabpanel"
-            aria-label="Earn with sGUSD"
+            aria-label="Earn with sgUSD"
             hidden={desk !== "earn"}
             className="mt-6 space-y-6"
           >
@@ -162,7 +162,7 @@ function ModelStrip({ connected }: { connected: boolean }) {
         desc="The settlement unit. Acquires GPU assets and deploys into earning."
       />
       <CapitalCell
-        token="sGUSD"
+        token="sgUSD"
         role="Earning capital"
         desc={connected ? "gUSD deployed in the earning layer. Accrues continuously." : "gUSD deployed in the earning layer."}
       />
@@ -171,7 +171,7 @@ function ModelStrip({ connected }: { connected: boolean }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 02 — Earn with sGUSD                                                */
+/* 02 — Earn with sgUSD                                                */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -234,10 +234,9 @@ function EarnDesk() {
     if (active === null && settled !== null) void earnPort.refresh();
   }, [active, settled, earnPort]);
 
-  // Stake presets off the liquid gUSD balance; unstake is assets-denominated,
-  // so its base is the earning position valued at the current share price.
-  const presetBaseValue =
-    direction === "stake" ? onchain.gUsd : onchain.sGusd * (earn.rate ?? 0);
+  // Stake presets off the liquid gUSD balance; unstake is shares-denominated,
+  // so its base is the share balance itself.
+  const presetBaseValue = direction === "stake" ? onchain.gUsd : onchain.sGusd;
   const presetBase = (frac: number) =>
     String(Math.floor(presetBaseValue * frac * 1e6) / 1e6);
 
@@ -246,7 +245,7 @@ function EarnDesk() {
     setSettled(null);
     try {
       const record =
-        direction === "stake" ? await earnPort.deposit(amount) : await earnPort.withdraw(amount);
+        direction === "stake" ? await earnPort.deposit(amount) : await earnPort.redeem(amount);
       setSettled(record);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The transaction didn't start.");
@@ -280,7 +279,7 @@ function EarnDesk() {
 
         <div className="mt-3.5 border-t border-rule pt-3.5">
           <p className="text-[11.5px] leading-relaxed text-dim">
-            gUSD is liquid protocol capital; sGUSD is that same capital deployed into the
+            gUSD is liquid protocol capital; sgUSD is that same capital deployed into the
             earning layer. Staked gUSD earns continuously and unstakes back at the prevailing
             rate.
           </p>
@@ -316,13 +315,13 @@ function EarnDesk() {
         {/* Amount */}
         <div className="mt-3.5 flex items-baseline justify-between">
           <span className="slug text-dim">
-            Amount · <Gusd />
+            Amount · {direction === "stake" ? <Gusd /> : <SGusd />}
           </span>
           {walletBound && (
             <span className="num text-[10.5px] text-dim">
               {direction === "stake"
                 ? `liquid ${fmtGusdLedger(onchain.gUsd)} gUSD`
-                : `earning ${fmtGusdLedger(onchain.sGusd)} sGUSD`}
+                : `earning ${fmtGusdLedger(onchain.sGusd)} sgUSD`}
             </span>
           )}
         </div>
@@ -332,7 +331,7 @@ function EarnDesk() {
             inputMode="decimal"
             value={amountText}
             onChange={(e) => setAmountText(e.target.value.replace(/[^0-9.]/g, ""))}
-            aria-label="Amount in gUSD"
+            aria-label={direction === "stake" ? "Amount in gUSD" : "Amount in sgUSD"}
             className="num w-full bg-transparent px-3 py-2.5 text-[15px] text-data outline-none"
           />
           <div className="flex items-stretch border-l border-rule">
@@ -350,24 +349,29 @@ function EarnDesk() {
           </div>
         </div>
 
-        {/* Projection ledger — vault previews are execution-identical */}
+        {/* Projection ledger — vault previews are execution-identical. The
+            input names the leg the wallet signs: gUSD on stake, sgUSD
+            shares on unstake; the quote prices the other leg. */}
         <dl className="mt-3.5 space-y-1.5 text-[12.5px]">
           <LedgerRow
-            label={direction === "stake" ? "You stake" : "You unstake"}
-            value={validAmount ? `${fmtGusdLedger(amount)} gUSD` : "—"}
+            label={direction === "stake" ? "You stake" : "Shares burned"}
+            value={
+              validAmount
+                ? `${fmtGusdLedger(amount)} ${direction === "stake" ? "gUSD" : "sgUSD"}`
+                : "—"
+            }
           />
           <LedgerRow
-            label={direction === "stake" ? "You receive" : "Shares burned"}
-            value={quote ? `${fmtGusdLedger(quote.shares)} sGUSD` : "—"}
-            strong={direction === "stake"}
+            label="You receive"
+            value={
+              quote
+                ? direction === "stake"
+                  ? `${fmtGusdLedger(quote.shares)} sgUSD`
+                  : `${fmtGusdLedger(quote.assets)} gUSD`
+                : "—"
+            }
+            strong
           />
-          {direction === "unstake" && (
-            <LedgerRow
-              label="You receive"
-              value={validAmount ? `${fmtGusdLedger(amount)} gUSD` : "—"}
-              strong
-            />
-          )}
         </dl>
 
         {earn.seeded === false && (
@@ -665,7 +669,7 @@ function EarningLedger() {
 /* ------------------------------------------------------------------ */
 
 /** The indexed vault-size cells for the Earn desk's public block — gUSD
- *  deployed by the vault, protocol revenue accrued to it, and the sGUSD
+ *  deployed by the vault, protocol revenue accrued to it, and the sgUSD
  *  supply. Inert without the indexer: all print "—" and take no space in
  *  mock mode. */
 function EarnVaultCells() {
@@ -689,7 +693,7 @@ function EarnVaultCells() {
       />
       <Cell
         label={<><SGusd /> supply</>}
-        value={supply === null ? "—" : `${fmtUnitsMax(supply)} sGUSD`}
+        value={supply === null ? "—" : `${fmtUnitsMax(supply)} sgUSD`}
         sub="minted − burned shares"
       />
     </>

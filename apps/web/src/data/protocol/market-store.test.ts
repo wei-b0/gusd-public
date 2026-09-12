@@ -146,7 +146,12 @@ function fakeClient(): ProtocolClient & { calls: string[] } {
 async function freshStore(client: ProtocolClient) {
   vi.resetModules();
   const mod = await import("./market-store");
-  return { mod, store: new mod.ProtocolMarketStore(client, () => 1_700_000_000_000) };
+  // `canFetch: () => true` re-arms the lazy fetches the browser-only gate
+  // defaults off in node — these tests exercise exactly those paths.
+  return {
+    mod,
+    store: new mod.ProtocolMarketStore(client, () => 1_700_000_000_000, () => true),
+  };
 }
 
 beforeEach(() => {

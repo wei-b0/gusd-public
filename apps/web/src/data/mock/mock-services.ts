@@ -445,7 +445,7 @@ class EarnPortImpl {
     return { rate: null, seeded: null, updatedAt: null };
   }
 
-  async quote(_direction: EarnDirection, _gUsd: number): Promise<EarnQuote | null> {
+  async quote(_direction: EarnDirection, _amount: number): Promise<EarnQuote | null> {
     return null;
   }
 
@@ -453,7 +453,7 @@ class EarnPortImpl {
     throw new Error(NO_WALLET);
   }
 
-  async withdraw(): Promise<never> {
+  async redeem(): Promise<never> {
     throw new Error(NO_WALLET);
   }
 

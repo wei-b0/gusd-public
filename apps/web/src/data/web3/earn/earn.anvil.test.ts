@@ -9,14 +9,14 @@ import { approveSpec } from "../approvals";
 import { contractReads } from "../reads";
 import { contractReadsWithIndexer } from "../reads-protocol";
 import { mintSpec, planMintApproval } from "../gusd/actions";
-import { depositSpec, planEarnApproval, withdrawSpec } from "./actions";
+import { depositSpec, planEarnApproval, redeemSpec } from "./actions";
 
 /**
  * The earn desk's flows verified against the deployed protocol. The vault
  * is a fee-free ERC-4626 over gUSD, so the honest assertion is the
  * round-trip: the sgUSD minted by deposit equals previewDeposit, and the
- * assets-denominated withdraw pays out exactly what previewWithdraw
- * promised while burning fewer shares once the share price has grown.
+ * shares-denominated redeem pays out exactly what previewRedeem promised
+ * while burning exactly the shares asked once the share price has grown.
  *
  * The share price moves the way production revenue moves it — gUSD lands
  * in the RevenueLedger, distribute() splits it to the vault.
@@ -72,7 +72,7 @@ const DISTRIBUTE_ABI = [
   },
 ] as const;
 
-d("sGUSD stake/unstake against the deployed protocol", () => {
+d("sgUSD stake/unstake against the deployed protocol", () => {
   const chain = getActiveChain();
   const wallet: WalletClient = createWalletClient({
     account: privateKeyToAccount(ANVIL_KEY_0),
@@ -144,7 +144,7 @@ d("sGUSD stake/unstake against the deployed protocol", () => {
     expect(indexed.seeded).toBe(direct.seeded);
   }, 30_000);
 
-  it("grows the share price through the ledger, then unstakes assets-denominated", async () => {
+  it("grows the share price through the ledger, then unstakes shares-denominated", async () => {
     const contracts = getContracts();
 
     // Production revenue path, compressed: gUSD lands in the ledger,
@@ -170,22 +170,22 @@ d("sGUSD stake/unstake against the deployed protocol", () => {
     const rateRaw = await contracts.sgusd.read.convertToAssets([1_000_000n]);
     expect(rateRaw > 1_000_000n).toBe(true);
 
-    // Unstake 500 gUSD: fewer shares burned than at the seed price, and
-    // the gUSD paid out is exactly the assets figure — approval-free.
-    const assets = 500_000_000n;
-    const sharesNeeded = await contracts.sgusd.read.previewWithdraw([assets]);
-    expect(sharesNeeded).toBeLessThan(assets);
+    // Unstake 400 shares: the gUSD paid out is exactly the previewed
+    // figure and the shares burned are the input — approval-free.
+    const shares = 400_000_000n;
+    const assetsOut = await contracts.sgusd.read.previewRedeem([shares]);
+    expect(assetsOut > shares).toBe(true);
 
     const gusdBefore = await contracts.gusd.read.balanceOf([owner]);
     const sgBefore = await contracts.sgusd.read.balanceOf([owner]);
 
-    const { hash } = await withdrawSpec(assets, owner).execute(wallet);
+    const { hash } = await redeemSpec(shares, owner).execute(wallet);
     const receipt = await waitForTransactionReceipt(getPublicClient(), { hash });
     expect(receipt.status).toBe("success");
 
     const gusdAfter = await contracts.gusd.read.balanceOf([owner]);
     const sgAfter = await contracts.sgusd.read.balanceOf([owner]);
-    expect(gusdAfter - gusdBefore).toBe(assets);
-    expect(sgBefore - sgAfter).toBe(sharesNeeded);
+    expect(gusdAfter - gusdBefore).toBe(assetsOut);
+    expect(sgBefore - sgAfter).toBe(shares);
   }, 30_000);
 });

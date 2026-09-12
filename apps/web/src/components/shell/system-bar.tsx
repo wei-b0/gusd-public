@@ -163,6 +163,8 @@ function Clock() {
   return (
     <span className="num hidden text-[12px] text-data sm:inline" suppressHydrationWarning>
       {now == null ? "--:--:--" : fmtClock(now)}
+      {/* The clock reads UTC — say so, quietly. */}
+      <span className="ml-1 text-[10px] text-dim">UTC</span>
     </span>
   );
 }

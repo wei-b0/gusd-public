@@ -30,7 +30,7 @@ The gUSD product consists of several closely related layers:
 - GPU Assets
 - Markets
 - gUSD
-- sGUSD
+- sgUSD
 - Earn
 - Index
 - Data
@@ -131,9 +131,9 @@ The exact monetary, issuance, backing, and accounting mechanics of gUSD belong t
 
 ---
 
-# sGUSD
+# sgUSD
 
-sGUSD is the earning layer associated with gUSD capital.
+sgUSD is the earning layer associated with gUSD capital.
 
 The conceptual user model is:
 
@@ -142,7 +142,7 @@ GPU assets → market exposure
 
 gUSD       → liquid capital
 
-sGUSD      → earning capital
+sgUSD      → earning capital
 ```
 
 A familiar financial analogy is:
@@ -152,16 +152,16 @@ GPU assets     → investment positions
 
 gUSD           → cash balance
 
-sGUSD          → earning / savings balance
+sgUSD          → earning / savings balance
 ```
 
-sGUSD should not be treated as another GPU asset.
+sgUSD should not be treated as another GPU asset.
 
 Its role is different.
 
-The user-facing product around sGUSD should primarily focus on the action of earning rather than requiring users to understand the token primitive first.
+The user-facing product around sgUSD should primarily focus on the action of earning rather than requiring users to understand the token primitive first.
 
-The exact sources of sGUSD yield and protocol revenue routing are still subject to protocol design.
+The exact sources of sgUSD yield and protocol revenue routing are still subject to protocol design.
 
 The web application must not invent or imply finalized yield mechanics that do not yet exist.
 
@@ -169,13 +169,13 @@ The web application must not invent or imply finalized yield mechanics that do n
 
 # Earn
 
-Earn is the consumer-facing surface for deploying gUSD into sGUSD or related earning mechanisms.
+Earn is the consumer-facing surface for deploying gUSD into sgUSD or related earning mechanisms.
 
 The experience should eventually allow users to understand:
 
 - available gUSD
 - current earning balance
-- sGUSD balance/value
+- sgUSD balance/value
 - representative APY or return information
 - deposit
 - withdraw
@@ -430,7 +430,7 @@ Conceptually it may include:
 - total portfolio value
 - GPU asset positions
 - gUSD balance
-- sGUSD balance/value
+- sgUSD balance/value
 - vault positions
 - liquidity positions
 - unrealized performance
@@ -444,7 +444,7 @@ GPU assets → positions
 
 gUSD       → available capital
 
-sGUSD      → earning capital
+sgUSD      → earning capital
 ```
 
 ---
@@ -689,7 +689,7 @@ Users interested in:
 Users interested in:
 
 - gUSD
-- sGUSD
+- sgUSD
 - yield
 - vaults
 - liquidity

@@ -32,7 +32,7 @@ vi.mock("../contracts", () => ({
     sgusd: {
       read: {
         previewDeposit: async ([assets]: [bigint]) => assets,
-        previewWithdraw: async ([assets]: [bigint]) => assets,
+        previewRedeem: async ([shares]: [bigint]) => shares,
       },
     },
   }),
@@ -124,11 +124,13 @@ describe("quote", () => {
     expect(await port.quote("stake", 1000)).toEqual({
       direction: "stake",
       input: 1000,
+      assets: 1000,
       shares: 1000,
     });
     expect(await port.quote("unstake", 1000)).toEqual({
       direction: "unstake",
       input: 1000,
+      assets: 1000,
       shares: 1000,
     });
   });
@@ -141,7 +143,7 @@ describe("quote", () => {
   });
 });
 
-describe("deposit / withdraw refusals", () => {
+describe("deposit / redeem refusals", () => {
   it("refuses to act without a session", async () => {
     const { port } = makePort(null);
     await expect(port.deposit(1000)).rejects.toThrow(
@@ -174,7 +176,7 @@ describe("deposit / withdraw refusals", () => {
   it("refuses an unstake past this position's withdraw cap", async () => {
     h.maxWithdraw = 500_000_000n;
     const { port } = makePort(CONNECTED);
-    await expect(port.withdraw(1000)).rejects.toThrow(
+    await expect(port.redeem(1000)).rejects.toThrow(
       "That unstake is more than this position can pay out right now — check the amount.",
     );
   });
@@ -188,16 +190,16 @@ describe("deposit / withdraw refusals", () => {
     expect(actions.plans).toHaveLength(0);
   });
 
-  it("refuses an unstake larger than the sGUSD balance", async () => {
+  it("refuses an unstake larger than the sgUSD balance", async () => {
     h.sgusdBalance = 0n;
     const { port } = makePort(CONNECTED);
-    await expect(port.withdraw(1000)).rejects.toThrow(
-      "The wallet's sGUSD balance is too low for this unstake — check the amount.",
+    await expect(port.redeem(1000)).rejects.toThrow(
+      "The wallet's sgUSD balance is too low for this unstake — check the amount.",
     );
   });
 });
 
-describe("deposit / withdraw plans", () => {
+describe("deposit / redeem plans", () => {
   it("plans a stake with the gUSD approval, preview totals, and a simulation", async () => {
     const { port, actions } = makePort(CONNECTED);
     await port.deposit(1000);
@@ -212,7 +214,7 @@ describe("deposit / withdraw plans", () => {
       spenderKind: "sgusd",
       amount: 1_000_000_000n,
     });
-    expect(plan.quote?.totals).toEqual({ input: 1000, shares: 1000 });
+    expect(plan.quote?.totals).toEqual({ input: 1000, assets: 1000, shares: 1000 });
     expect(plan.simulate).toBeTypeOf("function");
     expect(plan.buildSpec().origin).toBe("earn");
   });
@@ -224,14 +226,15 @@ describe("deposit / withdraw plans", () => {
     expect(actions.plans[0]!.approvals).toHaveLength(0);
   });
 
-  it("plans an unstake approval-free", async () => {
+  it("plans an unstake approval-free, shares-denominated", async () => {
     const { port, actions } = makePort(CONNECTED);
-    await port.withdraw(1000);
+    await port.redeem(1000);
     expect(actions.plans).toHaveLength(1);
     const plan = actions.plans[0]!;
     expect(plan.origin).toBe("unearn");
-    expect(plan.label).toBe("Unstake 1,000.0000 gUSD");
+    expect(plan.label).toBe("Unstake 1,000.0000 sgUSD");
     expect(plan.approvals).toHaveLength(0);
+    expect(plan.quote?.totals).toEqual({ input: 1000, assets: 1000, shares: 1000 });
     expect(plan.buildSpec().origin).toBe("unearn");
   });
 

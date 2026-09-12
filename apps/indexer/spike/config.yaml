@@ -1,0 +1,25 @@
+name: gusd-spike
+ecosystem: evm
+schema: ./schema.graphql
+handlers: ./src/handlers
+field_selection:
+  transaction_fields: [hash]
+rollback_on_reorg: true
+chains:
+  - id: 31337
+    rpc:
+      - url: http://127.0.0.1:18545
+        for: sync
+    start_block: 0
+    contracts:
+      - name: PoolManager
+        address: "0x00000000000000000000000000000000000000f1"
+        abi_file_path: ./abis/pool-manager.json
+        events:
+          - event: "Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)"
+          - event: "Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)"
+      - name: GUSD
+        address: "0x00000000000000000000000000000000000000f2"
+        abi_file_path: ./abis/gusd.json
+        events:
+          - event: "Minted(address indexed to, uint256 underlyingIn, uint256 gusdOut, uint256 fee)"

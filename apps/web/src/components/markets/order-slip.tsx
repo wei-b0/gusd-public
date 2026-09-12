@@ -49,10 +49,9 @@ export interface OrderSlipProps {
 /** Debounce for the async quote calls — one per settled input, not one per keystroke. */
 const QUOTE_DEBOUNCE_MS = 250;
 
-/** The gUSD-value presets in money-first mode, and the unit presets in
- *  size-first mode — each sized to the orders that basis invites. */
-const GUSD_PRESETS = [10, 50, 100] as const;
-const UNIT_PRESETS = [1, 4, 10] as const;
+/** Percent-of-basis presets — fractions of the same base MAX fills,
+ *  wherever a concrete base exists (see `context`). */
+const PRESETS = [0.1, 0.5, 1] as const;
 
 export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const { trading } = useServices();
@@ -172,13 +171,14 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
     }
   }
 
-  // MAX fills the input with an exact figure. Everywhere the input IS the
-  // balance/holding (money-first buys, size-first sells) that's the direct
-  // max. On money-first sells the input is the proceeds, so the click
-  // quotes the entire holding and fills the net proceeds, floored to the
-  // 6-dec grain — the follow-up re-quote then derives units within the
-  // holding, so its pre-flight passes on its own.
-  async function onMax() {
+  // Presets fill the input with a fraction of the same base MAX uses.
+  // Everywhere the input IS the balance/holding (money-first buys,
+  // size-first sells) that's the direct figure, floored to the 6-dec
+  // grain by fmtUnitsMax. On money-first sells the input is the proceeds,
+  // so the click quotes that fraction of the holding and fills the net
+  // proceeds — the follow-up re-quote then derives units within the
+  // holding, so its pre-flight passes on its own. MAX is the 100% preset.
+  async function applyPreset(frac: number) {
     if (!asset || context === null) return;
     if (side === "sell" && mode === "gusd") {
       const req = ++maxReq.current;
@@ -188,18 +188,18 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           asset,
           side: "sell",
           basis: "units",
-          size: context!.max,
+          size: Math.floor(context.max * frac * 1e6) / 1e6,
           toleranceBps,
         });
         if (q !== null && maxReq.current === req) setGusdText(fmtUnitsMax(q.notional));
       } catch {
-        // The chain can't price the full holding — leave the input alone.
+        // The chain can't price the holding — leave the input alone.
       } finally {
         if (maxReq.current === req) setMaxBusy(false);
       }
       return;
     }
-    setActiveText(fmtUnitsMax(context!.max));
+    setActiveText(fmtUnitsMax(context.max * frac));
   }
 
   async function onSubmit() {
@@ -412,7 +412,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           <span className="num text-[10.5px] text-dim">{context.label}</span>
           <button
             type="button"
-            onClick={onMax}
+            onClick={() => void applyPreset(1)}
             disabled={!context.canMax || context.max <= 0 || maxBusy}
             className="num border-b border-rule px-1.5 text-[10.5px] text-dim transition-colors hover:text-amber disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-dim"
           >
@@ -437,14 +437,15 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
           className="num w-full bg-transparent px-3 py-2.5 text-[15px] text-data outline-none"
         />
         <div className="flex items-stretch border-l border-rule">
-          {(mode === "gusd" ? GUSD_PRESETS : UNIT_PRESETS).map((preset) => (
+          {PRESETS.map((frac) => (
             <button
-              key={preset}
+              key={frac}
               type="button"
-              onClick={() => setActiveText(String(preset))}
-              className="num border-l border-rule px-2.5 text-[11px] text-dim first:border-l-0 hover:text-amber"
+              onClick={() => void applyPreset(frac)}
+              disabled={!context || !context.canMax || context.max <= 0 || maxBusy}
+              className="num border-l border-rule px-2.5 text-[11px] text-dim first:border-l-0 hover:text-amber disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {preset}
+              {frac * 100}%
             </button>
           ))}
         </div>

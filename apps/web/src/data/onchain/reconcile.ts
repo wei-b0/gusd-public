@@ -3,8 +3,9 @@
  *
  * Three distinct things happen when an action confirms, in order:
  *
- *   1. stores — the account store re-reads every balance and position from
- *      the contracts (always); then the indexed wallet-activity and market
+ *   1. stores — the account store re-reads every balance and position
+ *      (balances direct from the contracts, so a pre-tx indexed row can't
+ *      freeze the numbers); then the indexed wallet-activity and market
  *      stores re-pull in parallel (when wired), and the settled seam
  *      (onSettled) drops quote caches so the next quote reads post-tx
  *      state.
@@ -15,10 +16,11 @@
  *      provenance. Indexing lag is not a failure and never renders as one.
  *   3. follow — when the first pass saw fewer hashes than the action
  *      confirmed, the result carries a bounded backoff (1s/3s/8s/15s) the
- *      runner starts: it re-checks the indexer and re-pulls the activity
- *      store as evidence grows, so CONFIRMED flips to INDEXED within
- *      seconds of the indexer catching up — no reload. The timers live
- *      here, scoped to this one action, and die with the budget.
+ *      runner starts: it re-checks the indexer and, as evidence grows,
+ *      re-pulls the account, activity, and market stores — so balances,
+ *      positions, and the ledgers all land post-tx state within seconds
+ *      of the indexer catching up — no reload. The timers live here,
+ *      scoped to this one action, and die with the budget.
  */
 
 import type { IndexerPort } from "@/domain/indexer";
@@ -83,9 +85,12 @@ export function makeReconciler(
     // 1. Balances — always. The store catches read failures internally and
     //    keeps the last snapshot; the belt-and-suspenders here keeps the
     //    contract "reconcile never throws" even against a throwing store.
+    //    Balances read direct from the contracts: the indexer behind the
+    //    indexed seam may not have this block yet, and a pre-tx row served
+    //    with a 200 would freeze the numbers until the next poll.
     let balances = false;
     try {
-      await deps.accountStore.refresh();
+      await deps.accountStore.refresh({ directBalances: true });
       balances = true;
     } catch {
       // Re-read failed; the store already logged it.
@@ -167,9 +172,10 @@ export function makeReconciler(
     // usable) or fewer hashes than the action confirmed. Same treatment:
     // lag, not failure. The result carries a bounded backoff the runner
     // starts: it re-checks until every hash is seen or the budget runs out
-    // (~27s), re-pulling the activity store as the evidence grows so
-    // ledgers flip to "indexed" without a reload. Best-effort and never
-    // throwing; the first-pass evidence already stands in the result.
+    // (~27s), re-pulling the account and activity stores as the evidence
+    // grows so balances, positions, and the ledgers all flip to post-tx
+    // state without a reload. Best-effort and never throwing; the
+    // first-pass evidence already stands in the result.
     const follow = (onUpdate: (indexed: readonly string[] | null) => void): void => {
       void (async () => {
         let latest: readonly string[] = indexed ?? [];
@@ -178,13 +184,16 @@ export function makeReconciler(
           const next = await fetchIndexed(fromBlock);
           if (next !== null && next.length > latest.length) {
             latest = next;
-            if (deps.activity) {
-              try {
-                await deps.activity.refresh();
-              } catch {
-                // The store's own refresh logs failures.
-              }
-            }
+            // The indexer has ingested this block — re-pull every view
+            // that reads through it so balances and positions leave the
+            // confirm-time snapshot without waiting for the 30s poll.
+            await Promise.allSettled(
+              [
+                deps.accountStore.refresh(),
+                deps.activity?.refresh(),
+                deps.protocol?.refresh(),
+              ].filter((p): p is Promise<void> => p !== undefined),
+            );
             onUpdate(latest);
             if (latest.length >= hashes.length) return;
           }

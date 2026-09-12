@@ -570,7 +570,9 @@ function TapeRow({ trade }: { trade: MarketTrade }) {
   const buy = trade.side === "buy";
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-rule px-3.5 py-1.5 last:border-b-0">
-      <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(trade.t)}</span>
+      <span className="num w-20 shrink-0 whitespace-nowrap text-[11px] text-dim">
+        {fmtClock(trade.t)} <span className="text-[9px]">UTC</span>
+      </span>
       <span className={`slug w-16 shrink-0 ${buy ? "text-up" : "text-down"}`}>
         <span aria-hidden className="mr-1 text-[8px]">{buy ? "▲" : "▼"}</span>
         {buy ? "Bought" : "Sold"}

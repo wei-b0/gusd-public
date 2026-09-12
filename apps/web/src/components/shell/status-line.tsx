@@ -61,7 +61,7 @@ function useWireQuality(): WireInfo | null {
 function useConnection(enabled: boolean) {
   const feed = getOracleFeed();
   return useSyncExternalStore(
-    (cb) => (enabled ? feed.subscribe(cb) : () => {}),
+    (cb) => (enabled ? feed.subscribe(cb) : () => { }),
     () => (enabled ? feed.getState().connection : "idle"),
     () => "idle",
   );
@@ -125,13 +125,6 @@ export function StatusLine() {
             ) : (
               "—"
             )}
-          </span>
-        )}
-        <span aria-hidden className="h-px min-w-4 flex-1 bg-rule" />
-        <span className="slug shrink-0 text-amber">Index ≠ market</span>
-        {!oracle && (
-          <span className="slug hidden shrink-0 text-amber sm:inline">
-            Demo · all data simulated
           </span>
         )}
       </div>

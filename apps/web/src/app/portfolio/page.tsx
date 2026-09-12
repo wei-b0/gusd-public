@@ -2,7 +2,7 @@
 
 /**
  * Portfolio — the connection's whole book, grouped the way the product
- * thinks about capital: market exposure, liquid gUSD, earning sGUSD,
+ * thinks about capital: market exposure, liquid gUSD, earning sgUSD,
  * protocol roles, and the activity trail. Gated on a connection; balances
  * and actions are the only gated things in the product.
  */
@@ -150,7 +150,7 @@ function PortfolioBook() {
         <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2 px-3.5 py-3.5">
           <p className="disp text-[26px] leading-none text-bright">{fmtGusd(total)}</p>
           <p className="num text-[11px] leading-relaxed text-dim">
-            Market positions {fmtGusd(positionsValue)} · gUSD {fmtFull(account.gUsdBalance)} · sGUSD{" "}
+            Market positions {fmtGusd(positionsValue)} · gUSD {fmtFull(account.gUsdBalance)} · sgUSD{" "}
             {fmtGusd(sGUsdValue)}
           </p>
         </div>
@@ -256,9 +256,9 @@ function PortfolioBook() {
             </dl>
           </TuiPanel>
 
-          <TuiPanel no="03" title="Earning capital · sGUSD" meta="gUSD deployed">
+          <TuiPanel no="03" title="Earning capital · sgUSD" meta="gUSD deployed">
             <dl className="border-t border-rule">
-              <Line label="sGUSD balance" value={`${fmtUnitsMax(account.sGUsdBalance)} sGUSD`} />
+              <Line label="sgUSD balance" value={`${fmtUnitsMax(account.sGUsdBalance)} sgUSD`} />
               <Line label="Value at rate" value={fmtGusd(sGUsdValue)} />
               {vaultBasis === null || vaultBasis.avgEntry === null ? (
                 <Line
@@ -267,7 +267,7 @@ function PortfolioBook() {
                   title={vaultBasis?.basisReason ?? undefined}
                 />
               ) : (
-                <Line label="Avg entry" value={`${fmtGusdPrecise(vaultBasis.avgEntry)} gUSD / sGUSD`} />
+                <Line label="Avg entry" value={`${fmtGusdPrecise(vaultBasis.avgEntry)} gUSD / sgUSD`} />
               )}
               {vaultBasis?.realizedPnl !== null && vaultBasis !== null && (
                 <Line
@@ -335,17 +335,23 @@ function Line({
   href?: string;
   title?: string;
 }) {
+  const shell =
+    "flex items-baseline justify-between gap-2 border-b border-rule px-3.5 py-2.5 last:border-b-0";
+  if (href) {
+    // The whole row navigates — the figure rides the same link, the label
+    // carries the amber hover voice.
+    return (
+      <Link href={href} className={`group ${shell} transition-colors`}>
+        <dt className="slug text-dim transition-colors group-hover:text-amber">{label} ▸</dt>
+        <dd className="num whitespace-nowrap text-[12.5px] text-data" title={title}>
+          {value}
+        </dd>
+      </Link>
+    );
+  }
   return (
-    <div className="flex items-baseline justify-between gap-2 border-b border-rule px-3.5 py-2.5 last:border-b-0">
-      <dt className="slug text-dim">
-        {href ? (
-          <Link href={href} className="transition-colors hover:text-amber">
-            {label} ▸
-          </Link>
-        ) : (
-          label
-        )}
-      </dt>
+    <div className={shell}>
+      <dt className="slug text-dim">{label}</dt>
       <dd className="num whitespace-nowrap text-[12.5px] text-data" title={title}>
         {value}
       </dd>
@@ -385,7 +391,9 @@ function rowLabel(r: ActivityRow): string {
 function IndexedRow({ row }: { row: ActivityRow }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0">
-      <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(row.t)}</span>
+      <span className="num w-20 shrink-0 whitespace-nowrap text-[11px] text-dim">
+        {fmtClock(row.t)} <span className="text-[9px]">UTC</span>
+      </span>
       <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
         {rowLabel(row)}
       </span>
@@ -402,7 +410,9 @@ function SessionRow({ record }: { record: ActionRecord }) {
     record.indexed !== null && hashes.some((h) => record.indexed!.includes(h));
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule px-3.5 py-2 last:border-b-0">
-      <span className="num w-14 shrink-0 text-[11px] text-dim">{fmtClock(record.createdAt)}</span>
+      <span className="num w-20 shrink-0 whitespace-nowrap text-[11px] text-dim">
+        {fmtClock(record.createdAt)} <span className="text-[9px]">UTC</span>
+      </span>
       <span className="num min-w-0 flex-1 truncate text-[12.5px] font-bold text-data">
         {record.label}
       </span>

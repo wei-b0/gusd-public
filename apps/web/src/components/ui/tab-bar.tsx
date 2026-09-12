@@ -6,7 +6,7 @@
  * two product flows on every viewport. The active task reverses amber.
  * Labels render at 800 (font-extrabold over the slug's 700) — the switcher
  * is a primary control and sits a weight above field labels. Labels are
- * ReactNode so pair/unit casing (gUSD, sGUSD) survives the slug caps the
+ * ReactNode so pair/unit casing (gUSD, sgUSD) survives the slug caps the
  * same way it does everywhere else.
  */
 

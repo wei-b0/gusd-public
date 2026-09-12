@@ -1,9 +1,11 @@
 /**
- * The real earn port — gUSD ⇄ sGUSD through the shared action runner. Every
+ * The real earn port — gUSD ⇄ sgUSD through the shared action runner. Every
  * submit becomes one ActionPlan: pre-validation (session, seed gate, caps,
  * balance), the gUSD→sgUSD approval when the allowance is short (deposits
  * only), a pre-signature simulation, and reconciliation of the account
  * store on confirmation. Previews stay public; acting needs the session.
+ * Stakes are assets-first, redeems shares-first — each input names the leg
+ * the wallet signs for.
  *
  * The vault's public facts (share price, seed gate) ride a small snapshot
  * store so useEarn() keeps its shape; the share price is the yield — there
@@ -26,8 +28,8 @@ import {
   parseEarnAmount,
   planEarnApproval,
   quoteDeposit,
-  quoteWithdraw,
-  withdrawSpec,
+  quoteRedeem,
+  redeemSpec,
 } from "./actions";
 
 export interface OnChainEarnPortDeps {
@@ -94,20 +96,26 @@ export class OnChainEarnPort implements EarnPort {
     return this.refreshing;
   }
 
-  async quote(direction: EarnDirection, gUsd: number): Promise<EarnQuote | null> {
-    if (!Number.isFinite(gUsd) || gUsd <= 0) return null;
-    const raw = parseEarnAmount(gUsd);
+  async quote(direction: EarnDirection, amount: number): Promise<EarnQuote | null> {
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    const raw = parseEarnAmount(amount);
     if (raw <= 0n) return null;
-    const sharesRaw = direction === "stake" ? await quoteDeposit(raw) : await quoteWithdraw(raw);
-    return { direction, input: gUsd, shares: formatShares(sharesRaw) };
+    if (direction === "stake") {
+      const sharesRaw = await quoteDeposit(raw);
+      return { direction, input: amount, assets: amount, shares: formatShares(sharesRaw) };
+    }
+    // Redeem is shares-first: the input names the shares, the preview
+    // prices the gUSD leg that comes back.
+    const assetsRaw = await quoteRedeem(raw);
+    return { direction, input: amount, assets: formatShares(assetsRaw), shares: formatShares(raw) };
   }
 
   async deposit(gUsd: number): Promise<ActionRecord> {
     return this.run("stake", gUsd);
   }
 
-  async withdraw(gUsd: number): Promise<ActionRecord> {
-    return this.run("unstake", gUsd);
+  async redeem(shares: number): Promise<ActionRecord> {
+    return this.run("unstake", shares);
   }
 
   private async run(direction: EarnDirection, amount: number): Promise<ActionRecord> {
@@ -125,18 +133,24 @@ export class OnChainEarnPort implements EarnPort {
     if (!state.seeded) {
       throw new Error("The vault hasn't been seeded yet — deposits open once it holds its seed.");
     }
+    // Redeem previews its gUSD leg once — the preview sizes the withdraw
+    // cap below and rides into the plan's quote snapshot.
+    let assetsRaw = raw;
     if (direction === "stake") {
       if (state.maxDeposit !== MAX_UINT256 && raw > state.maxDeposit) {
         throw new Error("That deposit exceeds the vault's current deposit cap — check the amount.");
       }
-    } else if (raw > state.maxWithdraw) {
-      throw new Error(
-        "That unstake is more than this position can pay out right now — check the amount.",
-      );
+    } else {
+      assetsRaw = await quoteRedeem(raw);
+      if (assetsRaw > state.maxWithdraw) {
+        throw new Error(
+          "That unstake is more than this position can pay out right now — check the amount.",
+        );
+      }
     }
 
     // Balance pre-checks: the amber answer before the wallet is ever asked.
-    // Unstake is assets-denominated, so the input is sized in shares.
+    // Redeem is shares-denominated — the input IS the share amount.
     const { gusd: gusdAddress, sgusd: sgusdAddress } = getContracts().addresses;
     if (direction === "stake") {
       const gusdHeld = await this.reads.balanceOf(gusdAddress, owner);
@@ -144,11 +158,10 @@ export class OnChainEarnPort implements EarnPort {
         throw new Error("The wallet's gUSD balance is too low for this stake — check the amount.");
       }
     } else {
-      const sharesNeeded = await quoteWithdraw(raw);
       const sharesHeld = await this.reads.balanceOf(sgusdAddress, owner);
-      if (sharesHeld < sharesNeeded) {
+      if (sharesHeld < raw) {
         throw new Error(
-          "The wallet's sGUSD balance is too low for this unstake — check the amount.",
+          "The wallet's sgUSD balance is too low for this unstake — check the amount.",
         );
       }
     }
@@ -159,31 +172,34 @@ export class OnChainEarnPort implements EarnPort {
       if (need) approvals.push(need);
     }
 
-    const sharesRaw =
-      direction === "stake" ? await quoteDeposit(raw) : await quoteWithdraw(raw);
+    const sharesRaw = direction === "stake" ? await quoteDeposit(raw) : raw;
     const label =
       direction === "stake"
         ? `Stake ${fmtGusdLedger(amount)} gUSD`
-        : `Unstake ${fmtGusdLedger(amount)} gUSD`;
+        : `Unstake ${fmtGusdLedger(amount)} sgUSD`;
 
     const plan: ActionPlan = {
       origin: direction === "stake" ? "earn" : "unearn",
       label,
-      quote: snapshot(amount, formatShares(sharesRaw)),
+      quote: snapshot(
+        amount,
+        direction === "stake" ? amount : formatShares(assetsRaw),
+        formatShares(sharesRaw),
+      ),
       approvals,
       simulate: async () => {
         const { sgusd } = getContracts();
         const result = await simulateWrite({
           address: sgusd.address,
           abi: SGUSD_ABI,
-          functionName: direction === "stake" ? "deposit" : "withdraw",
+          functionName: direction === "stake" ? "deposit" : "redeem",
           args: direction === "stake" ? [raw, owner] : [raw, owner, owner],
           account: owner,
         });
         return result.ok ? result : { ok: false, error: result.error.voice };
       },
       buildSpec: () =>
-        direction === "stake" ? depositSpec(raw, owner) : withdrawSpec(raw, owner),
+        direction === "stake" ? depositSpec(raw, owner) : redeemSpec(raw, owner),
       reconcile: this.deps.reconcile,
     };
 
@@ -196,10 +212,10 @@ export class OnChainEarnPort implements EarnPort {
   }
 }
 
-function snapshot(input: number, shares: number): QuoteSnapshot {
+function snapshot(input: number, assets: number, shares: number): QuoteSnapshot {
   return {
     quotedAtMs: Date.now(),
     blockNumber: null,
-    totals: { input, shares },
+    totals: { input, assets, shares },
   };
 }

@@ -77,22 +77,24 @@ export interface TradingPort {
 }
 
 /**
- * The earning layer — deploying gUSD into sGUSD through the vault. Previews
+ * The earning layer — deploying gUSD into sgUSD through the vault. Previews
  * are execution-identical (the contract's own ERC-4626 previews); deposit
- * and withdraw run through the action runner (one gUSD approval for
- * deposits, approval-free withdraws) and resolve to the action record the
- * desk renders. The share price is the yield; there is no APY figure.
+ * and redeem run through the action runner (one gUSD approval for deposits,
+ * approval-free redeems) and resolve to the action record the desk renders.
+ * The share price is the yield; there is no APY figure.
  */
 export interface EarnPort {
   /** The vault's public facts — share price and seed gate. */
   getEarnState(): EarnState;
   /** Execution-identical vault preview, or null for an invalid amount.
-   *  Works without a session — the preview is public, acting is not. */
-  quote(direction: EarnDirection, gUsd: number): Promise<EarnQuote | null>;
+   *  `amount` is gUSD on stake and sgUSD shares on unstake. Works without
+   *  a session — the preview is public, acting is not. */
+  quote(direction: EarnDirection, amount: number): Promise<EarnQuote | null>;
   /** Move gUSD into the earning layer. Requires a connected wallet. */
   deposit(gUsd: number): Promise<ActionRecord>;
-  /** Return earning capital to gUSD. Requires a connected wallet. */
-  withdraw(gUsd: number): Promise<ActionRecord>;
+  /** Return earning capital to gUSD by burning sgUSD shares. Requires a
+   *  connected wallet. */
+  redeem(shares: number): Promise<ActionRecord>;
   subscribe(listener: () => void): () => void;
   /** Re-read the vault's public facts (the share price can move). */
   refresh(): Promise<void>;

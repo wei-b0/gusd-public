@@ -25,6 +25,7 @@
     "@gusd/typescript-config": "workspace:*",
     "@types/node": "26.4.1",
     "@types/pg": "^8.15.0",
+    "envio": "3.10.0",
     "eslint": "10.9.1",
     "tsx": "^4.20.0",
     "typescript": "7.0.2",

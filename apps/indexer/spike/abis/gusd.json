@@ -1,0 +1,13 @@
+[
+  {
+    "type": "event",
+    "name": "Minted",
+    "anonymous": false,
+    "inputs": [
+      { "name": "to", "type": "address", "indexed": true },
+      { "name": "underlyingIn", "type": "uint256", "indexed": false },
+      { "name": "gusdOut", "type": "uint256", "indexed": false },
+      { "name": "fee", "type": "uint256", "indexed": false }
+    ]
+  }
+]

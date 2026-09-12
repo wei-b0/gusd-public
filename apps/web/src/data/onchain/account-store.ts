@@ -16,6 +16,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { AssetId } from "@/domain/types";
 import { assetForGpuId } from "@/data/web3/gpu-id";
+import { contractReads } from "@/data/web3/reads";
 import { contractReadsWithIndexer } from "@/data/web3/reads-protocol";
 import { getActiveChain } from "@/data/web3/chains";
 import { basisNumber } from "@/data/protocol/map";
@@ -95,15 +96,24 @@ export class OnChainAccountStore {
     this.startPolling();
   }
 
-  /** Re-read every balance and position from the contracts. */
-  async refresh(): Promise<void> {
+  /**
+   * Re-read every balance and position. `directBalances` reads the token
+   * balances straight from the contracts, bypassing the indexer — the
+   * post-confirmation state the indexer may not have ingested yet (the
+   * reconciler passes it at confirm time). Positions stay on the indexed
+   * seam so the basis columns keep their enrichment.
+   */
+  async refresh(opts?: { directBalances?: boolean }): Promise<void> {
     const address = this.snapshot.address;
     if (!address || this.refreshing) return this.refreshing ?? Promise.resolve();
     this.refreshing = (async () => {
       try {
         // State reads via the indexed seam (RPC fallback inside); the
         // execution paths below keep their own direct reads.
-        const reads = contractReadsWithIndexer();
+        const indexed = contractReadsWithIndexer();
+        const reads = opts?.directBalances
+          ? { ...indexed, balances: contractReads().balances }
+          : indexed;
         const chainId = getActiveChain().id;
         const [balances, positions] = await Promise.all([
           reads.balances(address as `0x${string}`),

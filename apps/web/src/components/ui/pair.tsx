@@ -1,6 +1,6 @@
 /**
  * Canonical-casing nodes for the protocol's names. The slug voice sets
- * all-caps; the unit (gUSD, sGUSD) and the benchmark names keep their
+ * all-caps; the unit (gUSD, sgUSD) and the benchmark names keep their
  * product casing inside it, the way a wordmark does. Use the plain string
  * form (`pairName`) in .num contexts, which never transform case.
  */
@@ -23,5 +23,5 @@ export function Gusd(): ReactNode {
 
 /** The earning unit, canonical casing inside slug (caps) copy. */
 export function SGusd() {
-  return <span className="normal-case">sGUSD</span>;
+  return <span className="normal-case">sgUSD</span>;
 }

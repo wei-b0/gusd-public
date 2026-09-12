@@ -80,8 +80,8 @@ function TapeRow({ trade }: { trade: TaggedTrade }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-rule px-3 py-1.5">
       <span className="slug w-14 shrink-0 text-data">{trade.asset}</span>
-      <span className="num hidden w-16 shrink-0 text-[11px] text-dim sm:inline">
-        {fmtClock(trade.t)}
+      <span className="num hidden w-20 shrink-0 whitespace-nowrap text-[11px] text-dim sm:inline">
+        {fmtClock(trade.t)} <span className="text-[9px]">UTC</span>
       </span>
       <span className={`slug w-16 shrink-0 ${buy ? "text-up" : "text-down"}`}>
         <span aria-hidden className="mr-1 text-[8px]">{buy ? "▲" : "▼"}</span>

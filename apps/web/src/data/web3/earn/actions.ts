@@ -1,9 +1,9 @@
 /**
- * sGUSD earn action builders — the contract-facing half of the earn desk.
+ * sgUSD earn action builders — the contract-facing half of the earn desk.
  * The vault is a fee-free ERC-4626 over gUSD (6 decimals both sides), so a
  * preview IS the quote: deposit mints `previewDeposit(assets)` shares,
- * withdraw burns `previewWithdraw(assets)` shares. The share price is the
- * yield — nothing here invents a rate.
+ * redeem burns exactly the shares asked and pays `previewRedeem(shares)`
+ * assets. The share price is the yield — nothing here invents a rate.
  */
 
 import type { Address } from "viem";
@@ -19,10 +19,10 @@ export async function quoteDeposit(gusdRaw: bigint): Promise<bigint> {
   return sgusd.read.previewDeposit([gusdRaw]);
 }
 
-/** Unstake preview: gUSD out → sgUSD burned. */
-export async function quoteWithdraw(gusdRaw: bigint): Promise<bigint> {
+/** Unstake preview, shares-first: gUSD out for `sharesRaw` burned. */
+export async function quoteRedeem(sharesRaw: bigint): Promise<bigint> {
   const { sgusd } = getContracts();
-  return sgusd.read.previewWithdraw([gusdRaw]);
+  return sgusd.read.previewRedeem([sharesRaw]);
 }
 
 /** The deposit approval — gUSD spend permission for the sgUSD vault. */
@@ -53,8 +53,8 @@ export function depositSpec(gusdRaw: bigint, to: Address): TxSpec {
   };
 }
 
-/** Withdraw gUSD from the vault, burning sgUSD from `to`. Approval-free. */
-export function withdrawSpec(gusdRaw: bigint, to: Address): TxSpec {
+/** Redeem sgUSD shares from the vault for gUSD to `to`. Approval-free. */
+export function redeemSpec(sharesRaw: bigint, to: Address): TxSpec {
   return {
     origin: "unearn",
     kind: "earn-withdraw",
@@ -62,8 +62,8 @@ export function withdrawSpec(gusdRaw: bigint, to: Address): TxSpec {
       const hash = await wallet.writeContract({
         address: getContracts().addresses.sgusd,
         abi: SGUSD_ABI,
-        functionName: "withdraw",
-        args: [gusdRaw, to, to],
+        functionName: "redeem",
+        args: [sharesRaw, to, to],
         account: wallet.account ?? null,
         chain: null,
       });
@@ -72,9 +72,10 @@ export function withdrawSpec(gusdRaw: bigint, to: Address): TxSpec {
   };
 }
 
-/** Parse a desk amount into 6-decimal raw gUSD (both vault sides are 6dp). */
-export function parseEarnAmount(gusd: number): bigint {
-  return parseGusd(gusd);
+/** Parse a desk amount into 6-decimal raw units (both vault sides are 6dp,
+ *  so this parses gUSD on stake and sgUSD shares on unstake alike). */
+export function parseEarnAmount(amount: number): bigint {
+  return parseGusd(amount);
 }
 
 /** Raw sgUSD shares → product units (6 decimals, same as gUSD). */

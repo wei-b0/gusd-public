@@ -261,6 +261,9 @@ describe("makeReconciler — follow-up backoff", () => {
 
     expect(updates).toEqual([["0xH1", "0xH2"]]);
     expect(h.deps.activity!.refresh).toHaveBeenCalledTimes(1);
+    // Evidence growth re-pulls the account store too — balances and
+    // positions leave the confirm-time snapshot with the ledgers.
+    expect(h.refresh).toHaveBeenCalledTimes(2);
 
     // Complete — the loop has returned; the remaining budget does nothing.
     const callsAfterComplete = h.getUserEvents.mock.calls.length;

@@ -13,6 +13,12 @@
  * Created ONLY when the indexer is configured and DATA_SOURCE === "oracle"
  * (see enabled.ts) — mock market mode never gets one, so its injected
  * market stays the whole world.
+ *
+ * Lazy reads fetch only in a live browser (`canFetch`): on the server every
+ * read stays cold, so the SSR render and the client's first hydration agree
+ * — a warmed server singleton would render figures a cold client can't
+ * match. The poll loop already runs only under a subscriber (an effect,
+ * therefore client-only).
  */
 
 import type { AssetId, MarketTrade } from "@/domain/types";
@@ -91,6 +97,8 @@ export class ProtocolMarketStore {
   constructor(
     private readonly client: ProtocolClient,
     private readonly now: () => number = Date.now,
+    /** Browser-only gate for the lazy fetches; tests inject `() => true`. */
+    private readonly canFetch: () => boolean = () => typeof window !== "undefined",
   ) {}
 
   get(): ProtocolMarketState {
@@ -245,6 +253,7 @@ export class ProtocolMarketStore {
   }
 
   private trackPool(poolId: string): void {
+    if (!this.canFetch()) return;
     if (this.trackedPools.has(poolId)) return;
     this.trackedPools.add(poolId);
     void this.fetchSwaps(poolId);
@@ -256,6 +265,7 @@ export class ProtocolMarketStore {
 
   /** Run `fetch` unless the key is cooling down (30s retry cadence). */
   private ensureOnce(key: string, fetch: () => Promise<void>): void {
+    if (!this.canFetch()) return;
     if (this.now() < (this.cooldowns.get(key) ?? 0)) return;
     this.cooldowns.set(key, this.now() + COOLDOWN_MS);
     void fetch();

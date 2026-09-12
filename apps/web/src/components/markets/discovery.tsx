@@ -16,14 +16,6 @@ import { Gusd } from "@/components/ui/pair";
 import { MarketsTable } from "@/components/markets/markets-table";
 import { TuiPanel } from "@/components/ui/panel";
 
-/**
- * Class-overview extras (total volume, total liquidity, median premium).
- * Volume and liquidity are real indexed figures now (Ponder via the market
- * seam); median premium still needs a venue leg, so its cell prints "—"
- * until one exists.
- */
-const SHOW_CLASS_EXTRAS = true;
-
 export function MarketsDiscovery() {
   const markets = useMarkets();
 
@@ -34,7 +26,6 @@ export function MarketsDiscovery() {
     return nums.length === 0 ? null : nums.reduce((sum, n) => sum + n, 0);
   };
   const totalVolume = totalOf(markets.map((m) => m.volume24hUsd));
-  const totalLiquidity = totalOf(markets.map((m) => m.liquidityUsd));
   // Leader and laggard are the best and worst 24h movers. A market that
   // hasn't printed a 24h figure doesn't rank — an unprinted move is not a
   // performance — so nulls never outrank a real decline. (If nothing has
@@ -47,11 +38,6 @@ export function MarketsDiscovery() {
   const laggard = byMove[byMove.length - 1];
   const leaderMove = leader ? marketMove24h(leader) : null;
   const laggardMove = laggard ? marketMove24h(laggard) : null;
-  const basisList = markets
-    .map((m) => m.basisPct)
-    .filter((b): b is number => b !== null)
-    .sort((a, b) => a - b);
-  const medianBasis = basisList.length > 0 ? basisList[Math.floor(basisList.length / 2)]! : null;
 
   return (
     <div>
@@ -62,10 +48,11 @@ export function MarketsDiscovery() {
         </p>
       </div>
 
-      {/* 01 — the class in one ledger: leader and laggard lead while the
-          class is young; the flow figures wait behind SHOW_CLASS_EXTRAS */}
+      {/* 01 — the class in one ledger: leader, laggard, and the class's
+          total flow on one row (the flow drops full-width beneath them
+          while the board is narrow) */}
       <TuiPanel no="01" title="Class overview" meta="trailing 24h">
-        <dl className="grid grid-cols-2 gap-x-8 p-3">
+        <dl className="grid grid-cols-2 gap-x-8 p-3 md:grid-cols-3">
           {leader && (
             <Cell
               label="Leader 24h"
@@ -82,23 +69,11 @@ export function MarketsDiscovery() {
               dir={laggardMove === null || isFlatPct(laggardMove) ? undefined : laggardMove >= 0 ? "up" : "down"}
             />
           )}
-          {SHOW_CLASS_EXTRAS && (
-            <>
-              <Cell
-                label={<>Total 24h volume / <span className="normal-case">gUSD</span></>}
-                value={totalVolume === null ? "—" : fmtGusdCompact(totalVolume)}
-              />
-              <Cell
-                label={<>Total in-range depth / <span className="normal-case">gUSD</span></>}
-                value={totalLiquidity === null ? "—" : fmtGusdCompact(totalLiquidity)}
-              />
-              <Cell
-                label="Median premium"
-                value={medianBasis === null ? "—" : fmtPctSigned(medianBasis)}
-                tone={medianBasis === null ? "dim" : medianBasis >= 0 ? "amber" : "wire"}
-              />
-            </>
-          )}
+          <Cell
+            className="col-span-2 md:col-span-1"
+            label={<>Total 24h volume / <span className="normal-case">gUSD</span></>}
+            value={totalVolume === null ? "—" : fmtGusdCompact(totalVolume)}
+          />
         </dl>
       </TuiPanel>
 
@@ -111,8 +86,7 @@ export function MarketsDiscovery() {
       </div>
 
       <p className="mt-3 max-w-prose text-[11.5px] leading-relaxed text-dim">
-        Price is the weighted benchmark for each GPU-hour. Where a market layer prices the asset
-        separately, the gap prints as a premium or a discount.
+        Trade exposure to GPU compute rates across H100, H200, L40S, and RTX 4090. Prices are derived from live rental markets and settle onchain through gUSD.
       </p>
     </div>
   );
@@ -123,11 +97,13 @@ function Cell({
   value,
   tone = "data",
   dir,
+  className,
 }: {
   label: ReactNode;
   value: string;
   tone?: "data" | "up" | "down" | "amber" | "wire" | "dim";
   dir?: "up" | "down";
+  className?: string;
 }) {
   const toneClass = {
     data: "text-data",
@@ -138,7 +114,7 @@ function Cell({
     dim: "text-dim",
   }[tone];
   return (
-    <div className="border-b border-rule py-1.5">
+    <div className={`border-b border-rule py-1.5 ${className ?? ""}`}>
       <dt className="slug text-dim">{label}</dt>
       <dd className={`num mt-1 text-[14px] font-bold ${toneClass}`}>
         {value}

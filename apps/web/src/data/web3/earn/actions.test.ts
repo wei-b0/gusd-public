@@ -5,8 +5,8 @@ import {
   parseEarnAmount,
   planEarnApproval,
   quoteDeposit,
-  quoteWithdraw,
-  withdrawSpec,
+  quoteRedeem,
+  redeemSpec,
 } from "./actions";
 
 // The vault math the mocks reproduce: an ERC-4626 preview over a share
@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("../contracts", () => {
   const sharesFor = (assets: bigint) => (assets * h.shareNum) / h.shareDen;
+  const assetsFor = (shares: bigint) => (shares * h.shareDen) / h.shareNum;
   return {
     getContracts: () => ({
       addresses: {
@@ -29,7 +30,7 @@ vi.mock("../contracts", () => {
       sgusd: {
         read: {
           previewDeposit: async ([assets]: [bigint]) => sharesFor(assets),
-          previewWithdraw: async ([assets]: [bigint]) => sharesFor(assets),
+          previewRedeem: async ([shares]: [bigint]) => assetsFor(shares),
         },
       },
     }),
@@ -51,18 +52,19 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("quoteDeposit / quoteWithdraw", () => {
-  it("quotes a stake 1:1 at the seed share price", async () => {
+describe("quoteDeposit / quoteRedeem", () => {
+  it("quotes a stake and a redeem 1:1 at the seed share price", async () => {
     expect(await quoteDeposit(1_000_000_000n)).toBe(1_000_000_000n);
-    expect(await quoteWithdraw(1_000_000_000n)).toBe(1_000_000_000n);
+    expect(await quoteRedeem(1_000_000_000n)).toBe(1_000_000_000n);
   });
 
   it("prices both directions off the same share price", async () => {
-    // Price 1.05 gUSD per sgUSD: 1000 gUSD in mints 952.380952 shares.
+    // Price 1.05 gUSD per sgUSD: 1000 gUSD in mints 952.380952 shares,
+    // and 2 shares out pay 2.1 gUSD.
     h.shareNum = 1_000_000n;
     h.shareDen = 1_050_000n;
     expect(await quoteDeposit(1_000_000_000n)).toBe(952_380_952n);
-    expect(await quoteWithdraw(1_000_000_000n)).toBe(952_380_952n);
+    expect(await quoteRedeem(2_000_000n)).toBe(2_100_000n);
   });
 });
 
@@ -76,7 +78,7 @@ describe("parseEarnAmount / formatShares", () => {
   });
 });
 
-describe("depositSpec / withdrawSpec", () => {
+describe("depositSpec / redeemSpec", () => {
   const wallet = {
     account: OWNER,
     writeContract: vi.fn(async () => "0xdeadbeef"),
@@ -98,15 +100,15 @@ describe("depositSpec / withdrawSpec", () => {
     );
   });
 
-  it("encodes withdraw(assets, receiver, owner) — approval-free", async () => {
-    const spec = withdrawSpec(500_000_000n, OWNER);
+  it("encodes redeem(shares, receiver, owner) — approval-free", async () => {
+    const spec = redeemSpec(500_000_000n, OWNER);
     expect(spec.origin).toBe("unearn");
     expect(spec.kind).toBe("earn-withdraw");
     await spec.execute(wallet as never);
     expect(wallet.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({
         address: SGUSD,
-        functionName: "withdraw",
+        functionName: "redeem",
         args: [500_000_000n, OWNER, OWNER],
         chain: null,
       }),

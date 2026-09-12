@@ -587,7 +587,7 @@ export interface TradeReceipt {
 }
 
 /* ---------------------------------------------------------------------------
- * Earning layer — gUSD into sGUSD through the sgUSD vault.
+ * Earning layer — gUSD into sgUSD through the sgUSD vault.
  *
  * The vault is a fee-free ERC-4626 over gUSD: deposit mints shares at the
  * current share price, withdraw burns shares for assets. The share price is
@@ -610,12 +610,15 @@ export interface EarnState {
   updatedAt: number | null;
 }
 
-/** One execution-identical vault preview. The desk's input is always
- *  denominated in gUSD (assets); shares are what moves. */
+/** One execution-identical vault preview. The desk's input is denominated
+ *  in gUSD (assets) on stake and in sgUSD (shares) on unstake; the quote
+ *  carries both legs so the ledger shows the conversion either way. */
 export interface EarnQuote {
   direction: EarnDirection;
-  /** gUSD the desk input. */
+  /** The amount the desk input — gUSD on stake, sgUSD shares on unstake. */
   input: number;
+  /** gUSD moved: deposited (stake) or received (unstake). */
+  assets: number;
   /** sgUSD minted (stake) or burned (unstake). */
   shares: number;
 }

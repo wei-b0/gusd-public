@@ -24,7 +24,7 @@ export function OverviewTab() {
             aria-label="Oracle pipeline diagram"
             className="num overflow-x-auto text-[10.5px] leading-[1.7] text-data"
           >
-{`SOURCES        18 collectors · ECB FX · 2 watchdogs
+            {`SOURCES        18 collectors · ECB FX · 2 watchdogs
   order books · rate cards · price lists
   FAST 15s     vast · lium · hyperbolic
   MEDIUM 60s   runpod · shadeform · akash · primeintellect
@@ -117,10 +117,14 @@ CONSUME        REST · SSE · this app · on-chain hooks`}
         <TuiPanel no="03" title="Index ≠ market" meta="doctrine">
           <div className="max-w-prose space-y-3 p-3.5 text-[12px] leading-relaxed text-data">
             <p>
-              The Index is the weighted reference for a GPU-hour, not a traded price. Before a
-              venue trades the asset it is the one price market surfaces quote; where a venue
-              prices the asset separately, the gap between the two prints as a premium or a
-              discount — it is never silently absorbed.
+              The Index is the weighted reference for a GPU-hour, not a traded price. It is
+              derived from live rental markets — order books, rate cards, price lists — and
+              this exchange's own tape never feeds it.
+            </p>
+            <p>
+              Before a venue trades the asset, the Index is the one price market surfaces
+              quote; where a venue prices the asset separately, the gap prints as a premium
+              or a discount — it is never silently absorbed.
             </p>
             <p>
               The Index does not chase the market, and the market does not vote in the Index.
