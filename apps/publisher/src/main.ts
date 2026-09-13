@@ -52,6 +52,7 @@ async function main(): Promise<void> {
       oracleAddress: env.oracleAddress!,
       chainId: env.chainId!,
       txTimeoutMs: env.txTimeoutMs,
+      maxFeePerGasWei: env.maxFeePerGasWei,
     });
     const chainTarget = new ChainPublisherTarget(client, {
       accountAddress: client.accountAddress,

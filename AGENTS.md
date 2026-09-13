@@ -91,7 +91,7 @@ is never moved by it.
 
 The publisher (`apps/publisher`) polls the oracle's `index_candidates`,
 audits each latest candidate, and keeps the on-chain price current: publish
-on a deviation ≥ `PUBLISHER_MIN_DEVIATION_PCT` (default 0.5) vs the last
+on a deviation ≥ `PUBLISHER_MIN_DEVIATION_PCT` (default 0.9) vs the last
 published figure, or after `PUBLISHER_HEARTBEAT_MS` (default 24h) — whichever
 first. Quality verdicts (quorum, dispersion, band, staleness, jump,
 source-health breakers) are **non-blocking audit annotations** recorded to

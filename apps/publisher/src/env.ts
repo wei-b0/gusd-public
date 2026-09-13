@@ -20,6 +20,12 @@ export interface PublisherEnv extends PublisherConfig {
   chainId: number | null;
   /** Receipt wait limit. */
   txTimeoutMs: number;
+  /** Publication tx fee ceiling in wei (PUBLISHER_MAX_FEE_GWEI) — the
+   *  slow/cheap inclusion tier, with a zero priority fee. When the chain's
+   *  base fee is above the ceiling the tx queues/fails to submit and the
+   *  poller retries on a later tick; success is still only ever a mined
+   *  receipt. */
+  maxFeePerGasWei: bigint;
 }
 
 function intEnv(name: string, raw: string | undefined, fallback: number): number {
@@ -29,6 +35,25 @@ function intEnv(name: string, raw: string | undefined, fallback: number): number
     throw new Error(`${name} must be a positive integer, got "${raw}"`);
   }
   return n;
+}
+
+/**
+ * Decimal gwei → wei, exactly. Gwei stops at 9 decimal places (wei
+ * granularity), so the value parses digit-wise rather than through a float —
+ * 0.05 gwei must come out as exactly 50_000_000 wei. Signs and exponent
+ * notation are rejected; zero is meaningless as a fee ceiling.
+ */
+function gweiEnv(name: string, raw: string | undefined, fallback: string): bigint {
+  const value = (raw === undefined || raw === "" ? fallback : raw).trim();
+  if (!/^\d+(\.\d{1,9})?$/.test(value) || Number(value) === 0) {
+    throw new Error(
+      `${name} must be a decimal gwei value > 0 with at most 9 fractional digits, got "${value}"`,
+    );
+  }
+  const parts = value.split(".");
+  const whole = parts[0] ?? "0"; // regex guarantees digits before any "."
+  const frac = (parts[1] ?? "").padEnd(9, "0"); // gwei has at most 9 decimals
+  return BigInt(whole) * 1_000_000_000n + BigInt(frac);
 }
 
 function numEnv(name: string, raw: string | undefined, fallback: number): number {
@@ -110,13 +135,17 @@ export function parsePublisherEnv(env: NodeJS.ProcessEnv = process.env): Publish
         : numEnv("PUBLISHER_MAX_BAND_WIDTH_PCT", env.PUBLISHER_MAX_BAND_WIDTH_PCT, 0),
     // PROTOCOL.md §11 publication trigger: publish when the candidate
     // deviates from the last published value by at least this fraction
-    // (50 bps), or at the heartbeat below — whichever first. Between
+    // (90 bps), or at the heartbeat below — whichever first. Between
     // triggers the on-chain figure is already current and the tx is
     // suppressed (gas). Quality thresholds above only annotate.
-    minDeviationPct: numEnv("PUBLISHER_MIN_DEVIATION_PCT", env.PUBLISHER_MIN_DEVIATION_PCT, 0.5),
+    minDeviationPct: numEnv("PUBLISHER_MIN_DEVIATION_PCT", env.PUBLISHER_MIN_DEVIATION_PCT, 0.9),
     // §11 heartbeat: even without deviation, republish after this long so
     // on-chain updatedAt never goes stale while the price plateaus (~24h).
     heartbeatMs: intEnv("PUBLISHER_HEARTBEAT_MS", env.PUBLISHER_HEARTBEAT_MS, 86_400_000),
+    // Robinhood Chain's slow gas tier sits below 0.1 gwei; oracle writes are
+    // heartbeat-grade, not latency-sensitive, so pin the fee ceiling there
+    // (converted to wei once, here) instead of taking viem's estimate.
+    maxFeePerGasWei: gweiEnv("PUBLISHER_MAX_FEE_GWEI", env.PUBLISHER_MAX_FEE_GWEI, "0.05"),
     target,
     logLevel: env.LOG_LEVEL ?? "info",
     ...chainEnv(target, env),

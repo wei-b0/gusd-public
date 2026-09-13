@@ -322,8 +322,8 @@ describe("PublisherPoller", () => {
     await poller.tick();
     expect(target.calls).toHaveLength(1);
 
-    // +0.034% — inside the §11 0.5% band. The on-chain figure is already
-    // current; burning gas would change nothing.
+    // +0.034% — inside the configured 0.5% band. The on-chain figure is
+    // already current; burning gas would change nothing.
     store.candidates = [healthyCandidate({ id: "c2", price: 2.941, calcHash: "def" })];
     const second = await poller.tick();
     expect(second.published).toBe(0);
@@ -335,7 +335,7 @@ describe("PublisherPoller", () => {
     const { store, target, poller } = makePoller([healthyCandidate()]);
     await poller.tick();
 
-    // +0.68% — beyond 0.5%.
+    // +0.68% — beyond the configured 0.5%.
     store.candidates = [healthyCandidate({ id: "c2", price: 2.96, calcHash: "def" })];
     const second = await poller.tick();
     expect(second.published).toBe(1);

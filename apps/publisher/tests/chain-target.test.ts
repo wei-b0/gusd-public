@@ -1,16 +1,41 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Logger } from "@gusd/types";
 import { DEFAULT_METHODOLOGY_CONFIG, type MethodologyConfig } from "@gusd/pricing-engine";
 import { ChainPublisherTarget, type ChainClient } from "../src/chain-target.js";
 import { encodeGpuId, PRICE_SCALE } from "../src/encoding.js";
 import { PublisherPoller } from "../src/poller.js";
 import { parsePublisherEnv } from "../src/env.js";
+import { createViemChainClient } from "../src/viem-chain-client.js";
 import type {
   CandidateLike,
   PublishViolation,
   PublishableIndexValue,
 } from "../src/types.js";
 import type { PublisherStore } from "../src/store.js";
+
+/**
+ * viem's clients are stubbed so the fee posture of the real writeContract
+ * call is observable without an RPC. Everything else from viem stays real —
+ * only viem-chain-client.ts imports the library, so the other tests in this
+ * file are unaffected by the mock.
+ */
+const viemStubs = vi.hoisted(() => ({
+  writeContract: vi.fn(),
+  waitForTransactionReceipt: vi.fn(),
+}));
+
+vi.mock("viem", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("viem")>();
+  return {
+    ...actual,
+    createPublicClient: () => ({
+      getChainId: async () => 31337,
+      readContract: async () => 0,
+      waitForTransactionReceipt: viemStubs.waitForTransactionReceipt,
+    }),
+    createWalletClient: () => ({ writeContract: viemStubs.writeContract }),
+  };
+});
 
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 const ACCOUNT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
@@ -167,6 +192,96 @@ describe("parsePublisherEnv target gate", () => {
     const env = parsePublisherEnv({});
     expect(env.rpcUrl).toBeNull();
     expect(env.privateKey).toBeNull();
+  });
+});
+
+// ------------------------------------- publication posture (deviation + fee)
+
+describe("parsePublisherEnv publication posture", () => {
+  it("defaults the deviation gate to 0.9% and the fee ceiling to 0.05 gwei", () => {
+    const env = parsePublisherEnv({});
+    expect(env.minDeviationPct).toBe(0.9);
+    expect(env.maxFeePerGasWei).toBe(50_000_000n); // 0.05 gwei = 50M wei, exact
+  });
+
+  it("honors explicit deviation and fee overrides", () => {
+    const env = parsePublisherEnv({
+      PUBLISHER_MIN_DEVIATION_PCT: "0.75",
+      PUBLISHER_MAX_FEE_GWEI: "0.02",
+    });
+    expect(env.minDeviationPct).toBe(0.75);
+    expect(env.maxFeePerGasWei).toBe(20_000_000n);
+  });
+
+  it("still refuses an out-of-range deviation", () => {
+    expect(() => parsePublisherEnv({ PUBLISHER_MIN_DEVIATION_PCT: "1.2" })).toThrow(
+      /fraction in \(0,1\)/,
+    );
+  });
+
+  it("converts gwei to wei exactly — no float rounding", () => {
+    expect(parsePublisherEnv({ PUBLISHER_MAX_FEE_GWEI: "1.5" }).maxFeePerGasWei).toBe(
+      1_500_000_000n,
+    );
+    expect(parsePublisherEnv({ PUBLISHER_MAX_FEE_GWEI: "0.000000001" }).maxFeePerGasWei).toBe(1n);
+  });
+
+  it("treats an empty value as absent", () => {
+    const env = parsePublisherEnv({
+      PUBLISHER_MIN_DEVIATION_PCT: "",
+      PUBLISHER_MAX_FEE_GWEI: "",
+    });
+    expect(env.minDeviationPct).toBe(0.9);
+    expect(env.maxFeePerGasWei).toBe(50_000_000n);
+  });
+
+  it("fails cleanly on a malformed fee ceiling", () => {
+    for (const bad of ["abc", "-1", "0", "0.0000000001", "1e-3", "0x10"]) {
+      expect(() => parsePublisherEnv({ PUBLISHER_MAX_FEE_GWEI: bad })).toThrow(
+        /PUBLISHER_MAX_FEE_GWEI must be a decimal gwei value > 0/,
+      );
+    }
+  });
+});
+
+describe("createViemChainClient fee posture", () => {
+  const CLIENT_ENV = {
+    rpcUrl: "http://127.0.0.1:8545",
+    privateKey: `0x${"ab".repeat(32)}`,
+    oracleAddress: ORACLE,
+    chainId: 31337,
+    txTimeoutMs: 1_000,
+    maxFeePerGasWei: 50_000_000n,
+  };
+
+  beforeEach(() => {
+    viemStubs.writeContract.mockReset();
+    viemStubs.writeContract.mockResolvedValue("0xtxhash");
+    viemStubs.waitForTransactionReceipt.mockReset();
+    viemStubs.waitForTransactionReceipt.mockResolvedValue({ status: "success" });
+  });
+
+  it("pins the configured fee ceiling and a zero priority fee on the publish tx", async () => {
+    const client = createViemChainClient(CLIENT_ENV);
+    await client.sendPublish(encodeGpuId("H100_SXM_80GB"), 25_001n, 1);
+    expect(viemStubs.writeContract).toHaveBeenCalledTimes(1);
+    expect(viemStubs.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionName: "publish",
+        maxFeePerGas: 50_000_000n,
+        maxPriorityFeePerGas: 0n,
+      }),
+    );
+  });
+
+  it("returns only after a mined receipt — success is never assumed", async () => {
+    const client = createViemChainClient(CLIENT_ENV);
+    await expect(client.sendPublish(encodeGpuId("H100_SXM_80GB"), 25_001n, 1)).resolves.toEqual({
+      txHash: "0xtxhash",
+    });
+    expect(viemStubs.waitForTransactionReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ hash: "0xtxhash", confirmations: 1 }),
+    );
   });
 });
 

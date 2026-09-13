@@ -25,6 +25,8 @@ export function createViemChainClient(env: {
   oracleAddress: string;
   chainId: number;
   txTimeoutMs: number;
+  /** Fee ceiling in wei (parsed once in env.ts from PUBLISHER_MAX_FEE_GWEI). */
+  maxFeePerGasWei: bigint;
 }): ViemChainClient {
   const chain: Chain = defineChain({
     id: env.chainId,
@@ -56,11 +58,19 @@ export function createViemChainClient(env: {
       });
     },
     async sendPublish(gpuId, price, updatedAt) {
+      // Intentionally slow/cheap inclusion: the publication is heartbeat-grade,
+      // so pin the configured ceiling (never viem's estimate) and offer zero
+      // priority fee. If the base fee is above the ceiling, the tx queues or
+      // fails to submit and the poller's next tick retries — sendPublish only
+      // returns after a mined receipt, so nothing is ever marked published
+      // early.
       const hash = await walletClient.writeContract({
         address: env.oracleAddress as `0x${string}`,
         abi: GPUPriceOracle_ABI,
         functionName: "publish",
         args: [gpuId, price, BigInt(updatedAt)],
+        maxFeePerGas: env.maxFeePerGasWei,
+        maxPriorityFeePerGas: 0n,
         chain: null,
       });
       await publicClient.waitForTransactionReceipt({

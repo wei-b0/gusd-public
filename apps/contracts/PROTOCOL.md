@@ -489,7 +489,7 @@ Current intended policy:
 
 ```text
 index evaluation       ~15 seconds
-deviation publication  0.5% / 50 bps
+deviation publication  0.9% / 90 bps
 heartbeat              approximately 24 hours
 ```
 
@@ -500,7 +500,7 @@ Contracts should depend only on a minimal oracle interface.
 Implementation note (2026-09): the publication path is live — the offchain
 publisher writes `GPUPriceOracle.publish()` (publisher-EOA signed; owner
 `setPriceOverride` is genesis/incident-only). The optional onchain deviation
-bound is a compromised-key safety valve, distinct from the 0.5% publication
+bound is a compromised-key safety valve, distinct from the 0.9% publication
 trigger above, and ships disabled by default. No economics change.
 
 ---

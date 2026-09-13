@@ -156,7 +156,7 @@ export class PublisherPoller {
         // heartbeat. A first publish (no baseline) always goes out.
         const value = assessment.value;
         if (previous !== null) {
-          // Percent, matching minDeviationPct's units (0.5 = 0.5% = 50 bps).
+          // Percent, matching minDeviationPct's units (0.9 = 0.9% = 90 bps).
           const deviationPct =
             previous.price > 0
               ? (Math.abs(value.price - previous.price) / previous.price) * 100
