@@ -125,7 +125,7 @@ gUSD did not deploy a second PoolManager):
 - **L161** — `issue`: primary issuance at the oracle reference price + fee;
   principal is routed to `GPUMarketLiquidity` as market capital, fee to the
   revenue ledger. Fully decoupled from v4 so a v4 problem can never fail a
-  primary buy (comment at L171–178).
+  primary buy (comment at L176–181).
 - **L202** — `issueCredited`: the hook's in-swap backstop — identical pricing
   and guards, reverts if execution diverges from the plan-time quote (fails
   closed instead of bleeding capital).
