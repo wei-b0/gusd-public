@@ -156,7 +156,7 @@ function PortfolioBook() {
           {rows.length === 0 ? (
             <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
               No market positions yet. Orders on{" "}
-              <Link href="/markets" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
+              <Link href="/" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
                 Markets
               </Link>{" "}
               or the{" "}

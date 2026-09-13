@@ -23,7 +23,7 @@ export default function NotFound() {
             ))}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Link href="/markets" className="rev slug px-4 py-2 text-rev-fg">
+            <Link href="/" className="rev slug px-4 py-2 text-rev-fg">
               BACK TO MARKETS
             </Link>
             <Link

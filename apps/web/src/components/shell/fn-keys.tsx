@@ -17,7 +17,7 @@ import { usePathname } from "next/navigation";
 import { Gusd } from "@/components/ui/pair";
 
 const KEYS = [
-  { f: "F1", name: "Markets", href: "/markets" },
+  { f: "F1", name: "Markets", href: "/" },
   { f: "F2", name: "Terminal", href: "/terminal" },
   { f: "F3", name: "gUSD", href: "/gusd" },
   { f: "F4", name: "Portfolio", href: "/portfolio" },
@@ -37,8 +37,7 @@ export function FnKeys() {
         {KEYS.map((k) => {
           const active =
             pathname === k.href ||
-            pathname.startsWith(`${k.href}/`) ||
-            (k.href === "/markets" && pathname === "/");
+            pathname.startsWith(`${k.href}/`);
           return (
             <Link
               key={k.name}

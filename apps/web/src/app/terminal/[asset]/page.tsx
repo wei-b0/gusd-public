@@ -24,7 +24,7 @@ export default async function TerminalAssetPage({ params }: Props) {
   return (
     <div>
       <nav aria-label="Breadcrumb" className="flex items-baseline gap-2">
-        <Link href="/markets" className="slug text-dim transition-colors hover:text-amber">
+        <Link href="/" className="slug text-dim transition-colors hover:text-amber">
           [Markets]
         </Link>
         <span aria-hidden className="text-deep">/</span>

@@ -44,7 +44,7 @@ function resolveCommand(raw: string): string | null {
     case "markets":
     case "board":
       // An asset argument names a market — and a market lives on the desk.
-      return target ? `/terminal/${target}` : "/markets";
+      return target ? `/terminal/${target}` : "/";
     case "terminal":
       return target ? `/terminal/${target}` : "/terminal";
     case "oracle":
