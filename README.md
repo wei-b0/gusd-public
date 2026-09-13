@@ -7,6 +7,8 @@ gUSD creates onchain spot markets for exposure to GPU compute prices. The protoc
 **Live:** [gusd.lol](https://gusd.lol)  
 **Network:** Robinhood Chain mainnet · chain ID `4663`
 
+**Uniswap v4:** [`docs/uniswap-integration.md`](docs/uniswap-integration.md) — integration map with contracts, addresses, and line-level pointers · [`FEEDBACK.md`](FEEDBACK.md)
+
 ## What gUSD is
 
 The protocol has three core asset layers:
@@ -289,6 +291,8 @@ The V1 design is built around a few explicit boundaries:
 - `docs/indexer/ARCHITECTURE.md` — indexing architecture
 - `apps/indexer/README.md` — Envio indexer operations
 - `apps/contracts/README.md` — contract development and deployment notes
+- [`docs/uniswap-integration.md`](docs/uniswap-integration.md) — Uniswap v4 integration map for judges
+- [`FEEDBACK.md`](FEEDBACK.md) — Uniswap Developer Feedback submission file
 
 ## Current scope
 
