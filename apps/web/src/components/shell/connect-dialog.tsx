@@ -109,7 +109,7 @@ export function ConnectDialog() {
             </button>
           }
         >
-          <div aria-live="polite" className="p-3.5">
+          <div aria-live="polite" className="p-3.5 pb-1.5">
             {flow.step === "method" && <MethodStep flow={flow} />}
             {flow.step === "email" && <EmailStep flow={flow} />}
             {flow.step === "oauth" && (
@@ -144,6 +144,18 @@ export function ConnectDialog() {
             )}
             {flow.step === "provisioning" && <Pending label="PREPARING WALLET…" />}
           </div>
+          {/* Auth runs on Privy — say so, quietly, on every step. */}
+          <p className="slug border-t border-rule px-3.5 py-2 text-center text-[9.5px] text-deep">
+            Powered by{" "}
+            <a
+              href="https://privy.io"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-colors hover:text-dim"
+            >
+              Privy
+            </a>
+          </p>
         </TuiPanel>
       </div>
     </div>

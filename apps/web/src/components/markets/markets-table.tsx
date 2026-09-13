@@ -51,9 +51,9 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
               )}
               {SHOW_MARKET_FLOWS && (
                 <>
-                  <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
+                  {/* <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                     Volume <span className="tracking-normal normal-case">/ gUSD</span>
-                  </th>
+                  </th> */}
                   {/* <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right text-dim">
                     Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
                   </th> */}
@@ -172,9 +172,9 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
       )}
       {SHOW_MARKET_FLOWS && (
         <>
-          <td className="num px-2.5 py-2 text-right text-dim">
+          {/* <td className="num px-2.5 py-2 text-right text-dim">
             {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)}
-          </td>
+          </td> */}
           {/* <td className="num py-2 pl-2.5 pr-3 text-right text-dim">
             {m.liquidityUsd === null ? "—" : fmtGusdCompact(m.liquidityUsd)}
           </td> */}

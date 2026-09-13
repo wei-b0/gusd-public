@@ -52,7 +52,7 @@ export function MarketsDiscovery() {
           total flow on one row (the flow drops full-width beneath them
           while the board is narrow) */}
       <TuiPanel no="01" title="Class overview" meta="trailing 24h">
-        <dl className="grid grid-cols-2 gap-x-8 p-3 md:grid-cols-3">
+        <dl className="grid grid-cols-2 gap-x-8 p-3 md:grid-cols-2">
           {leader && (
             <Cell
               label="Leader 24h"
@@ -69,11 +69,11 @@ export function MarketsDiscovery() {
               dir={laggardMove === null || isFlatPct(laggardMove) ? undefined : laggardMove >= 0 ? "up" : "down"}
             />
           )}
-          <Cell
+          {/* <Cell
             className="col-span-2 md:col-span-1"
             label={<>Total 24h volume / <span className="normal-case">gUSD</span></>}
             value={totalVolume === null ? "—" : fmtGusdCompact(totalVolume)}
-          />
+          /> */}
         </dl>
       </TuiPanel>
 

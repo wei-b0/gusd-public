@@ -93,9 +93,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
             statistics strip — slack lives inside the frame, beneath the
             list, the way a board's empty quota does. */}
         <div
-          className={`order-4 space-y-5 lg:order-1 lg:flex lg:flex-col ${
-            tab === "Overview" ? "" : "hidden"
-          } lg:block`}
+          className={`order-4 space-y-5 lg:order-1 lg:flex lg:flex-col ${tab === "Overview" ? "" : "hidden"
+            } lg:block`}
         >
           <div className="lg:grow">
             <TuiPanel
@@ -114,9 +113,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                       key={mk.asset.id}
                       href={`/terminal/${mk.asset.id}`}
                       aria-current={active ? "page" : undefined}
-                      className={`flex w-full items-baseline justify-between gap-2 border-b border-rule px-3 py-2 text-left transition-colors last:border-b-0 ${
-                        active ? "bg-panel-deep" : "hover:bg-panel-deep"
-                      }`}
+                      className={`flex w-full items-baseline justify-between gap-2 border-b border-rule px-3 py-2 text-left transition-colors last:border-b-0 ${active ? "bg-panel-deep" : "hover:bg-panel-deep"
+                        }`}
                     >
                       <span className="flex items-baseline gap-1.5">
                         <span
@@ -126,17 +124,15 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                           ▶
                         </span>
                         <span
-                          className={`num text-[13px] font-bold whitespace-nowrap ${
-                            active ? "text-bright" : "text-data"
-                          }`}
+                          className={`num text-[13px] font-bold whitespace-nowrap ${active ? "text-bright" : "text-data"
+                            }`}
                         >
                           {pairName(mk.asset.id)}
                         </span>
                       </span>
                       <span
-                        className={`num inline-flex items-baseline gap-0.5 text-[11px] ${
-                          move === null || flat ? "text-dim" : move >= 0 ? "text-up" : "text-down"
-                        }`}
+                        className={`num inline-flex items-baseline gap-0.5 text-[11px] ${move === null || flat ? "text-dim" : move >= 0 ? "text-up" : "text-down"
+                          }`}
                       >
                         {move === null ? (
                           "—"
@@ -188,11 +184,10 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                       type="button"
                       aria-pressed={range === r}
                       onClick={() => setRange(r)}
-                      className={`num border-b px-2.5 py-1 text-[11px] transition-colors ${
-                        range === r
-                          ? "border-amber text-amber"
-                          : "border-transparent text-dim hover:text-data"
-                      }`}
+                      className={`num border-b px-2.5 py-1 text-[11px] transition-colors ${range === r
+                        ? "border-amber text-amber"
+                        : "border-transparent text-dim hover:text-data"
+                        }`}
                     >
                       {r}
                     </button>
@@ -221,9 +216,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                     </span>
                     {m.indexChange24hPct !== null ? (
                       <span
-                        className={`num inline-flex items-baseline gap-1 text-[12px] ${
-                          flatIndex24 ? "text-dim" : m.indexChange24hPct >= 0 ? "text-up" : "text-down"
-                        }`}
+                        className={`num inline-flex items-baseline gap-1 text-[12px] ${flatIndex24 ? "text-dim" : m.indexChange24hPct >= 0 ? "text-up" : "text-down"
+                          }`}
                       >
                         <TickFlash value={m.indexChange24hPct} precision={2} className="inline-block">
                           {fmtPctSigned(m.indexChange24hPct)}
@@ -251,9 +245,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                       <span className="num text-[11px] text-dim">gUSD</span>
                     </span>
                     <span
-                      className={`num inline-flex items-baseline gap-1 text-[12px] ${
-                        m.change24hPct === null || flat24 ? "text-dim" : m.change24hPct >= 0 ? "text-up" : "text-down"
-                      }`}
+                      className={`num inline-flex items-baseline gap-1 text-[12px] ${m.change24hPct === null || flat24 ? "text-dim" : m.change24hPct >= 0 ? "text-up" : "text-down"
+                        }`}
                     >
                       {m.change24hPct === null ? (
                         "—"
@@ -291,9 +284,8 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                     span stays off the desk rather than printing "—". */}
                 {hasMarket && (
                   <span
-                    className={`num text-[12px] font-bold ${
-                      basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"
-                    }`}
+                    className={`num text-[12px] font-bold ${basis === null ? "text-dim" : premium ? "text-amber" : "text-wire"
+                      }`}
                   >
                     {basis === null ? "Basis —" : `${premium ? "Premium" : "Discount"} ${fmtPctSigned(basis)}`}
                   </span>
