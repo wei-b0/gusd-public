@@ -114,7 +114,10 @@ export function ConnectDialog() {
             {flow.step === "email" && <EmailStep flow={flow} />}
             {flow.step === "oauth" && (
               <>
-                <Pending label="CONTINUE IN THE POPUP…" meta="google" />
+                <Pending
+                  label="CONTINUE IN THE POPUP…"
+                  meta={flow.provider === "twitter" ? "x / twitter" : flow.provider}
+                />
                 {flow.error && <FlowError message={flow.error} />}
                 <RetryRow onClick={() => auth.flowAction({ type: "back-to-method" })} />
               </>
@@ -152,8 +155,8 @@ type EmailFlow = Extract<ConnectFlow, { step: "email" }>;
 
 /**
  * Method step: wallets are the dominant path — one bordered cell each,
- * first in the panel, first in the tab order. Email and Google demote below
- * the hairline as the fallback route.
+ * first in the panel, first in the tab order. Email, Google, and X demote
+ * below the hairline as the fallback route.
  */
 function MethodStep({ flow }: { flow: MethodFlow }) {
   const { auth } = useServices();
@@ -222,6 +225,13 @@ function MethodStep({ flow }: { flow: MethodFlow }) {
           className="slug block w-full py-1.5 text-left text-dim transition-colors hover:text-amber"
         >
           Google
+        </button>
+        <button
+          type="button"
+          onClick={() => auth.flowAction({ type: "choose-twitter" })}
+          className="slug block w-full py-1.5 text-left text-dim transition-colors hover:text-amber"
+        >
+          X / Twitter
         </button>
         {/*
           Wallet Connect is intentionally absent: no transport package is

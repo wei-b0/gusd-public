@@ -149,9 +149,10 @@ export function PrivyBridge() {
             }
             return;
           }
-          case "google": {
+          case "google":
+          case "twitter": {
             try {
-              await h.initOAuth({ provider: "google" });
+              await h.initOAuth({ provider: intent.type });
               // Redirect flow — the page leaves; state resumes on return.
             } catch {
               h.auth.store.setFlow({ step: "method", error: GENERIC_ERROR });

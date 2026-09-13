@@ -37,6 +37,7 @@ export type AuthIntent =
   | { type: "email-verify"; code: string }
   | { type: "email-resend"; email: string }
   | { type: "google" }
+  | { type: "twitter" }
   | { type: "siwe-sign"; walletId: string; label: string; provider: EIP1193Provider; address: string }
   | { type: "logout" };
 
@@ -128,6 +129,10 @@ export class PrivyAuthPort implements AuthPort {
       case "choose-google":
         this.store.setFlow({ step: "oauth", provider: "google", error: null });
         this.emit({ type: "google" });
+        return;
+      case "choose-twitter":
+        this.store.setFlow({ step: "oauth", provider: "twitter", error: null });
+        this.emit({ type: "twitter" });
         return;
       case "choose-wallet":
         this.connectExternal(action.walletId);

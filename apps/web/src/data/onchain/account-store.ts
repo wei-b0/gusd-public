@@ -66,6 +66,8 @@ export class OnChainAccountStore {
   private listeners = new Set<() => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<void> | null = null;
+  /** Set at the first failed refresh of an outage; one line per outage. */
+  private outageLogged = false;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -138,10 +140,19 @@ export class OnChainAccountStore {
             basisReason: p.basisReason ?? null,
           })),
         });
+        this.outageLogged = false;
       } catch (err) {
         // Read failure is a system problem, not a user failure: keep the
-        // last snapshot, log for the operator.
-        console.error("[account-store] refresh failed:", err);
+        // last snapshot. One line per outage — the poll loop would otherwise
+        // re-log viem's full wall-of-text every 30s (a photobombed console
+        // is a broken console); recovery resets silently.
+        if (!this.outageLogged) {
+          this.outageLogged = true;
+          const reason = (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
+          console.error(
+            `[account-store] refresh failed — RPC unreachable on chain ${getActiveChain().id}? Is the node up? (${reason.slice(0, 160)})`,
+          );
+        }
       } finally {
         this.refreshing = null;
       }

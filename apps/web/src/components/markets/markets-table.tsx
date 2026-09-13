@@ -54,9 +54,9 @@ export function MarketsTable({ markets }: { markets: Market[] }) {
                   <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                     Volume <span className="tracking-normal normal-case">/ gUSD</span>
                   </th>
-                  <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right text-dim">
+                  {/* <th scope="col" className="slug py-2 pl-2.5 pr-3 text-right text-dim">
                     Liquidity <span className="tracking-normal normal-case">/ gUSD</span>
-                  </th>
+                  </th> */}
                 </>
               )}
             </tr>
@@ -123,9 +123,8 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
         )}
       </td>
       <td
-        className={`num px-2.5 py-2 text-right ${
-          move === null || flat24 ? "text-dim" : move >= 0 ? "text-up" : "text-down"
-        }`}
+        className={`num px-2.5 py-2 text-right ${move === null || flat24 ? "text-dim" : move >= 0 ? "text-up" : "text-down"
+          }`}
       >
         <span className={`${scale.size} ${scale.weight} inline-flex items-baseline gap-1`}>
           {move === null ? (
@@ -176,9 +175,9 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
           <td className="num px-2.5 py-2 text-right text-dim">
             {m.volume24hUsd === null ? "—" : fmtGusdCompact(m.volume24hUsd)}
           </td>
-          <td className="num py-2 pl-2.5 pr-3 text-right text-dim">
+          {/* <td className="num py-2 pl-2.5 pr-3 text-right text-dim">
             {m.liquidityUsd === null ? "—" : fmtGusdCompact(m.liquidityUsd)}
-          </td>
+          </td> */}
         </>
       )}
     </tr>

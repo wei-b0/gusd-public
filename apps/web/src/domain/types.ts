@@ -363,8 +363,8 @@ export type ConnectFlow =
   | { step: "method"; error: string | null }
   /** Email code sent; `email` is shown back, `busy` while verifying/resending. */
   | { step: "email"; email: string; busy: boolean; error: string | null }
-  /** OAuth is in flight — a redirect for google; the flow resumes on return. */
-  | { step: "oauth"; provider: "google"; error: string | null }
+  /** OAuth is in flight — the page leaves for google/twitter; state resumes on return. */
+  | { step: "oauth"; provider: "google" | "twitter"; error: string | null }
   /** Awaiting the external wallet itself (extension prompt, WC handshake). */
   | { step: "wallet"; walletLabel: string | null; error: string | null }
   /** Awaiting the SIWE signature the wallet was asked to sign. */
@@ -387,6 +387,7 @@ export type ConnectAction =
   | { type: "resend-code" }
   | { type: "back-to-method" }
   | { type: "choose-google" }
+  | { type: "choose-twitter" }
   | { type: "choose-wallet"; walletId: string };
 
 /** A wallet this environment offers for external connection. `id` is the
