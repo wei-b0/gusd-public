@@ -65,6 +65,22 @@ export interface OnChainTradingPortDeps {
 const NO_SESSION = "Connect a wallet to trade — nothing signs without one.";
 const NO_QUOTE = "This order can't be quoted right now — check the size and try again.";
 
+/** The slip's quote is a preview: it must fail fast, not hang. One flaky
+ *  RPC read stalls the whole mirror batch (a single Promise.all over a
+ *  dozen views), and an unsettled quote leaves the submit gated with the
+ *  fallback ledger on screen — indistinguishable from a broken button.
+ *  Past this budget the slip speaks the typed retry voice instead; the
+ *  debounce refires on the next settled input anyway. */
+const QUOTE_TIMEOUT_MS = 2_500;
+
+/** Rejects with the typed timeout failure after `ms` — the losing branch
+ *  of the race below; the underlying read is abandoned, not cancelled. */
+function quoteTimeout(ms: number): Promise<never> {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("quote-timeout")), ms);
+  });
+}
+
 export class OnChainTradingPort implements TradingPort {
   private readonly quoteDeps: QuoteDeps;
   /** Cached account projection — a stable reference between store changes. */
@@ -110,7 +126,19 @@ export class OnChainTradingPort implements TradingPort {
   }
 
   async quoteDetailed(request: TradeRequest): Promise<TradeQuote | QuoteFailure | null> {
-    return quoteAssetDetailed(request, this.quoteDeps);
+    try {
+      return await Promise.race([
+        quoteAssetDetailed(request, this.quoteDeps),
+        quoteTimeout(QUOTE_TIMEOUT_MS),
+      ]);
+    } catch (err) {
+      // Only the timeout becomes a typed retry voice; genuine quote errors
+      // keep their existing behavior (the slip's catch renders them null).
+      if (err instanceof Error && err.message === "quote-timeout") {
+        return { unavailable: true, reason: "quote-timeout" };
+      }
+      throw err;
+    }
   }
 
   async execute(request: TradeRequest): Promise<ActionRecord> {

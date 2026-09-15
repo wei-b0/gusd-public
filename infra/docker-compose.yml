@@ -175,6 +175,17 @@ services:
       # Empty (no record yet) is a loud boot error, never a silent skip.
       PUBLISHER_ORACLE_ADDRESS: ${PUBLISHER_ORACLE_ADDRESS:-}
       PUBLISHER_CHAIN_ID: ${PUBLISHER_CHAIN_ID:-31337}
+      # Tunables documented in infra/.env.example. "" falls back to the code
+      # default in the publisher's env parser, so an unset var in .env is
+      # never a wrong value.
+      PUBLISHER_TX_TIMEOUT_MS: ${PUBLISHER_TX_TIMEOUT_MS:-}
+      # Publication tx fee ceiling in gwei (code default 0.05; the VM posture
+      # sets 0.10 in infra/.env to clear the live base fee).
+      PUBLISHER_MAX_FEE_GWEI: ${PUBLISHER_MAX_FEE_GWEI:-}
+      # PROTOCOL.md §11 trigger: deviation percent (code default 0.9) and the
+      # ~24h heartbeat in ms.
+      PUBLISHER_MIN_DEVIATION_PCT: ${PUBLISHER_MIN_DEVIATION_PCT:-}
+      PUBLISHER_HEARTBEAT_MS: ${PUBLISHER_HEARTBEAT_MS:-}
     extra_hosts:
       # Linux parity for the host.docker.internal Anvil RPC default.
       - "host.docker.internal:host-gateway"

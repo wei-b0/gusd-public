@@ -578,7 +578,11 @@ export interface QuoteFailure {
      *  gUSD raw (6-dec) for money-first ones. */
     | "no-bid-capacity"
     /** Degenerate inputs — the availability gate already covers these. */
-    | "no-quote";
+    | "no-quote"
+    /** The quote round-trip didn't finish in time — a slow RPC read, not
+     *  a market verdict. Nothing is wrong with the order; retry quotes
+     *  it. */
+    | "quote-timeout";
   /** The market's max fill in the request's own units, raw: GPU ledger
    *  raw for size-first, gUSD 6-dec raw for money-first. Absent when the
    *  rejection carries no usable capacity figure. */

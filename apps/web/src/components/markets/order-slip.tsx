@@ -55,6 +55,8 @@ export interface OrderSlipProps {
 
 /** Debounce for the async quote calls — one per settled input, not one per keystroke. */
 const QUOTE_DEBOUNCE_MS = 250;
+/** One silent re-attempt after a quote-timeout, past the port's 2.5s budget. */
+const QUOTE_RETRY_MS = 1_500;
 
 /** Percent-of-basis presets — fractions of the same base MAX fills,
  *  wherever a concrete base exists (see `context`). */
@@ -127,24 +129,39 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       return;
     }
     let alive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     setQuote(undefined);
     const timer = setTimeout(() => {
       const request: TradeRequest =
         mode === "gusd"
           ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
           : { asset, side, basis: "units", size: activeValue, toleranceBps };
-      trading
-        .quoteDetailed(request)
-        .then((q) => {
-          if (alive) setQuote(q);
-        })
-        .catch(() => {
-          if (alive) setQuote(null);
-        });
+      // A quote-timeout speaks its retry voice and gets exactly one silent
+      // re-attempt — a hung RPC read shouldn't leave a dead end the user
+      // can't clear (re-clicking a preset is a no-op; the effect only
+      // refires on a settled-input change). A second timeout keeps the
+      // voice and waits for real input.
+      const attempt = (retry: boolean) => {
+        trading
+          .quoteDetailed(request)
+          .then((q) => {
+            if (!alive) return;
+            if (q !== null && "unavailable" in q && q.reason === "quote-timeout" && retry) {
+              retryTimer = setTimeout(() => attempt(false), QUOTE_RETRY_MS);
+              return;
+            }
+            setQuote(q);
+          })
+          .catch(() => {
+            if (alive) setQuote(null);
+          });
+      };
+      attempt(true);
     }, QUOTE_DEBOUNCE_MS);
     return () => {
       alive = false;
       clearTimeout(timer);
+      clearTimeout(retryTimer);
     };
   }, [trading, asset, side, mode, activeValue, validInput, toleranceBps, referencePrice, settled]);
 
@@ -181,6 +198,9 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
   const failureVoice = (f: QuoteFailure): string | null => {
     if (f.reason === "oracle-stale") {
       return "The chain's price publication is stale — orders wait for a fresh oracle publication.";
+    }
+    if (f.reason === "quote-timeout") {
+      return "The chain is slow to quote right now — nothing is wrong with the order, try again in a moment.";
     }
     if (f.reason === "no-ask-capacity" || f.reason === "no-bid-capacity") {
       return f.capacityRaw !== undefined && f.capacityRaw > 0n
