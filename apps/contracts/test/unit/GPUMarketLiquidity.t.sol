@@ -8,10 +8,9 @@ import {GUSD} from "../../src/GUSD.sol";
 import {RevenueLedger} from "../../src/RevenueLedger.sol";
 import {GPUIssuance} from "../../src/GPUIssuance.sol";
 import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
-import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
-import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {OracleReports} from "../utils/OracleReports.sol";
 
 /// @notice GPUMarketLiquidity unit suite: the vault is pure two-sided
 ///         inventory + provenance. Principal arrives only from issuance
@@ -19,10 +18,11 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 ///         booked hook-only and leaves only to the PoolManager. Band geometry
 ///         is deleted — fill-price-in-[bid,ask] properties live in
 ///         GPUHook.t.sol; this suite pins custody, provenance, and gates.
-contract GPUMarketLiquidityTest is Test, Deployers {
+///         The vault is oracle-agnostic: reports only appear here through the
+///         issuance calls that price against the real GpuOracle.
+contract GPUMarketLiquidityTest is Test, Deployers, OracleReports {
     MockERC20 internal underlying;
     GUSD internal gusd;
-    MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
     GPUMarketLiquidity internal vault;
     address internal ledger;
@@ -35,16 +35,13 @@ contract GPUMarketLiquidityTest is Test, Deployers {
     uint256 internal constant PRICE = 25_000; // $2.50/GPU-hour, 4-dec
 
     function setUp() public {
-        vm.warp(1_000_000);
+        _deployOracle();
         deployFreshManagerAndRouters();
         underlying = new MockERC20("USD Coin", "USDC", 6);
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
-        oracle = new MockGPUPriceOracle(address(this));
         vault = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
-        issuance = new GPUIssuance(
-            IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(vault), address(this)
-        );
+        issuance = new GPUIssuance(IERC20(address(gusd)), oracle, ledger, address(vault), address(this));
         hookProxy = makeAddr("hookProxy");
         vault.setRefs(address(issuance), hookProxy);
 
@@ -59,16 +56,16 @@ contract GPUMarketLiquidityTest is Test, Deployers {
     function _createGpu(bytes32 id, string memory name, string memory symbol) internal {
         issuance.createGpu(id, name, symbol, 50, 3000, 60);
         issuance.setIssuanceEnabled(id, true);
-        oracle.setPrice(id, PRICE, block.timestamp);
     }
 
     function _issueTo(address to, bytes32 id, uint256 amount) internal returns (uint256 base) {
         uint256 fee;
-        (base, fee,) = issuance.quoteIssue(id, amount);
+        bytes memory updateData = _updateData(id, PRICE);
+        (base, fee,) = issuance.quoteIssue(id, amount, updateData);
         deal(address(gusd), to, base + fee);
         vm.startPrank(to);
         gusd.approve(address(issuance), type(uint256).max);
-        issuance.issue(id, amount, to);
+        issuance.issue(id, amount, to, updateData);
         vm.stopPrank();
     }
 
@@ -78,7 +75,7 @@ contract GPUMarketLiquidityTest is Test, Deployers {
     /// immediately — no staging phase — and is counted exactly once.
     function test_notePrincipal_capitalizesBidCapacity() public {
         uint256 ledger0 = gusd.balanceOf(ledger);
-        (uint256 base, uint256 fee,) = issuance.quoteIssue(GPU_ID, 10e18);
+        (uint256 base, uint256 fee,) = issuance.quoteIssue(GPU_ID, 10e18, _updateData(GPU_ID, PRICE));
         _issueTo(seller, GPU_ID, 10e18);
 
         assertEq(vault.bidInventoryGusd(GPU_ID), base, "principal is bid capacity");
@@ -259,8 +256,8 @@ contract GPUMarketLiquidityTest is Test, Deployers {
         b = uint128(bound(uint256(b), 1e18, 100e18));
         _createGpu(GENESIS_ID, "Genesis GPU", "GGPU");
 
-        (uint256 baseA,,) = issuance.quoteIssue(GPU_ID, a);
-        (uint256 baseB,,) = issuance.quoteIssue(GENESIS_ID, b);
+        (uint256 baseA,,) = issuance.quoteIssue(GPU_ID, a, _updateData(GPU_ID, PRICE));
+        (uint256 baseB,,) = issuance.quoteIssue(GENESIS_ID, b, _updateData(GENESIS_ID, PRICE));
         _issueTo(seller, GPU_ID, a);
         _issueTo(seller, GENESIS_ID, b);
 
