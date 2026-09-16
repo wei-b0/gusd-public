@@ -1,17 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_METHODOLOGY_CONFIG } from "@gusd/pricing-engine";
 import { resolvePanelThresholds } from "../src/thresholds.js";
-import type { PublisherConfig } from "../src/types.js";
+import type { AttestorConfig } from "../src/types.js";
 
-const BASE: PublisherConfig = {
+const BASE: AttestorConfig = {
   pinnedMethodologyVersion: "0.2.0",
   minContributors: null,
   maxDispersion: null,
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: null,
-  minDeviationPct: 0.5,
-  heartbeatMs: 86_400_000,
 };
 
 describe("resolvePanelThresholds", () => {
@@ -23,7 +21,7 @@ describe("resolvePanelThresholds", () => {
     expect(t.maxFreshnessMs).toBe(300_000);
   });
 
-  it("a thin panel publishes on its per-panel quorum and dispersion cap", () => {
+  it("a thin panel attests on its per-panel quorum and dispersion cap", () => {
     const l40s = resolvePanelThresholds(BASE, DEFAULT_METHODOLOGY_CONFIG, "L40S_PANEL_V1");
     expect(l40s.minContributors).toBe(3);
     expect(l40s.maxDispersion).toBe(0.45);

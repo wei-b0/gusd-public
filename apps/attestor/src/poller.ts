@@ -1,35 +1,53 @@
 import type { Logger } from "@gusd/types";
 import type { MethodologyConfig } from "@gusd/pricing-engine";
-import type { BreakerMap, PublisherConfig, PublisherTarget } from "./types.js";
+import type { GpuOracleDomain, ReportV1, SignerLike } from "@gusd/attestor-client";
+import {
+  buildReport,
+  encodeUpdateData,
+  epochOf,
+  observationSeconds,
+  reportHash,
+  signReport,
+} from "@gusd/attestor-client";
+
+import type { GpuOracleDomain, SignerLike } from "@gusd/attestor-client";
+import type { AttestorConfig, BreakerMap } from "./types.js";
 import { assessCandidate } from "./validate.js";
 import { resolvePanelThresholds } from "./thresholds.js";
-import type { PublisherStore } from "./store.js";
+import type { AttestorStore } from "./store.js";
 
 /**
- * The publisher's loop: poll the oracle's index_candidates, audit each latest
- * candidate independently, and keep the on-chain price current per
- * PROTOCOL.md §11 — publish when the candidate deviates from the last
- * published value by ≥ minDeviationPct, or after heartbeatMs without a
- * publish, whichever first. Between triggers the on-chain figure is already
- * current and the tx is suppressed (the gas saver). Gate verdicts never
- * block: swaps need a current price, and an imperfect published figure beats
- * a stale or absent one. They are recorded to publish_violations for audit
- * at publication time (and for no-price refusals), so the audit ledger stays
- * 1:1 with what shipped. Publishing is idempotent end to end — the
- * (candidateId, target) unique key means a crash between target
- * acknowledgement and ledger write is resolved by the retry being a no-op
- * insert.
+ * The attestor's loop: poll the oracle's index_candidates, audit each latest
+ * candidate independently, and attest the accepted one into the CURRENT epoch
+ * — build a Report (observedAt = candidate.computedAt clamped ≤ now; epoch =
+ * the epoch being attested INTO), EIP-712-sign it, and persist it to the
+ * `reports` table the API serves from. No EVM transaction exists anywhere in
+ * this process: the signature is consumed by whoever trades next.
+ *
+ * The per-epoch gate replaces the push era's deviation/heartbeat trigger: the
+ * contract accepts exactly one report per (gpu, epoch), so every epoch needs
+ * one attestation and anything after it in the same epoch is a no-op — one
+ * report per epoch per GPU, re-attesting the latest healthy candidate while
+ * it stays inside the observation floor. Audit verdicts never block: trades
+ * need a current report, and an imperfect attested figure beats a stale or
+ * absent one. They are recorded to publish_violations so the audit ledger
+ * stays 1:1 with what shipped. Persistence is idempotent end to end — the
+ * (gpu_id, epoch) unique key means a crash after signing resolves by the
+ * retry being a no-op insert.
  */
-export class PublisherPoller {
+export class AttestorPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight: Promise<unknown> | null = null;
-  private stopped = false;
 
   constructor(
     private readonly opts: {
-      store: PublisherStore;
-      target: PublisherTarget;
-      config: PublisherConfig;
+      store: AttestorStore;
+      signer: SignerLike;
+      /** The EIP-712 domain: chainId + GpuOracle address (verifyingContract). */
+      domain: GpuOracleDomain;
+      config: AttestorConfig;
+      epochLength: number;
+      maxObservationAge: number;
       logger: Logger;
       /** When absent, contributor source health is not re-checked. */
       fetchBreakers?: () => Promise<BreakerMap>;
@@ -55,8 +73,8 @@ export class PublisherPoller {
   }
 
   /** One evaluation pass over every watched gpu. */
-  async tick(): Promise<{ published: number; flagged: number; skipped: number }> {
-    if (this.inFlight !== null) return { published: 0, flagged: 0, skipped: 0 };
+  async tick(): Promise<{ attested: number; flagged: number; skipped: number }> {
+    if (this.inFlight !== null) return { attested: 0, flagged: 0, skipped: 0 };
     const work = this.tickInner();
     this.inFlight = work;
     try {
@@ -66,10 +84,10 @@ export class PublisherPoller {
     }
   }
 
-  private async tickInner(): Promise<{ published: number; flagged: number; skipped: number }> {
-    const { store, target, config, logger } = this.opts;
+  private async tickInner(): Promise<{ attested: number; flagged: number; skipped: number }> {
+    const { store, config, logger } = this.opts;
     const now = this.opts.now?.() ?? new Date();
-    const counters = { published: 0, flagged: 0, skipped: 0 };
+    const counters = { attested: 0, flagged: 0, skipped: 0 };
 
     let breakers: BreakerMap | undefined;
     if (this.opts.fetchBreakers !== undefined) {
@@ -82,18 +100,18 @@ export class PublisherPoller {
         logger.warn("source health unavailable — skipping cycle", {
           err: err instanceof Error ? err.message : String(err),
         });
-        return { published: 0, flagged: 0, skipped: 0 };
+        return { attested: 0, flagged: 0, skipped: 0 };
       }
     }
 
-    let candidates: Awaited<ReturnType<PublisherStore["latestCandidates"]>>;
+    let candidates: Awaited<ReturnType<AttestorStore["latestCandidates"]>>;
     try {
       candidates = await store.latestCandidates();
     } catch (err: unknown) {
-      logger.error("publisher could not read candidates", {
+      logger.error("attestor could not read candidates", {
         err: err instanceof Error ? err.message : String(err),
       });
-      return { published: 0, flagged: 0, skipped: 0 };
+      return { attested: 0, flagged: 0, skipped: 0 };
     }
 
     // The audit thresholds come from the stored methodology row for the
@@ -104,26 +122,31 @@ export class PublisherPoller {
     try {
       methodology = await store.methodologyConfig(config.pinnedMethodologyVersion);
     } catch (err: unknown) {
-      logger.error("publisher could not read the methodology row", {
+      logger.error("attestor could not read the methodology row", {
         err: err instanceof Error ? err.message : String(err),
       });
-      return { published: 0, flagged: 0, skipped: 0 };
+      return { attested: 0, flagged: 0, skipped: 0 };
     }
     if (methodology === null) {
-      logger.warn("pinned methodology version missing from the database — refusing to publish", {
+      logger.warn("pinned methodology version missing from the database — refusing to attest", {
         pinnedMethodologyVersion: config.pinnedMethodologyVersion,
       });
-      return { published: 0, flagged: 0, skipped: 0 };
+      return { attested: 0, flagged: 0, skipped: 0 };
     }
 
+    const nowSec = Math.floor(now.getTime() / 1000);
     for (const candidate of candidates) {
       try {
-        if (await store.alreadyPublished(candidate.id, target.name)) {
+        const epoch = epochOf(nowSec, this.opts.epochLength);
+        // One report per (gpu, epoch): the first tick after a boundary does
+        // the work, every later tick in the epoch is a no-op — the contract
+        // would bind only the first anyway.
+        if (await store.reportForEpoch(candidate.gpuId, epoch)) {
           counters.skipped += 1;
           continue;
         }
 
-        const previous = await store.latestPublication(candidate.gpuId, target.name);
+        const previous = await store.latestReport(candidate.gpuId);
         const assessment = assessCandidate(candidate, {
           config: resolvePanelThresholds(config, methodology, candidate.panelId),
           now,
@@ -132,18 +155,18 @@ export class PublisherPoller {
         });
 
         if (assessment.value === null) {
-          // A genuine refusal: nothing exists to publish. Recorded once per
+          // A genuine refusal: nothing exists to attest. Recorded once per
           // (candidateId, target) so the audit sees why this candidate died.
           const { inserted } = await store.recordViolations(
             candidate.id,
             candidate.gpuId,
-            target.name,
+            TARGET,
             assessment.violations,
             config.pinnedMethodologyVersion,
             now,
           );
           counters.skipped += 1;
-          logger.warn("candidate not publishable — no price", {
+          logger.warn("candidate not attestable — no price", {
             gpuId: candidate.gpuId,
             candidateId: candidate.id,
             violations: assessment.violations,
@@ -152,45 +175,65 @@ export class PublisherPoller {
           continue;
         }
 
-        // §11 trigger: deviation from the last published value, else the
-        // heartbeat. A first publish (no baseline) always goes out.
+        // Observation floor — the one hard stop besides a missing price. The
+        // contract rejects reports with observedAt < now − MAX_OBSERVATION_AGE,
+        // so signing a report that would fail consumption wastes nothing and
+        // proves nothing; the next fresh candidate attests instead.
         const value = assessment.value;
-        if (previous !== null) {
-          // Percent, matching minDeviationPct's units (0.9 = 0.9% = 90 bps).
-          const deviationPct =
-            previous.price > 0
-              ? (Math.abs(value.price - previous.price) / previous.price) * 100
-              : Number.POSITIVE_INFINITY;
-          const heartbeatDue =
-            now.getTime() - previous.publishedAt.getTime() >= config.heartbeatMs;
-          if (deviationPct < config.minDeviationPct && !heartbeatDue) {
-            counters.skipped += 1;
-            logger.debug("publish suppressed — on-chain figure already current", {
-              gpuId: candidate.gpuId,
-              candidateId: candidate.id,
-              price: value.price,
-              lastPublished: previous.price,
-              deviationPct,
-            });
-            continue;
-          }
+        const observedAtSec = observationSeconds(Date.parse(value.computedAt), now.getTime());
+        const ageSec = nowSec - observedAtSec;
+        if (ageSec > this.opts.maxObservationAge) {
+          const { inserted } = await store.recordViolations(
+            candidate.id,
+            candidate.gpuId,
+            TARGET,
+            [
+              ...assessment.violations,
+              {
+                code: "observation_beyond_floor",
+                detail: `observation is ${ageSec}s old (floor ${this.opts.maxObservationAge}s) — nothing to attest`,
+              },
+            ],
+            config.pinnedMethodologyVersion,
+            now,
+          );
+          counters.skipped += 1;
+          logger.warn("candidate observation beyond the floor — not attestable", {
+            gpuId: candidate.gpuId,
+            candidateId: candidate.id,
+            ageSec,
+            floor: this.opts.maxObservationAge,
+            recorded: inserted,
+          });
+          continue;
         }
 
-        // Audit annotations ride publications: one publish_violations row
-        // per published value (joined by candidate_id), never one per polled
-        // candidate — suppressed wobbles would otherwise flood the ledger.
+        const report = buildReport({
+          gpuId: value.gpuId,
+          price: value.price,
+          observedAtSec,
+          nowSec,
+          epochLength: this.opts.epochLength,
+          maxObservationAge: this.opts.maxObservationAge,
+          calcHash: calcHashBytes32(value.calcHash),
+        });
+        const signed = await signReport(this.opts.signer, report, this.opts.domain);
+
+        // Audit annotations ride attestations: one publish_violations row per
+        // attested report (joined by candidate_id), never one per polled
+        // candidate — suppressed epochs would otherwise flood the ledger.
         if (assessment.violations.length > 0) {
           const { inserted } = await store.recordViolations(
             candidate.id,
             candidate.gpuId,
-            target.name,
+            TARGET,
             assessment.violations,
             config.pinnedMethodologyVersion,
             now,
           );
           if (inserted) {
             counters.flagged += 1;
-            logger.warn("candidate flagged — publishing regardless (heartbeat policy)", {
+            logger.warn("candidate flagged — attesting regardless (epoch policy)", {
               gpuId: candidate.gpuId,
               candidateId: candidate.id,
               violations: assessment.violations,
@@ -198,27 +241,34 @@ export class PublisherPoller {
           }
         }
 
-        const { txRef } = await target.publish(value);
-        const { inserted } = await store.recordPublication(
-          value,
-          txRef,
-          target.name,
-          config.pinnedMethodologyVersion,
-          now,
-        );
+        const { inserted } = await store.recordReport({
+          version: report.version,
+          gpuId: value.gpuId,
+          candidateId: value.candidateId,
+          price: Number(report.price),
+          observedAt: report.observedAt,
+          epoch: report.epoch,
+          validFrom: report.validFrom,
+          validUntil: report.validUntil,
+          calcHash: report.calcHash,
+          signature: signed.signature,
+          reportHash: reportHash(signed),
+          attestedAt: now,
+        });
         if (inserted) {
-          counters.published += 1;
-          logger.info("candidate published", {
+          counters.attested += 1;
+          logger.info("report attested", {
             gpuId: value.gpuId,
             candidateId: value.candidateId,
             price: value.price,
-            txRef,
+            epoch: report.epoch,
+            updateData: encodeUpdateData(signed),
           });
         }
       } catch (err: unknown) {
         // One bad candidate must not stop the others; the ledger stays
-        // consistent because publication is idempotent.
-        logger.error("publisher candidate handling failed", {
+        // consistent because attestation is idempotent.
+        logger.error("attestor candidate handling failed", {
           candidateId: candidate.id,
           gpuId: candidate.gpuId,
           err: err instanceof Error ? err.message : String(err),
@@ -227,4 +277,18 @@ export class PublisherPoller {
     }
     return counters;
   }
+}
+
+/** The violations ledger's target column — one attestor target, no chain. */
+const TARGET = "attestor";
+
+/**
+ * The engine stamps candidates with bare sha256 hex; the Report carries
+ * bytes32. Fail closed on anything else — a malformed calcHash means the
+ * report could not be tied to a reproducible engine run.
+ */
+export function calcHashBytes32(calcHash: string): `0x${string}` {
+  if (/^0x[0-9a-fA-F]{64}$/.test(calcHash)) return calcHash as `0x${string}`;
+  if (/^[0-9a-fA-F]{64}$/.test(calcHash)) return `0x${calcHash}` as `0x${string}`;
+  throw new Error(`calcHash is not a 32-byte hex digest: "${calcHash}"`);
 }

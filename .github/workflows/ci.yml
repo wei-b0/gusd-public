@@ -32,7 +32,7 @@ jobs:
 
   # DB-backed verification against a real Postgres 16: migrations, append-only
   # triggers, ingest idempotency, the oracle e2e (replay → API → WS/SSE), the
-  # publisher's publication ledger, and the byte-compare replay audit.
+  # attestor's reports ledger, and the byte-compare replay audit.
   database:
     runs-on: ubuntu-latest
     services:
@@ -64,14 +64,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: db tests (migrations, append-only, repos)
         run: pnpm --filter @gusd/db test
-      - name: build oracle + publisher
+      - name: build attestor + oracle
         run: pnpm turbo build --filter='!@gusd/contracts'
       - name: offline replay into the ci database
         run: ORACLE_REPLAY_FIXTURES=1 node apps/oracle/dist/main.js
       - name: oracle e2e (replay → API → WS/SSE)
         run: pnpm --filter @gusd/oracle test
-      - name: publisher tests (publication ledger)
-        run: pnpm --filter @gusd/publisher test
+      - name: attestor-client tests (report codec)
+        run: pnpm --filter @gusd/attestor-client test
+      - name: attestor tests (reports ledger)
+        run: pnpm --filter @gusd/attestor test
       - name: replay byte-compare of stored candidates
         run: node apps/oracle/dist/replay-candidate.js
 

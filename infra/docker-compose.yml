@@ -142,53 +142,44 @@ services:
     networks:
       - gusd-internal
 
-  # Publisher — oracle→GPUPriceOracle publish loop, a default stack member.
-  # Default target is CHAIN on the local Anvil posture — the same coupling
-  # the indexer already has: both bounce until the chain is up. The defaults
-  # mirror Deploy.s.sol's local posture (PUBLISHER env unset at deploy ⇒ the
-  # publisher IS the deployer): anvil account #0's key — a PUBLIC dev key,
-  # the record's oraclePublisher — and chain id 31337. The oracle address is
+  # Attestor — the pull-oracle signing loop, a default stack member. It
+  # reads candidates, audits them, EIP-712-signs one report per (gpu, epoch),
+  # and persists it to the `reports` table the oracle API serves. It NEVER
+  # broadcasts — no RPC exists in its environment. The defaults mirror
+  # Deploy.s.sol's local posture (ORACLE_ATTESTOR unset at deploy ⇒ the
+  # attestor IS the deployer): anvil account #0's key — a PUBLIC dev key,
+  # the record's oracleAttestor — and chain id 31337. The oracle address is
   # NOT defaulted here: pnpm stack:up injects it from
   # apps/contracts/deployments/<id>.json at `up` time, so a redeploy plus a
   # plain `pnpm stack:up` re-syncs it (never bake a stale address into the
-  # file). For a remote chain, override the chain block in infra/.env —
-  # verify() also aborts boot loudly on any chain-id / PRICE_SCALE /
-  # publisher mismatch. No healthcheck: the poller has no HTTP surface —
-  # restart: unless-stopped covers crash-restart, and publish outcomes are
-  # visible in the DB and on-chain.
-  publisher:
+  # file) — it is the EIP-712 domain's verifyingContract. For a remote
+  # chain, override the block in infra/.env; a key mismatch with the
+  # deployed oracleAttestor makes every signature un-consumable. No
+  # healthcheck: the poller has no HTTP surface — restart: unless-stopped
+  # covers crash-restart, and attestation outcomes are visible in the DB.
+  attestor:
     build:
       context: ..
-      dockerfile: apps/publisher/Dockerfile
-    image: gusd-publisher:local
-    container_name: gusd-publisher
+      dockerfile: apps/attestor/Dockerfile
+    image: gusd-attestor:local
+    container_name: gusd-attestor
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
-      PUBLISHER_ORACLE_URL: http://oracle:8080
-      PUBLISHER_TARGET: ${PUBLISHER_TARGET:-chain}
-      PUBLISHER_RPC_URL: ${PUBLISHER_RPC_URL:-http://host.docker.internal:8545}
+      ATTESTOR_ORACLE_URL: http://oracle:8080
       # Anvil account #0 — a public dev key, valid ONLY on the local test
-      # posture. Never a live-chain publisher key.
-      PUBLISHER_PRIVATE_KEY: ${PUBLISHER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+      # posture. Never a live-chain attestor key.
+      ATTESTOR_PRIVATE_KEY: ${ATTESTOR_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
       # Injected by pnpm stack:up from apps/contracts/deployments/<id>.json.
       # Empty (no record yet) is a loud boot error, never a silent skip.
-      PUBLISHER_ORACLE_ADDRESS: ${PUBLISHER_ORACLE_ADDRESS:-}
-      PUBLISHER_CHAIN_ID: ${PUBLISHER_CHAIN_ID:-31337}
+      ATTESTOR_ORACLE_ADDRESS: ${ATTESTOR_ORACLE_ADDRESS:-}
+      ATTESTOR_CHAIN_ID: ${ATTESTOR_CHAIN_ID:-31337}
       # Tunables documented in infra/.env.example. "" falls back to the code
-      # default in the publisher's env parser, so an unset var in .env is
-      # never a wrong value.
-      PUBLISHER_TX_TIMEOUT_MS: ${PUBLISHER_TX_TIMEOUT_MS:-}
-      # Publication tx fee ceiling in gwei (code default 0.05; the VM posture
-      # sets 0.10 in infra/.env to clear the live base fee).
-      PUBLISHER_MAX_FEE_GWEI: ${PUBLISHER_MAX_FEE_GWEI:-}
-      # PROTOCOL.md §11 trigger: deviation percent (code default 0.9) and the
-      # ~24h heartbeat in ms.
-      PUBLISHER_MIN_DEVIATION_PCT: ${PUBLISHER_MIN_DEVIATION_PCT:-}
-      PUBLISHER_HEARTBEAT_MS: ${PUBLISHER_HEARTBEAT_MS:-}
-    extra_hosts:
-      # Linux parity for the host.docker.internal Anvil RPC default.
-      - "host.docker.internal:host-gateway"
+      # default in the attestor's env parser, so an unset var in .env is
+      # never a wrong value. Epoch length and the observation floor must
+      # match the deployed GpuOracle's constructor values.
+      ATTESTOR_EPOCH_LENGTH: ${ATTESTOR_EPOCH_LENGTH:-}
+      ATTESTOR_MAX_OBSERVATION_AGE: ${ATTESTOR_MAX_OBSERVATION_AGE:-}
     depends_on:
       oracle:
         condition: service_healthy

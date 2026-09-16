@@ -1,5 +1,5 @@
 {
-  "name": "@gusd/publisher",
+  "name": "@gusd/attestor",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
     "dev": "tsx watch src/main.ts"
   },
   "dependencies": {
+    "@gusd/attestor-client": "workspace:*",
     "@gusd/db": "workspace:*",
     "@gusd/gpu-catalog": "workspace:*",
     "@gusd/pricing-engine": "workspace:*",

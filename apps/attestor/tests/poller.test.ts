@@ -1,375 +1,287 @@
 import { describe, expect, it } from "vitest";
+import { privateKeyToAccount } from "viem/accounts";
+import { verifyTypedData } from "viem";
+import type { GpuOracleDomain, SignedReport } from "@gusd/attestor-client";
+import {
+  buildReport,
+  reportHash,
+  reportTypedData,
+} from "@gusd/attestor-client";
 import type { Logger } from "@gusd/types";
-import { DEFAULT_METHODOLOGY_CONFIG, type MethodologyConfig } from "@gusd/pricing-engine";
-import { PublisherPoller } from "../src/poller.js";
-import type {
-  CandidateLike,
-  PublishViolation,
-  PublishableIndexValue,
-  PublisherTarget,
-} from "../src/types.js";
-import type { PublisherStore } from "../src/store.js";
+import { AttestorPoller } from "../src/poller.js";
+import type { AttestorStore } from "../src/store.js";
+import type { AttestorConfig, CandidateLike, PublishViolation } from "../src/types.js";
 
-const NOW = new Date("2026-09-04T12:00:00.000Z");
+const DOMAIN: GpuOracleDomain = {
+  chainId: 31337,
+  verifyingContract: "0x0000000000000000000000000000000000010cc0",
+};
+// anvil #0 — a public dev key for reproducible fixtures; NEVER operational
+const ATTESTOR_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const signer = privateKeyToAccount(ATTESTOR_PK);
 
-const CONFIG = {
-  pinnedMethodologyVersion: "0.2.0",
-  minContributors: null,
-  maxDispersion: null,
+const NOW = new Date(1_789_500_000_000); // a fixed instant, aligned to no epoch boundary
+const EPOCH_LENGTH = 60;
+const MAX_OBSERVATION_AGE = 300;
+
+const CONFIG: AttestorConfig = {
+  pinnedMethodologyVersion: "0.1.0",
+  minContributors: 3,
+  maxDispersion: 0.45,
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
-  maxBandWidthPct: null,
-  minDeviationPct: 0.5,
-  heartbeatMs: 86_400_000,
+  maxBandWidthPct: 0.1,
 };
 
 function silence(): Logger {
   return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 }
 
-function healthyCandidate(overrides: Partial<CandidateLike> = {}): CandidateLike {
+const CALC_HASH = "0x" + "ab".repeat(32);
+
+function candidate(overrides: Partial<CandidateLike> = {}): CandidateLike {
   return {
     id: "c1",
     gpuId: "H100_SXM_80GB",
     panelId: "H100_PANEL_V1",
-    price: 2.94,
-    confidenceLow: 2.86,
-    confidenceHigh: 3.02,
+    price: 2.5,
+    confidenceLow: 2.45,
+    confidenceHigh: 2.55,
     status: "healthy",
     providersContributing: 4,
     dispersion: 0.02,
-    methodologyVersion: "0.2.0",
-    calcHash: "abc",
+    methodologyVersion: "0.1.0",
+    calcHash: CALC_HASH,
     computedAt: new Date(NOW.getTime() - 10_000),
-    contributors: [{ providerId: "vast" }, { providerId: "lium" }],
+    contributors: [
+      { providerId: "vast" },
+      { providerId: "lium" },
+      { providerId: "hyperbolic" },
+      { providerId: "runpod" },
+    ],
     ...overrides,
   };
 }
 
-/** In-memory store with the same (candidateId, target) idempotency as the DB. */
-class FakeStore implements PublisherStore {
-  published: { value: PublishableIndexValue; txRef: string }[] = [];
-  violations: { candidateId: string; violations: PublishViolation[] }[] = [];
-  methodology: MethodologyConfig | null = DEFAULT_METHODOLOGY_CONFIG;
-  private publicationKeys = new Set<string>();
-  private violationKeys = new Set<string>();
-  private lastPublishedAt: Date = NOW;
-
-  constructor(public candidates: CandidateLike[]) {}
-
-  async latestCandidates(): Promise<CandidateLike[]> {
-    return this.candidates;
-  }
-
-  async methodologyConfig(): Promise<MethodologyConfig | null> {
-    return this.methodology;
-  }
-
-  async latestPublication(): Promise<{ price: number; publishedAt: Date } | null> {
-    const last = this.published.at(-1);
-    return last ? { price: last.value.price, publishedAt: this.lastPublishedAt } : null;
-  }
-
-  async alreadyPublished(candidateId: string, target: string): Promise<boolean> {
-    return this.publicationKeys.has(`${candidateId}:${target}`);
-  }
-
-  async recordPublication(
-    value: PublishableIndexValue,
-    txRef: string,
-    target: string,
-    _publisherVersion?: string,
-    publishedAt?: Date,
-  ): Promise<{ inserted: boolean }> {
-    const key = `${value.candidateId}:${target}`;
-    if (this.publicationKeys.has(key)) return { inserted: false };
-    this.publicationKeys.add(key);
-    this.published.push({ value, txRef });
-    this.lastPublishedAt = publishedAt ?? NOW;
-    return { inserted: true };
-  }
-
-  async recordViolations(
-    candidateId: string,
-    _gpuId: string,
-    target: string,
-    violations: readonly PublishViolation[],
-  ): Promise<{ inserted: boolean }> {
-    const key = `${candidateId}:${target}`;
-    if (this.violationKeys.has(key)) return { inserted: false };
-    this.violationKeys.add(key);
-    this.violations.push({ candidateId, violations: [...violations] });
-    return { inserted: true };
-  }
+interface ReportRow {
+  version: number;
+  gpuId: string;
+  candidateId: string | null;
+  price: number;
+  observedAt: number;
+  epoch: number;
+  validFrom: number;
+  validUntil: number;
+  calcHash: string;
+  signature: string;
+  reportHash: string;
+  attestedAt: Date;
 }
 
-class FakeTarget implements PublisherTarget {
-  readonly name = "mock";
-  readonly calls: PublishableIndexValue[] = [];
-  async publish(value: PublishableIndexValue): Promise<{ txRef: string }> {
-    this.calls.push(value);
-    return { txRef: `tx-${this.calls.length}` };
-  }
+function memoryStore(candidates: CandidateLike[]): AttestorStore & {
+  rows: ReportRow[];
+  violations: { candidateId: string; violations: PublishViolation[] }[];
+  failCandidates: boolean;
+} {
+  return {
+    rows: [],
+    violations: [],
+    failCandidates: false,
+    async latestCandidates() {
+      if (this.failCandidates) throw new Error("db down");
+      return candidates;
+    },
+    async methodologyConfig(version) {
+      return version === "0.1.0"
+        ? ({ version: "0.1.0" } as unknown as Awaited<
+            ReturnType<AttestorStore["methodologyConfig"]>
+          >)
+        : null;
+    },
+    async reportForEpoch(gpuId, epoch) {
+      return this.rows.some((r) => r.gpuId === gpuId && r.epoch === epoch);
+    },
+    async latestReport(gpuId) {
+      const row = this.rows
+        .filter((r) => r.gpuId === gpuId)
+        .sort((a, b) => b.epoch - a.epoch)[0];
+      return row ? { price: row.price, epoch: row.epoch, attestedAt: row.attestedAt } : null;
+    },
+    async recordReport(row) {
+      if (this.rows.some((r) => r.gpuId === row.gpuId && r.epoch === row.epoch)) {
+        return { inserted: false };
+      }
+      this.rows.push({ ...row });
+      return { inserted: true };
+    },
+    async recordViolations(candidateId, _gpuId, _target, violations) {
+      this.violations.push({ candidateId, violations: [...violations] });
+      return { inserted: true };
+    },
+  };
 }
 
-function makePoller(
-  candidates: CandidateLike[],
-  opts: {
-    breakers?: () => Promise<ReadonlyMap<string, boolean>>;
-    now?: () => Date;
-  } = {},
-) {
-  const store = new FakeStore(candidates);
-  const target = new FakeTarget();
-  const poller = new PublisherPoller({
+function poller(store: AttestorStore, now: Date = NOW) {
+  return new AttestorPoller({
     store,
-    target,
+    signer,
+    domain: DOMAIN,
     config: CONFIG,
+    epochLength: EPOCH_LENGTH,
+    maxObservationAge: MAX_OBSERVATION_AGE,
     logger: silence(),
-    fetchBreakers: opts.breakers,
-    now: opts.now ?? (() => NOW),
+    now: () => now,
   });
-  return { store, target, poller };
 }
 
-describe("PublisherPoller", () => {
-  it("publishes a healthy candidate once, then skips it forever", async () => {
-    const { target, poller } = makePoller([healthyCandidate()]);
-    const first = await poller.tick();
-    expect(first.published).toBe(1);
-    expect(first.flagged).toBe(0);
-    expect(target.calls).toHaveLength(1);
-    expect(target.calls[0]?.price).toBe(2.94);
+function rowFor(store: { rows: ReportRow[] }, gpuId: string): ReportRow {
+  const row = store.rows.filter((r) => r.gpuId === gpuId)[0];
+  if (!row) throw new Error(`no report row for ${gpuId}`);
+  return row;
+}
 
-    const second = await poller.tick();
-    expect(second.published).toBe(0);
-    expect(second.skipped).toBe(1);
-    expect(target.calls).toHaveLength(1);
+describe("AttestorPoller", () => {
+  it("attests the healthy candidate into the current epoch", async () => {
+    const store = memoryStore([candidate()]);
+    const result = await poller(store).tick();
+    expect(result.attested).toBe(1);
+    const row = rowFor(store, "H100_SXM_80GB");
+
+    const nowSec = Math.floor(NOW.getTime() / 1000);
+    const epoch = Math.floor(nowSec / EPOCH_LENGTH);
+    expect(row.epoch).toBe(epoch);
+    expect(row.validFrom).toBe(epoch * EPOCH_LENGTH);
+    expect(row.validUntil).toBe((epoch + 1) * EPOCH_LENGTH);
+    expect(row.price).toBe(25_000); // 2.50 × PRICE_SCALE
+    expect(row.observedAt).toBe(Math.floor((NOW.getTime() - 10_000) / 1000));
+    expect(row.calcHash).toBe(CALC_HASH);
+    expect(row.version).toBe(1);
+    expect(row.reportHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
-  it("does not publish a priceless candidate and records the audit row", async () => {
-    const { target, store, poller } = makePoller([
-      healthyCandidate({ status: "withheld", price: null, confidenceLow: null, confidenceHigh: null }),
-    ]);
-    const result = await poller.tick();
-    expect(result.published).toBe(0);
-    expect(result.flagged).toBe(0);
-    expect(target.calls).toHaveLength(0);
-    // The refusal is still audited.
-    const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
-    expect(codes).toContain("not_publishable_status");
-    expect(codes).toContain("missing_price");
-  });
+  it("signs with the attestor key over the configured domain", async () => {
+    const store = memoryStore([candidate()]);
+    await poller(store).tick();
+    const row = rowFor(store, "H100_SXM_80GB");
 
-  it("publishes a flagged candidate anyway and keeps the audit row", async () => {
-    // Thin quorum + withheld status: annotated, and the price still ships.
-    const { store, target, poller } = makePoller([
-      healthyCandidate({ status: "withheld", providersContributing: 2 }),
-    ]);
-    const result = await poller.tick();
-    expect(result.published).toBe(1);
-    expect(result.flagged).toBe(1);
-    expect(target.calls).toHaveLength(1);
-    const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
-    expect(codes).toContain("not_publishable_status");
-    expect(codes).toContain("insufficient_contributors");
-  });
-
-  it("does not re-record annotations for the same candidate on the next tick", async () => {
-    const { store, poller } = makePoller([healthyCandidate({ status: "stale" })]);
-    await poller.tick();
-    const second = await poller.tick();
-    expect(second.flagged).toBe(0);
-    expect(store.violations).toHaveLength(1);
-  });
-
-  it("records no annotations for suppressed candidates — the audit ledger rides publications", async () => {
-    // A withheld candidate inside the deviation band never publishes, so it
-    // never writes a publish_violations row either; suppressed wobbles must
-    // not flood the append-only ledger.
-    const { store, target, poller } = makePoller([healthyCandidate()]);
-    await poller.tick();
-    store.candidates = [
-      healthyCandidate({ id: "c2", status: "withheld", price: 2.941, calcHash: "def" }),
-    ];
-    const second = await poller.tick();
-    expect(second.published).toBe(0);
-    expect(second.flagged).toBe(0);
-    expect(store.violations).toHaveLength(0);
-    expect(target.calls).toHaveLength(1);
-  });
-
-  it("skips the whole cycle when the source health fetch fails", async () => {
-    const { target, store, poller } = makePoller([healthyCandidate()], {
-      breakers: () => Promise.reject(new Error("oracle down")),
-    });
-    const result = await poller.tick();
-    expect(result).toEqual({ published: 0, flagged: 0, skipped: 0 });
-    expect(target.calls).toHaveLength(0);
-    expect(store.violations).toHaveLength(0);
-    expect(store.published).toHaveLength(0);
-  });
-
-  it("refuses the whole cycle when the pinned methodology row is missing", async () => {
-    const { target, store, poller } = makePoller([healthyCandidate()]);
-    store.methodology = null;
-    const result = await poller.tick();
-    expect(result).toEqual({ published: 0, flagged: 0, skipped: 0 });
-    expect(target.calls).toHaveLength(0);
-    expect(store.violations).toHaveLength(0);
-  });
-
-  it("publishes a thin panel on its per-panel quorum from the methodology", async () => {
-    // L40S's override settles on a three-principal rate-card quorum; the
-    // methodology row says quorum 3, so three contributors is not even an
-    // annotation.
-    const { target, poller } = makePoller([
-      healthyCandidate({
-        gpuId: "L40S_48GB",
-        panelId: "L40S_PANEL_V1",
-        price: 0.62,
-        confidenceLow: 0.6,
-        confidenceHigh: 0.64,
-        status: "degraded",
-        providersContributing: 3,
-        contributors: [
-          { providerId: "datacrunch" },
-          { providerId: "scaleway" },
-          { providerId: "coreweave" },
-        ],
+    const signed: SignedReport = {
+      report: buildReport({
+        gpuId: "H100_SXM_80GB",
+        price: 2.5,
+        observedAtSec: row.observedAt,
+        nowSec: Math.floor(NOW.getTime() / 1000),
+        epochLength: EPOCH_LENGTH,
+        maxObservationAge: MAX_OBSERVATION_AGE,
+        calcHash: CALC_HASH as `0x${string}`,
       }),
-    ]);
-    const result = await poller.tick();
-    expect(result.published).toBe(1);
-    expect(result.flagged).toBe(0);
-    expect(target.calls[0]?.price).toBe(0.62);
+      signature: row.signature as `0x${string}`,
+    };
+    // the persisted reportHash is the identity of the byte-identical updateData
+    expect(row.reportHash).toBe(reportHash(signed));
+    const bundle = reportTypedData(signed.report, DOMAIN);
+    const ok = await verifyTypedData({
+      domain: bundle.domain,
+      types: bundle.types,
+      primaryType: bundle.primaryType,
+      message: bundle.message,
+      signature: signed.signature,
+      address: signer.address,
+    });
+    expect(ok).toBe(true);
   });
 
-  it("an explicit env contributor floor tightens the annotation, not the publication", async () => {
-    const store = new FakeStore([
-      healthyCandidate({
-        gpuId: "L40S_48GB",
-        panelId: "L40S_PANEL_V1",
-        price: 0.62,
-        confidenceLow: 0.6,
-        confidenceHigh: 0.64,
-        status: "degraded",
-        providersContributing: 3,
-        contributors: [
-          { providerId: "datacrunch" },
-          { providerId: "scaleway" },
-          { providerId: "coreweave" },
-        ],
-      }),
-    ]);
-    const target = new FakeTarget();
-    const poller = new PublisherPoller({
-      store,
-      target,
-      config: { ...CONFIG, minContributors: 4 },
-      logger: silence(),
-      now: () => NOW,
-    });
-    const result = await poller.tick();
-    expect(result.published).toBe(1);
+  it("is idempotent within an epoch: the next tick re-attests nothing", async () => {
+    const store = memoryStore([candidate()]);
+    const p = poller(store);
+    expect((await p.tick()).attested).toBe(1);
+    expect((await p.tick()).skipped).toBe(1);
+    expect(store.rows).toHaveLength(1);
+  });
+
+  it("re-attests the same candidate into the next epoch within the observation floor", async () => {
+    const store = memoryStore([candidate()]);
+    await poller(store).tick();
+    // 61s later: new epoch, observation 71s old — inside the 300s floor
+    const next = new Date(NOW.getTime() + 61_000);
+    const second = await poller(store, next).tick();
+    expect(second.attested).toBe(1);
+    expect(store.rows).toHaveLength(2);
+    const epochs = store.rows.map((r) => r.epoch);
+    expect(epochs[1]! - epochs[0]!).toBe(1);
+    // the same observation is re-attested, not re-computed
+    expect(store.rows[1]!.observedAt).toBe(store.rows[0]!.observedAt);
+  });
+
+  it("hard-stops when the observation is beyond the floor and records why", async () => {
+    const stale = candidate({ computedAt: new Date(NOW.getTime() - (MAX_OBSERVATION_AGE + 1) * 1000) });
+    const store = memoryStore([stale]);
+    const result = await poller(store).tick();
+    expect(result.attested).toBe(0);
+    expect(store.rows).toHaveLength(0);
+    expect(store.violations[0]?.violations.map((v) => v.code)).toContain(
+      "observation_beyond_floor",
+    );
+  });
+
+  it("refuses a candidate with no price (the one audit hard stop) and records it", async () => {
+    const store = memoryStore([candidate({ price: null, confidenceLow: null, confidenceHigh: null })]);
+    const result = await poller(store).tick();
+    expect(result.attested).toBe(0);
+    expect(store.rows).toHaveLength(0);
+    expect(store.violations[0]?.violations.map((v) => v.code)).toContain("missing_price");
+  });
+
+  it("attests a flagged candidate anyway and rides the annotations on the report", async () => {
+    const store = memoryStore([candidate({ status: "withheld" })]);
+    const result = await poller(store).tick();
+    expect(result.attested).toBe(1);
     expect(result.flagged).toBe(1);
-    const codes = store.violations[0]?.violations.map((v) => v.code) ?? [];
-    expect(codes).toContain("insufficient_contributors");
+    expect(store.violations[0]?.violations.map((v) => v.code)).toContain("not_publishable_status");
   });
 
-  it("passes the breaker map through to the audit", async () => {
-    // 1 of 2 contributors open is a minority → no annotation.
-    const minority = makePoller([healthyCandidate()], {
-      breakers: () => Promise.resolve(new Map([["vast", true]])),
-    });
-    const a = await minority.poller.tick();
-    expect(a.published).toBe(1);
-    expect(a.flagged).toBe(0);
-
-    // 2 of 2 open is a majority → annotated, published anyway.
-    const majority = makePoller([healthyCandidate()], {
-      breakers: () =>
-        Promise.resolve(
-          new Map([
-            ["vast", true],
-            ["lium", true],
-          ]),
-        ),
-    });
-    const b = await majority.poller.tick();
-    expect(b.published).toBe(1);
-    expect(b.flagged).toBe(1);
+  it("refuses to attest without the pinned methodology row (fail closed)", async () => {
+    // the store returns null for the pinned version — the whole loop must
+    // refuse before signing anything
+    const breaking = memoryStore([candidate()]);
+    breaking.methodologyConfig = async () => null;
+    const result = await poller(breaking).tick();
+    expect(result.attested).toBe(0);
+    expect(breaking.rows).toHaveLength(0);
   });
 
-  it("annotates a jump against the last published price but still publishes it", async () => {
-    const { store, target, poller } = makePoller([healthyCandidate()]);
-    await poller.tick();
-    expect(target.calls).toHaveLength(1);
-
-    // A newer candidate that doubles the price: annotated for manual review,
-    // and shipped — a 2× market move is exactly when swaps need the new price.
-    store.candidates = [healthyCandidate({ id: "c2", price: 5.0, calcHash: "def" })];
-    const second = await poller.tick();
-    expect(second.published).toBe(1);
-    expect(second.flagged).toBe(1);
-    const codes = store.violations.at(-1)?.violations.map((v) => v.code) ?? [];
-    expect(codes).toContain("jump_requires_manual");
-    expect(target.calls[1]?.price).toBe(5.0);
-  });
-
-  it("suppresses the tx while the candidate stays within the deviation band", async () => {
-    const { store, target, poller } = makePoller([healthyCandidate()]);
-    await poller.tick();
-    expect(target.calls).toHaveLength(1);
-
-    // +0.034% — inside the configured 0.5% band. The on-chain figure is
-    // already current; burning gas would change nothing.
-    store.candidates = [healthyCandidate({ id: "c2", price: 2.941, calcHash: "def" })];
-    const second = await poller.tick();
-    expect(second.published).toBe(0);
-    expect(second.skipped).toBe(1);
-    expect(target.calls).toHaveLength(1);
-  });
-
-  it("publishes once the candidate diverges past the deviation band", async () => {
-    const { store, target, poller } = makePoller([healthyCandidate()]);
-    await poller.tick();
-
-    // +0.68% — beyond the configured 0.5%.
-    store.candidates = [healthyCandidate({ id: "c2", price: 2.96, calcHash: "def" })];
-    const second = await poller.tick();
-    expect(second.published).toBe(1);
-    expect(target.calls[1]?.price).toBe(2.96);
-  });
-
-  it("republishes at the heartbeat even without deviation", async () => {
-    let nowMs = NOW.getTime();
-    const { store, target, poller } = makePoller([healthyCandidate()], {
-      now: () => new Date(nowMs),
-    });
-    await poller.tick();
-    expect(target.calls).toHaveLength(1);
-
-    // 25h later, same price: the heartbeat keeps on-chain updatedAt fresh.
-    nowMs += 25 * 3_600_000;
-    store.candidates = [healthyCandidate({ id: "c2", price: 2.94, calcHash: "def" })];
-    const second = await poller.tick();
-    expect(second.published).toBe(1);
-    expect(target.calls).toHaveLength(2);
-  });
-
-  it("survives a store error on one candidate and continues", async () => {
-    const store = new FakeStore([healthyCandidate()]);
-    const target = new FakeTarget();
-    const poller = new PublisherPoller({
+  it("skips the whole cycle when source health is unavailable", async () => {
+    const store = memoryStore([candidate()]);
+    const p = new AttestorPoller({
       store,
-      target,
+      signer,
+      domain: DOMAIN,
       config: CONFIG,
+      epochLength: EPOCH_LENGTH,
+      maxObservationAge: MAX_OBSERVATION_AGE,
       logger: silence(),
+      fetchBreakers: async () => {
+        throw new Error("oracle health unreachable");
+      },
       now: () => NOW,
     });
-    store.latestPublication = () => Promise.reject(new Error("db down"));
-    const result = await poller.tick();
-    expect(result.published).toBe(0);
+    const result = await p.tick();
+    expect(result.attested).toBe(0);
+    expect(store.rows).toHaveLength(0);
+  });
+
+  it("survives a candidate crash and attests the others", async () => {
+    const good = candidate({ id: "good", gpuId: "H200_141GB" });
+    const bad = candidate({ id: "bad", gpuId: "BROKEN", calcHash: "not-hex" });
+    const store = memoryStore([bad, good]);
+    const result = await poller(store).tick();
+    expect(result.attested).toBe(1);
+    expect(store.rows.map((r) => r.gpuId)).toEqual(["H200_141GB"]);
+  });
+
+  it("does not overlap ticks (in-flight guard)", async () => {
+    const store = memoryStore([candidate()]);
+    const p = poller(store);
+    const [a, b] = await Promise.all([p.tick(), p.tick()]);
+    expect(a.attested + b.attested).toBe(1);
   });
 });

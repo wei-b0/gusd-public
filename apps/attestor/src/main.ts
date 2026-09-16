@@ -1,15 +1,13 @@
 import pino from "pino";
+import { privateKeyToAccount } from "viem/accounts";
 import { createDb } from "@gusd/db";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
-import { parsePublisherEnv } from "./env.js";
-import { DrizzlePublisherStore } from "./store.js";
-import { MockPublisherTarget } from "./target.js";
-import { ChainPublisherTarget } from "./chain-target.js";
-import { createViemChainClient } from "./viem-chain-client.js";
-import { PublisherPoller } from "./poller.js";
+import type { SignerLike } from "@gusd/attestor-client";
+import { parseAttestorEnv } from "./env.js";
+import { DrizzleAttestorStore } from "./store.js";
+import { AttestorPoller } from "./poller.js";
 import { fetchBreakerMap } from "./health.js";
 import type { Logger } from "@gusd/types";
-import type { PublisherTarget } from "./types.js";
 
 /**
  * The repo's Logger contract (@gusd/types) is message-first — (msg, fields?) —
@@ -33,49 +31,41 @@ function asLogger(pinoLogger: pino.Logger): Logger {
   };
 }
 
+/**
+ * viem's account satisfies the codec's SignerLike at runtime; the argument
+ * type is narrower than the interface's structural shape, so bridge it
+ * explicitly — the attestor never signs anything but reports.
+ */
+function reportSigner(account: ReturnType<typeof privateKeyToAccount>): SignerLike {
+  return {
+    signTypedData: (args) =>
+      account.signTypedData(args as unknown as Parameters<typeof account.signTypedData>[0]),
+  };
+}
+
 async function main(): Promise<void> {
-  const env = parsePublisherEnv();
+  const env = parseAttestorEnv();
   const logger = asLogger(pino({ level: env.logLevel }));
 
+  const account = privateKeyToAccount(env.privateKey);
   const handle = createDb(env.databaseUrl);
-  const store = new DrizzlePublisherStore(
+  const store = new DrizzleAttestorStore(
     handle.db,
     SETTLEMENT_PANELS.map((p) => p.gpuId),
   );
-  let target: PublisherTarget;
-  if (env.target === "chain") {
-    // verify() aborts boot loudly on chain-id / PRICE_SCALE / publisher
-    // mismatch — a wrong publisher identity would make every publish revert.
-    const client = createViemChainClient({
-      rpcUrl: env.rpcUrl!,
-      privateKey: env.privateKey!,
-      oracleAddress: env.oracleAddress!,
-      chainId: env.chainId!,
-      txTimeoutMs: env.txTimeoutMs,
-      maxFeePerGasWei: env.maxFeePerGasWei,
-    });
-    const chainTarget = new ChainPublisherTarget(client, {
-      accountAddress: client.accountAddress,
-      expectedChainId: env.chainId!,
-    });
-    await chainTarget.verify();
-    target = chainTarget;
-  } else {
-    target = new MockPublisherTarget();
-  }
-  const poller = new PublisherPoller({
+  const poller = new AttestorPoller({
     store,
-    target,
+    signer: reportSigner(account),
+    domain: { chainId: env.chainId, verifyingContract: env.oracleAddress },
     config: env,
+    epochLength: env.epochLength,
+    maxObservationAge: env.maxObservationAge,
     logger,
     fetchBreakers: () => fetchBreakerMap(env.oracleUrl, fetch),
   });
 
-  let stopping = false;
   const shutdown = (signal: string): void => {
-    if (stopping) return;
-    stopping = true;
-    logger.info("publisher shutting down", { signal });
+    logger.info("attestor shutting down", { signal });
     void (async () => {
       await poller.stop();
       await handle.close();
@@ -86,16 +76,20 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 
   poller.start(env.pollMs);
-  logger.info("publisher polling", {
+  logger.info("attestor polling", {
     pollMs: env.pollMs,
     oracleUrl: env.oracleUrl,
-    target: target.name,
+    attestor: account.address,
+    chainId: env.chainId,
+    verifyingContract: env.oracleAddress,
+    epochLength: env.epochLength,
+    maxObservationAge: env.maxObservationAge,
   });
 }
 
 main().catch((err: unknown) => {
-  // Startup failures are fatal and loud — a publisher that half-starts could
-  // be trusted to publish when it is not running at all.
+  // Startup failures are fatal and loud — an attestor that half-starts could
+  // be trusted to sign when it is not running at all.
   process.exitCode = 1;
   console.error(err);
 });

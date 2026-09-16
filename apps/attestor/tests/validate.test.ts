@@ -1,18 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { assessCandidate } from "../src/validate.js";
-import { VIOLATION, type CandidateLike, type ResolvedPublisherConfig } from "../src/types.js";
+import { VIOLATION, type CandidateLike, type ResolvedAttestorConfig } from "../src/types.js";
 
 const NOW = new Date("2026-09-04T12:00:00.000Z");
 
-const CONFIG: ResolvedPublisherConfig = {
+const CONFIG: ResolvedAttestorConfig = {
   pinnedMethodologyVersion: "0.1.0",
   minContributors: 3,
   maxDispersion: 0.45,
   maxFreshnessMs: 300_000,
   maxJumpPct: 0.25,
   maxBandWidthPct: 0.1,
-  minDeviationPct: 0.5,
-  heartbeatMs: 86_400_000,
 };
 
 /** A candidate that passes every check — individual tests knock one leg out. */
@@ -97,7 +95,7 @@ describe("assessCandidate", () => {
     expect(result.value).not.toBeNull();
   });
 
-  it("annotates a price jump beyond the cap against the last published value", () => {
+  it("annotates a price jump beyond the cap against the last attested value", () => {
     // previous 2.00 → candidate 2.94: +47%.
     const result = assess({}, 2.0);
     expect(result.violations.map((v) => v.code)).toContain(VIOLATION.jump);
@@ -110,7 +108,7 @@ describe("assessCandidate", () => {
     expect(result.violations).toEqual([]);
   });
 
-  it("skips the jump check on first publication", () => {
+  it("skips the jump check on first attestation", () => {
     expect(assess().violations).toEqual([]);
   });
 
@@ -147,7 +145,7 @@ describe("assessCandidate", () => {
     expect(result.violations).toEqual([]);
   });
 
-  it("carries no publishable value when the candidate has no price", () => {
+  it("carries no attestable value when the candidate has no price", () => {
     const result = assess({ price: null, confidenceLow: null, confidenceHigh: null });
     expect(result.value).toBeNull();
     expect(result.violations.map((v) => v.code)).toContain(VIOLATION.price);

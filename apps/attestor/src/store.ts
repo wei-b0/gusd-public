@@ -1,44 +1,50 @@
 import type { Db } from "@gusd/db";
 import {
   getCandidateHistory,
-  getLatestPublication,
+  getLatestOracleReport,
   getMethodologyVersion,
-  getPublication,
-  recordPublication,
+  getOracleReport,
+  insertOracleReport,
   recordPublishViolations,
 } from "@gusd/db";
 import type { MethodologyConfig } from "@gusd/pricing-engine";
-import type { CandidateLike, PublishableIndexValue, PublishViolation } from "./types.js";
+import type { CandidateLike, PublishViolation } from "./types.js";
 
 /**
- * Everything the poller needs from persistence, as an interface so the poll
+ * Everything the poller needs from persistence, as an interface so the attest
  * loop is testable without a database. The candidate row type is the Drizzle
- * row minus fields the publisher never reads.
+ * row minus fields the attestor never reads.
  */
-export interface PublisherStore {
+export interface AttestorStore {
   /** Newest candidate per watched gpu (max computedAt). */
   latestCandidates(): Promise<CandidateLike[]>;
   /** The stored methodology config for an exact version — null when absent. */
   methodologyConfig(version: string): Promise<MethodologyConfig | null>;
-  /** The last published value for this gpu on this target — null on a first publish. */
-  latestPublication(
-    gpuId: string,
-    target: string,
-  ): Promise<{ price: number; publishedAt: Date } | null>;
-  alreadyPublished(candidateId: string, target: string): Promise<boolean>;
-  recordPublication(
-    value: PublishableIndexValue,
-    txRef: string,
-    target: string,
-    publisherVersion: string,
-    publishedAt: Date,
-  ): Promise<{ inserted: boolean }>;
+  /** Whether a report is already attested into this (gpu, epoch). */
+  reportForEpoch(gpuId: string, epoch: number): Promise<boolean>;
+  /** The newest report for this gpu — the jump annotation's baseline. */
+  latestReport(gpuId: string): Promise<{ price: number; epoch: number; attestedAt: Date } | null>;
+  /** Persist a signed report — idempotent by (gpu_id, epoch). */
+  recordReport(row: {
+    version: number;
+    gpuId: string;
+    candidateId: string | null;
+    price: number;
+    observedAt: number;
+    epoch: number;
+    validFrom: number;
+    validUntil: number;
+    calcHash: string;
+    signature: string;
+    reportHash: string;
+    attestedAt: Date;
+  }): Promise<{ inserted: boolean }>;
   recordViolations(
     candidateId: string,
     gpuId: string,
     target: string,
     violations: readonly PublishViolation[],
-    publisherVersion: string,
+    attestorVersion: string,
     recordedAt: Date,
   ): Promise<{ inserted: boolean }>;
 }
@@ -63,7 +69,7 @@ function candidateFromRow(row: CandidateRow): CandidateLike {
   };
 }
 
-export class DrizzlePublisherStore implements PublisherStore {
+export class DrizzleAttestorStore implements AttestorStore {
   constructor(
     private readonly db: Db,
     /** The gpu ids to poll — the settlement panels' gpu ids. */
@@ -86,38 +92,18 @@ export class DrizzlePublisherStore implements PublisherStore {
     return (row?.config as MethodologyConfig | undefined) ?? null;
   }
 
-  async latestPublication(
-    gpuId: string,
-    target: string,
-  ): Promise<{ price: number; publishedAt: Date } | null> {
-    const row = await getLatestPublication(this.db, gpuId, target);
-    return row ? { price: row.price, publishedAt: row.publishedAt } : null;
+  async reportForEpoch(gpuId: string, epoch: number): Promise<boolean> {
+    return (await getOracleReport(this.db, gpuId, epoch)) !== null;
   }
 
-  async alreadyPublished(candidateId: string, target: string): Promise<boolean> {
-    return (await getPublication(this.db, candidateId, target)) !== null;
+  async latestReport(gpuId: string) {
+    const row = await getLatestOracleReport(this.db, gpuId);
+    if (!row) return null;
+    return { price: row.price, epoch: row.epoch, attestedAt: row.attestedAt };
   }
 
-  async recordPublication(
-    value: PublishableIndexValue,
-    txRef: string,
-    target: string,
-    publisherVersion: string,
-    publishedAt: Date,
-  ): Promise<{ inserted: boolean }> {
-    return recordPublication(this.db, {
-      candidateId: value.candidateId,
-      gpuId: value.gpuId,
-      panelId: value.panelId,
-      price: value.price,
-      confidenceLow: value.confidenceLow,
-      confidenceHigh: value.confidenceHigh,
-      status: value.status,
-      publisherVersion,
-      target,
-      txRef,
-      publishedAt,
-    });
+  async recordReport(row: Parameters<AttestorStore["recordReport"]>[0]) {
+    return insertOracleReport(this.db, row);
   }
 
   async recordViolations(
@@ -125,15 +111,15 @@ export class DrizzlePublisherStore implements PublisherStore {
     gpuId: string,
     target: string,
     violations: readonly PublishViolation[],
-    publisherVersion: string,
+    attestorVersion: string,
     recordedAt: Date,
   ): Promise<{ inserted: boolean }> {
     return recordPublishViolations(this.db, {
       candidateId,
       gpuId,
       target,
-      violations,
-      publisherVersion,
+      violations: [...violations],
+      publisherVersion: attestorVersion,
       recordedAt,
     });
   }

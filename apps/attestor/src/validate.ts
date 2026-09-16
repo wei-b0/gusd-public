@@ -1,16 +1,16 @@
 import type {
+  AttestableIndexValue,
   BreakerMap,
   CandidateLike,
-  PublishableIndexValue,
   PublishViolation,
-  ResolvedPublisherConfig,
+  ResolvedAttestorConfig,
   Assessment,
 } from "./types.js";
 import { VIOLATION } from "./types.js";
 
 export interface AssessOptions {
   /** Per-panel resolved thresholds — see resolvePanelThresholds. */
-  config: ResolvedPublisherConfig;
+  config: ResolvedAttestorConfig;
   now: Date;
   /** Latest value already published for this gpu — null on a first publish. */
   previousPublishedPrice: number | null;
@@ -19,14 +19,14 @@ export interface AssessOptions {
 }
 
 /**
- * The publisher's independent audit. The oracle already applies publication
- * gates, but the publisher re-derives its own verdict from the candidate's
- * face: a bug or a compromise in the oracle must be visible here. Since the
- * §11 heartbeat policy the verdict does NOT gate publication — every
- * violation is recorded to publish_violations and the value publishes
- * regardless (a current imperfect price beats a stale or absent one for
- * swaps). The only hard stops live in the poller: a null price (nothing
- * exists to publish) and the divergence/heartbeat trigger (gas).
+ * The attestor's independent audit. The oracle already applies publication
+ * gates, but the attestor re-derives its own verdict from the candidate's
+ * face: a bug or a compromise in the oracle must be visible here. The verdict
+ * does NOT gate attestation — every violation is recorded to
+ * publish_violations and the value attests regardless (a current imperfect
+ * price beats a stale or absent one for trades). The only hard stops live in
+ * the poller: a null price (nothing honest to attest) and an observation
+ * beyond the contract's floor (the report could never be consumed).
  */
 export function assessCandidate(
   candidate: CandidateLike,
@@ -59,7 +59,7 @@ export function assessCandidate(
   if (candidate.methodologyVersion !== config.pinnedMethodologyVersion) {
     violations.push({
       code: VIOLATION.methodology,
-      detail: `candidate is ${candidate.methodologyVersion}, publisher is pinned to ${config.pinnedMethodologyVersion}`,
+      detail: `candidate is ${candidate.methodologyVersion}, attestor is pinned to ${config.pinnedMethodologyVersion}`,
     });
   }
 
@@ -101,7 +101,7 @@ export function assessCandidate(
       if (jumpPct > config.maxJumpPct) {
         violations.push({
           code: VIOLATION.jump,
-          detail: `price move ${(jumpPct * 100).toFixed(1)}% vs last published ${prev} exceeds ${(
+          detail: `price move ${(jumpPct * 100).toFixed(1)}% vs last attested ${prev} exceeds ${(
             config.maxJumpPct * 100
           ).toFixed(1)}% — manual review required`,
         });
@@ -126,7 +126,7 @@ export function assessCandidate(
 
   if (candidate.price === null) return { violations, value: null };
 
-  const value: PublishableIndexValue = {
+  const value: AttestableIndexValue = {
     candidateId: candidate.id,
     gpuId: candidate.gpuId,
     panelId: candidate.panelId,
