@@ -14,8 +14,10 @@ export const DATA_SOURCE: DataSource =
 export const ORACLE_BASE_URL =
   process.env.NEXT_PUBLIC_ORACLE_URL ?? "http://127.0.0.1:8080";
 
-/** A candidate younger than this is live — the publisher's freshness gate
- *  (PUBLISHER_MAX_FRESHNESS_MS): older candidates are refused publication. */
+/** A market-data price younger than this is live — past it the desk
+ *  renders the delayed marker. Display only: execution never reads these
+ *  figures; trades price off the attestor's signed reports (the pull
+ *  oracle's epoch-bound acceptances). */
 export const LIVE_MAX_AGE_MS = 300_000;
 
 /** Past this age the engine itself would have stopped carrying the value

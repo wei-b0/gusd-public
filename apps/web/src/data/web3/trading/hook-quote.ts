@@ -8,9 +8,16 @@
  * A position larger than the float reverts the SIMULATION while the real
  * market could fill it — the vault's bid inventory and the issuance
  * backstop are the actual depth, and both are public state. Pricing is
- * deterministic (oracle price ± spread params, ceil/floor-exact), so the
+ * deterministic (report price ± spread params, ceil/floor-exact), so the
  * quote is arithmetic over public views — the same doctrine the hook
  * itself holds ("execution-identical quote doctrine" in GPUIssuance).
+ *
+ * The price input is the pull oracle's Report: hook.polState(gpuId, report,
+ * signature) verifies the report on-chain (it reverts unless the report is
+ * THE executable one right now) and this mirror prices everything at its
+ * 4-dec price — the same input issuance and the hook price every fill
+ * with. There is no cached publication and no staleness knob anymore: a
+ * report is either for the current epoch (executable) or it is not.
  *
  * Scope honesty: when the pool holds native CL liquidity the walk leg
  * matters and this mirror is NOT used (quotes.ts falls back to the
@@ -35,22 +42,23 @@
  */
 
 /** One market's hook state, read once per quote batch (see ContractReads
- *  hookMarketState). Everything here is a public view. */
+ *  hookMarketState) against a verified report. Everything here is a public
+ *  view or a field of the report itself. */
 export interface HookMarketState {
-  /** The oracle's 4-dec publication (gUSD-wei per GPU-wei × 10^4 scaled
-   *  per compositionDivisor) — the same input issuance and the hook price
-   *  every fill with. */
+  /** The report's 4-dec price (USD/GPU-hour × PRICE_SCALE = 10_000) —
+   *  verified on-chain by the polState read that produced this state. */
   rawPrice: bigint;
-  /** The publication's block timestamp, seconds. */
-  oracleUpdatedAtSec: number;
-  /** The hook's own staleness limit (GPUIssuance keeps a separate one). */
-  hookMaxOracleStalenessSec: number;
-  /** Issuance's own staleness limit — the backstop's quoteIssueCredited
-   *  reverts past it even while the hook's guard still passes (the limits
-   *  are independent knobs), closing the backstop leg only. */
-  issuanceMaxOracleStalenessSec: number;
-  /** Per-market POL spread params — hook.polState(gpuId), which applies
-   *  the {50, 50, 10} default when never set. */
+  /** The report's own validity window, unix seconds: [validFrom,
+   *  validUntil) — exactly the epoch the contract accepts right now. */
+  validFromSec: number;
+  validUntilSec: number;
+  /** The report's engine computation time, unix seconds. */
+  observedAtSec: number;
+  /** The oracle's observation floor (GpuOracle.maxObservationAge,
+   *  seconds) — an observation older than this is non-executable. */
+  maxObservationAgeSec: number;
+  /** Per-market POL spread params — hook.polState(gpuId, report, sig),
+   *  which applies the {50, 50, 10} default when never set. */
   askBps: number;
   bidBps: number;
   polFeeBps: number;
@@ -91,8 +99,8 @@ export interface MirrorQuote {
 }
 
 export type MirrorRejection =
-  /** No fresh publication — beforeSwap returns zero deltas and the empty
-   *  native book reverts the swap. */
+  /** No current-epoch report — beforeSwap reverts ReportRequired / the
+   *  epoch check fails, and an LP-less pool can't fill anything. */
   | "oracle-stale"
   /** The issuance backstop is closed (or won't quote) and POL ask inventory
    *  can't cover the demand. capacityRaw = max buyable units. */
@@ -134,21 +142,19 @@ function polCapLeft(s: HookMarketState): bigint {
   return c;
 }
 
-/** The hook's guarded oracle read: zero price or past the hook's own
- *  staleness limit disables the hook deltas entirely (pure-native swap,
- *  which an LP-less pool cannot fill). */
+/** Report acceptance, mirrored (GpuOracle._verify): the report IS the
+ *  executable price at `nowSec` — nonzero price, inside its own validity
+ *  window (the current epoch), observation within the floor. The signature
+ *  and epoch-binding halves are verified by the polState read itself (it
+ *  reverts otherwise); these clock checks re-run locally because time has
+ *  passed since the read. One acceptance set now: issuance's backstop
+ *  consumes the SAME report in the same transaction, so its old separate
+ *  staleness limit no longer exists. */
 export function oracleGuardOk(s: HookMarketState, nowSec: number): boolean {
   if (s.rawPrice === 0n) return false;
-  if (s.oracleUpdatedAtSec > nowSec) return false;
-  return nowSec - s.oracleUpdatedAtSec <= s.hookMaxOracleStalenessSec;
-}
-
-/** Issuance's own guard — quoteIssueCredited reverts (and issue() fails
- *  closed) past THIS limit, independent of the hook's. */
-export function issuanceGuardOk(s: HookMarketState, nowSec: number): boolean {
-  if (s.rawPrice === 0n) return false;
-  if (s.oracleUpdatedAtSec > nowSec) return false;
-  return nowSec - s.oracleUpdatedAtSec <= s.issuanceMaxOracleStalenessSec;
+  if (s.observedAtSec > nowSec) return false;
+  if (nowSec - s.observedAtSec > s.maxObservationAgeSec) return false;
+  return nowSec >= s.validFromSec && nowSec < s.validUntilSec;
 }
 
 /** GPUHook._effAskBps — POL ask capped at the primary ask (R2) so the
@@ -161,7 +167,7 @@ function effAskBps(s: HookMarketState): number {
 
 /** GPUIssuance.quoteIssueCredited's math (execution-identical doctrine):
  *  base = ceil(amount·price / cd), fee = ceil(base·feeBps / 1e4). Null when
- *  issuance's own guard would revert (stale publication, closed market) —
+ *  the report is no longer acceptable (the epoch rolled since the read) —
  *  the hook's try/catch degrades the backstop leg to zero in exactly those
  *  cases. */
 function quoteIssue(
@@ -169,7 +175,7 @@ function quoteIssue(
   amount: bigint,
   nowSec: number,
 ): { base: bigint; fee: bigint; total: bigint } | null {
-  if (!issuanceGuardOk(s, nowSec)) return null;
+  if (!oracleGuardOk(s, nowSec)) return null;
   const base = mulDivCeil(s.rawPrice * amount, 1n, s.compositionDivisor);
   const fee = mulDivCeil(base, BigInt(s.issueFeeBps), 10_000n);
   return { base, fee, total: base + fee };

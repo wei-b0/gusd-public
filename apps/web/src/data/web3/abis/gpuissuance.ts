@@ -11,7 +11,7 @@ export const GPUISSUANCE_ABI = [
       {
         "name": "oracle_",
         "type": "address",
-        "internalType": "contract IGPUPriceOracle"
+        "internalType": "contract IGpuOracle"
       },
       {
         "name": "revenueLedger_",
@@ -590,6 +590,11 @@ export const GPUISSUANCE_ABI = [
         "name": "to",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -629,6 +634,11 @@ export const GPUISSUANCE_ABI = [
         "name": "maxGusdSpend",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -660,26 +670,13 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
-    "name": "maxOracleStaleness",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "oracle",
     "inputs": [],
     "outputs": [
       {
         "name": "",
         "type": "address",
-        "internalType": "contract IGPUPriceOracle"
+        "internalType": "contract IGpuOracle"
       }
     ],
     "stateMutability": "view"
@@ -793,6 +790,11 @@ export const GPUISSUANCE_ABI = [
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -827,6 +829,11 @@ export const GPUISSUANCE_ABI = [
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -876,6 +883,77 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
+    "name": "reportSqrtPriceX96",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "report",
+        "type": "tuple",
+        "internalType": "struct IGpuOracle.Report",
+        "components": [
+          {
+            "name": "version",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "gpuId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "observedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "epoch",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "validFrom",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "validUntil",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "calcHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "revenueLedger",
     "inputs": [],
     "outputs": [
@@ -918,19 +996,6 @@ export const GPUISSUANCE_ABI = [
         "name": "feeBps",
         "type": "uint16",
         "internalType": "uint16"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setMaxOracleStaleness",
-    "inputs": [
-      {
-        "name": "seconds_",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "outputs": [],

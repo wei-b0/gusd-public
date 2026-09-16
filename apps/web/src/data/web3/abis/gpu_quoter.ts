@@ -255,6 +255,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gusdIn",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -300,6 +305,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gpuDemand",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -345,6 +355,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gpuIn",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -390,6 +405,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gusdDemand",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -507,6 +527,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gusdIn",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -630,6 +655,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gpuDemand",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -753,6 +783,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gpuIn",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -876,6 +911,11 @@ export const GPU_QUOTER_ABI = [
         "name": "gusdDemand",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [

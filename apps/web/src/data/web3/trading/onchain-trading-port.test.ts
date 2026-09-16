@@ -10,10 +10,13 @@ import type { OnChainAccountStore } from "@/data/onchain/account-store";
 import { OnChainTradingPort } from "./onchain-trading-port";
 
 /**
- * The port's orchestration, not the chain: quotes come from a stubbed quote
- * module, allowances from a stubbed ERC-20 read, and the assertions check
- * the plan the port hands the runner — label, approvals, the signed
- * structs, and the session gates.
+ * The port's orchestration, not the chain: the pinned quote comes from a
+ * stubbed quote module, the attestation from a stubbed fetch, allowances
+ * from a stubbed ERC-20 read, and simulation from a stubbed eth_call. The
+ * assertions check the pull-oracle lifecycle — ONE report pinned across
+ * re-quote → simulate → sign, the updateData marker riding every call —
+ * plus the plan the port hands the runner (label, approvals, snapshot)
+ * and the session gates.
  */
 
 const GUSD = "0x00000000000000000000000000000000000a0001" as Address;
@@ -21,6 +24,29 @@ const ROUTER = "0x00000000000000000000000000000000000a0003" as Address;
 const GPU_TOKEN = "0x00000000000000000000000000000000000a0002" as Address;
 const OWNER = "0x00000000000000000000000000000000000000aa" as Address;
 const GPU_ID = gpuIdForAsset("H100");
+
+/** The fake attestation's wire marker — every call the port builds must
+ *  embed exactly this, proving quote, simulate, and signature carry the
+ *  SAME report. */
+const UPDATE_DATA = "0xfeedface" as const;
+const CURRENT_ATT = {
+  kind: "current",
+  signed: {
+    report: {
+      version: 1,
+      gpuId: GPU_ID,
+      price: 12500n,
+      observedAt: 0,
+      epoch: 0,
+      validFrom: 0,
+      validUntil: 60,
+      calcHash: `0x${"ab".repeat(32)}`,
+    },
+    signature: `0x${"11".repeat(65)}`,
+  },
+  updateData: UPDATE_DATA,
+  reportHash: `0x${"cd".repeat(32)}`,
+} as const;
 
 const h = vi.hoisted(() => ({
   session: {
@@ -30,6 +56,13 @@ const h = vi.hoisted(() => ({
   quote: null as TradeQuote | null,
   /** The request object captured per quote call. */
   quoteRequest: null as unknown,
+  /** The QuoteDeps the quote module was handed — the pinning test walks
+   *  its attestation seam. */
+  quoteDeps: null as unknown,
+  /** The attestation fetch's kind; every non-current kind refuses. */
+  attKind: "current" as "current" | "degraded" | "unknown-gpu" | "unreachable",
+  attCalls: 0,
+  attGpu: null as string | null,
   availability: null as unknown,
   allowance: 0n as bigint,
   /** Raw balances the fake ERC-20 read hands back per token flavor. */
@@ -38,7 +71,9 @@ const h = vi.hoisted(() => ({
   registration: {
     token: "0x00000000000000000000000000000000000a0002",
   } as unknown,
-  sim: { ok: true } as { ok: true } | { ok: false; error: { voice: string } },
+  /** Simulation answers, popped in order — one per simulateWrite call.
+   *  (Execute simulates pre-signature; there is no plan.simulate.) */
+  simQueue: [] as ({ ok: true } | { ok: false; error: { voice: string; errorName: string | null } })[],
   simReq: null as
     | null
     | { address: Address; functionName: string; args: readonly unknown[] },
@@ -53,12 +88,17 @@ vi.mock("./quotes", () => ({
     h.quoteRequest = request;
     return h.quote;
   },
+  quoteAssetDetailed: async (request: unknown, deps: unknown) => {
+    h.quoteRequest = request;
+    h.quoteDeps = deps;
+    return h.quote;
+  },
 }));
 
 vi.mock("../simulate", () => ({
   simulateWrite: async (req: never) => {
     h.simReq = req as typeof h.simReq;
-    return h.sim;
+    return h.simQueue.shift() ?? { ok: true };
   },
 }));
 
@@ -211,6 +251,12 @@ function makePort() {
         balanceOf: async (token: Address) =>
           token.toLowerCase() === GPU_TOKEN ? h.gpuBalance : h.gusdBalance,
       },
+      attestation: async (gpuParam: string) => {
+        h.attCalls += 1;
+        h.attGpu = gpuParam;
+        if (h.attKind !== "current") return { kind: h.attKind };
+        return CURRENT_ATT;
+      },
     },
   } as never);
   return { port, actions, store };
@@ -222,11 +268,15 @@ beforeEach(() => {
   h.session = { status: "connected", address: OWNER };
   h.quote = BUY_QUOTE;
   h.quoteRequest = null;
+  h.quoteDeps = null;
+  h.attKind = "current";
+  h.attCalls = 0;
+  h.attGpu = null;
   h.allowance = 0n;
   h.gusdBalance = 10_000_000n;
   h.gpuBalance = 10n ** 19n;
   h.registration = { token: GPU_TOKEN };
-  h.sim = { ok: true };
+  h.simQueue = [{ ok: true }];
   h.simReq = null;
 });
 
@@ -268,12 +318,22 @@ describe("execute gates", () => {
     expect(actions.plans).toHaveLength(0);
   });
 
-  it("refuses to act when the quote fails", async () => {
+  it("refuses to act when the pinned quote fails", async () => {
     h.quote = null;
     const { port, actions } = makePort();
     await expect(port.execute(BUY_REQUEST)).rejects.toThrow(
       "This order can't be quoted right now — check the size and try again.",
     );
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("refuses to act without a current attestation — after exactly one refetch", async () => {
+    h.attKind = "degraded";
+    const { port, actions } = makePort();
+    await expect(port.execute(BUY_REQUEST)).rejects.toThrow(
+      "The oracle has no current price report right now — orders wait for the attestor's next attestation. Try again in a moment.",
+    );
+    expect(h.attCalls).toBe(2); // one automatic refetch, then the refusal
     expect(actions.plans).toHaveLength(0);
   });
 
@@ -299,8 +359,70 @@ describe("execute gates", () => {
   });
 });
 
+describe("the pinned report lifecycle", () => {
+  // The fast path: the allowance already covers the spend, so nothing is
+  // approved and the simulation runs inside execute — where the expiry
+  // retry lives.
+  beforeEach(() => {
+    h.allowance = parseGusd(1_000);
+  });
+
+  it("pins ONE attestation across re-quote, simulate, and signature", async () => {
+    const { port, actions } = makePort();
+    await port.execute(BUY_REQUEST);
+    // The report was fetched once, at submit, before any quote.
+    expect(h.attCalls).toBe(1);
+    expect(h.attGpu).toBe("H100");
+    // The pinned quote ran against deps whose attestation seam hands back
+    // the SAME object — not a fresh fetch.
+    const pinnedDeps = h.quoteDeps as { attestation: () => Promise<unknown> };
+    expect(await pinnedDeps.attestation()).toBe(CURRENT_ATT);
+    // Simulate ran pre-signature, inside execute, with the marker embedded.
+    expect(h.simReq?.functionName).toBe("buy");
+    expect((h.simReq?.args[0] as { updateData: string }).updateData).toBe(UPDATE_DATA);
+  });
+
+  it("retries once on an expiry revert and succeeds with the fresh report", async () => {
+    h.simQueue = [
+      { ok: false, error: { voice: "expired", errorName: "UnknownGpuEpoch" } },
+      { ok: true },
+    ];
+    const { port, actions } = makePort();
+    await port.execute(BUY_REQUEST);
+    // Two attestation fetches (one per attempt), one plan.
+    expect(h.attCalls).toBe(2);
+    expect(actions.plans).toHaveLength(1);
+  });
+
+  it("surfaces the expiry voice when the retry's report expires too", async () => {
+    h.simQueue = [
+      { ok: false, error: { voice: "expired once", errorName: "UnknownGpuEpoch" } },
+      { ok: false, error: { voice: "expired twice", errorName: "UnknownGpuEpoch" } },
+    ];
+    const { port, actions } = makePort();
+    await expect(port.execute(BUY_REQUEST)).rejects.toThrow("expired twice");
+    expect(h.attCalls).toBe(2);
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("does not burn the retry on a non-expiry revert", async () => {
+    h.simQueue = [{ ok: false, error: { voice: "limit hit", errorName: "MaxPaidExceeded" } }];
+    const { port, actions } = makePort();
+    await expect(port.execute(BUY_REQUEST)).rejects.toThrow("limit hit");
+    expect(h.attCalls).toBe(1);
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("passes a failed simulation through with the product voice", async () => {
+    h.simQueue = [{ ok: false, error: { voice: "sim failed", errorName: null } }];
+    const { port, actions } = makePort();
+    await expect(port.execute(BUY_REQUEST)).rejects.toThrow("sim failed");
+    expect(actions.plans).toHaveLength(0);
+  });
+});
+
 describe("buy plans", () => {
-  it("plans the buy with the gUSD approval, snapshot, and simulation", async () => {
+  it("plans the buy with the gUSD approval, snapshot, and the report-carrying struct", async () => {
     const { port, actions } = makePort();
     await port.execute(BUY_REQUEST);
     expect(actions.plans).toHaveLength(1);
@@ -323,6 +445,8 @@ describe("buy plans", () => {
       issuanceLeg: 0.5,
     });
 
+    // The approval path: the runner simulates after the approvals land,
+    // over the same pinned calldata.
     const sim = await plan.simulate?.();
     expect(sim).toEqual({ ok: true });
     expect(h.simReq?.functionName).toBe("buy");
@@ -334,11 +458,32 @@ describe("buy plans", () => {
       deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
       recipient: OWNER,
+      updateData: UPDATE_DATA,
     });
 
+    // The signature embeds the SAME report — sign what simulated.
     const spec = plan.buildSpec();
     expect(spec.origin).toBe("trade");
     expect(spec.kind).toBe("trade-buy");
+    const writes: { functionName: string; args: readonly unknown[] }[] = [];
+    await spec.execute({
+      account: null,
+      writeContract: async (req: never) => {
+        writes.push(req as (typeof writes)[number]);
+        return "0xhash" as `0x${string}`;
+      },
+    } as never);
+    expect(writes[0]!.functionName).toBe("buy");
+    expect(writes[0]!.args[0]).toEqual({
+      gpuId: GPU_ID,
+      gpuOut: parseGpuUnits(2),
+      payment: GUSD,
+      maxPaid: parseGusd(5.2525),
+      deadline: expect.any(BigInt),
+      sqrtLimitX96: 0n,
+      recipient: OWNER,
+      updateData: UPDATE_DATA,
+    });
   });
 
   it("skips the approval when the gUSD allowance already covers the cap", async () => {
@@ -346,18 +491,13 @@ describe("buy plans", () => {
     const { port, actions } = makePort();
     await port.execute(BUY_REQUEST);
     expect(actions.plans[0]!.approvals).toHaveLength(0);
-  });
-
-  it("passes a failed simulation through with the product voice", async () => {
-    h.sim = { ok: false, error: { voice: "sim failed" } };
-    const { port, actions } = makePort();
-    await port.execute(BUY_REQUEST);
-    expect(await actions.plans[0]!.simulate?.()).toEqual({ ok: false, error: "sim failed" });
+    // The fast path simulated inside execute — no plan.simulate needed.
+    expect(h.simReq?.functionName).toBe("buy");
   });
 });
 
 describe("sell plans", () => {
-  it("plans the sell with the GPU approval and the sell struct", async () => {
+  it("plans the sell with the GPU approval and the report-carrying sell struct", async () => {
     h.quote = SELL_QUOTE;
     const { port, actions } = makePort();
     await port.execute({ asset: "H100", side: "sell", basis: "units", size: 2 });
@@ -372,6 +512,7 @@ describe("sell plans", () => {
     });
     expect(plan.quote?.totals).toEqual({ size: 2, minOut: 1.9, notional: 3.8 });
 
+    // Approval path — the runner simulates post-approval.
     await plan.simulate?.();
     expect(h.simReq?.functionName).toBe("sell");
     expect(h.simReq?.args[0]).toEqual({
@@ -382,6 +523,7 @@ describe("sell plans", () => {
       deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
       recipient: OWNER,
+      updateData: UPDATE_DATA,
     });
 
     const spec = plan.buildSpec();
@@ -398,6 +540,7 @@ describe("sell plans", () => {
     expect(plan.approvals[0]).toMatchObject({ token: GPU_TOKEN, amount: parseGpuUnits(2.002) });
     expect(plan.quote?.totals).toEqual({ size: 2.002, minOut: 3.781, notional: 3.8 });
 
+    // Approval path — the runner simulates post-approval.
     await plan.simulate?.();
     expect(h.simReq?.functionName).toBe("sell");
     expect(h.simReq?.args[0]).toEqual({
@@ -408,6 +551,7 @@ describe("sell plans", () => {
       deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
       recipient: OWNER,
+      updateData: UPDATE_DATA,
     });
     const spec = plan.buildSpec();
     expect(spec.kind).toBe("trade-sell");
@@ -448,6 +592,9 @@ describe("spend-first buy plans", () => {
       issuanceLeg: 0.5,
     });
 
+    // The exact-in calldata: updateData sits before the recipient — the
+    // router's own arg order. Approval path — the runner simulates
+    // post-approval.
     await plan.simulate?.();
     expect(h.simReq?.functionName).toBe("buyExactIn");
     expect(h.simReq?.args).toEqual([
@@ -456,6 +603,7 @@ describe("spend-first buy plans", () => {
       parseGpuUnits(7.9202),
       expect.any(BigInt),
       0n,
+      UPDATE_DATA,
       OWNER,
     ]);
 
@@ -481,6 +629,7 @@ describe("spend-first buy plans", () => {
     expect(plan.label).toBe("Buy ~7.9601 H100 · 10.0000 gUSD");
     expect(plan.approvals[0]).toMatchObject({ token: GUSD, amount: parseGusd(10) });
 
+    // Approval path — the runner simulates post-approval.
     await plan.simulate?.();
     expect(h.simReq?.functionName).toBe("buy");
     expect(h.simReq?.args[0]).toEqual({
@@ -491,6 +640,7 @@ describe("spend-first buy plans", () => {
       deadline: expect.any(BigInt),
       sqrtLimitX96: 0n,
       recipient: OWNER,
+      updateData: UPDATE_DATA,
     });
     const spec = plan.buildSpec();
     expect(spec.kind).toBe("trade-buy");

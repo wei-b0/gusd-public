@@ -5,9 +5,9 @@
  * views when NEXT_PUBLIC_INDEXER_URL is configured. Everything
  * freshness-critical or execution-adjacent stays on direct RPC exactly as
  * before: balanceOf/allowance (approvals + actions), quoteIssue (quotes),
- * oracleUpdatedAt (staleness gate), the reserve-asset balance (stables are
- * deliberately not indexed), the GUSD pause flag, the vault seed flag, and
- * the per-owner vault caps.
+ * the oracle attestation (the report every trade embeds), the reserve-asset
+ * balance (stables are deliberately not indexed), the GUSD pause flag, the
+ * vault seed flag, and the per-owner vault caps.
  *
  * Doctrine preserved (see ./public-client): indexed state is balances and
  * history only — never a price source. Any indexed fetch that fails or

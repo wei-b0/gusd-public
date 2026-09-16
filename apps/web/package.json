@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@across-protocol/app-sdk": "^0.6.1",
+    "@gusd/attestor-client": "workspace:*",
     "@gusd/db": "workspace:*",
     "@gusd/gpu-catalog": "workspace:*",
     "@gusd/types": "workspace:*",

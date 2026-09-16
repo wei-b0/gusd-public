@@ -14,9 +14,10 @@ export interface ProtocolAddresses {
   ledger: Address;
   marketLiquidity: Address;
   oracle: Address;
-  /** The oracle publication identity — present only when this deployment
-   *  also deployed the oracle (an external ORACLE keeps the field absent). */
-  oraclePublisher?: Address;
+  /** The oracle attestor signer (GpuOracle.signer) — present only when this
+   *  deployment also deployed the oracle (an external ORACLE keeps the field
+   *  absent). Its EIP-712 signatures are the only consumable oracle input. */
+  oracleAttestor?: Address;
   permit2: Address;
   poolManager: Address;
   positionManager: Address;
@@ -45,7 +46,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "ledger": "0x64e3FeE2AB83E0b1E3F6a14eC872e8a7a8253C1a",
     "marketLiquidity": "0xB42045b03a6b5EDBbBA335A01fCb7cA93c2DA4f7",
     "oracle": "0x8CC5b5d1f7334B56e948e12bA7A759F24eA0681c",
-    "oraclePublisher": "0xfEed079814cB1fFd2E7aECd3A991A78309e0b5e8",
+    "oracleAttestor": "0xfEed079814cB1fFd2E7aECd3A991A78309e0b5e8",
     "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
     "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     "positionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
@@ -70,7 +71,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
     "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
     "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-    "oraclePublisher": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "oracleAttestor": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
     "permit2": "0x61c36a8d610163660E21a8b7359e1Cac0C9133e1",
     "poolManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
     "positionManager": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",

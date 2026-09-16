@@ -38,9 +38,9 @@ const HOUR_MS = 3_600_000;
  */
 export const CHANGE24_TOLERANCE_MS = 6 * 3_600_000;
 
-/** Age classification of one candidate against the freshness gates: the
- *  publisher refuses candidates older than LIVE_MAX_AGE_MS, and the engine
- *  stops carrying a value forward past STALE_MAX_AGE_MS. */
+/** Age classification of one candidate against the freshness gates:
+ *  candidates older than LIVE_MAX_AGE_MS read as stale, and nothing
+ *  carries past STALE_MAX_AGE_MS (unavailable). */
 export function classifyAge(computedAt: string, now: number): "live" | "stale" | "unavailable" {
   const t = Date.parse(computedAt);
   if (!Number.isFinite(t)) return "unavailable";

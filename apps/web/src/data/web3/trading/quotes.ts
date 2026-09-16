@@ -14,6 +14,13 @@
  * against the contract's own quoteIssue (see ./genesis) and rides the
  * exact-out path under the typed-spend cap.
  *
+ * The price input is the pull oracle's signed Report: every quote first
+ * fetches the CURRENT epoch's attestation (QuoteDeps.attestation) and
+ * prices either through hook.polState (which verifies the report on-chain)
+ * or the contract's quoteIssue against its updateData. Quotes without a
+ * current report are impossible — matching the contract, where no fill
+ * happens without one either.
+ *
  * Two quoting paths, dispatched by the pool's native liquidity:
  *  - No native CL liquidity (the launch configuration — every fill is
  *    hook-driven): the deterministic mirror in ./hook-quote, pure
@@ -63,6 +70,8 @@ import { canonicalPoolKey, poolIdOf } from "../pool";
 import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { contractReads, type ContractReads } from "../reads";
+import { fetchAttestation, type Attestation } from "@/data/oracle/attestation";
+import type { SignedReport } from "@gusd/attestor-client";
 import {
   oracleGuardOk,
   quoteBuyExactOutMirror,
@@ -82,6 +91,10 @@ export interface QuoteDeps {
   contracts: ReturnType<typeof getContracts>;
   getBlockNumber(): Promise<number>;
   now(): number;
+  /** The attestation fetch — the signed report a trade embeds. Injectable
+   *  for tests; execution pins ONE report across re-quote → simulate →
+   *  sign by handing this quote stack a deps whose fetch returns it. */
+  attestation(gpuParam: string): Promise<Attestation>;
 }
 
 export function defaultQuoteDeps(): QuoteDeps {
@@ -90,6 +103,7 @@ export function defaultQuoteDeps(): QuoteDeps {
     contracts: getContracts(),
     getBlockNumber: async () => Number(await getPublicClient().getBlockNumber()),
     now: Date.now,
+    attestation: (gpuParam) => fetchAttestation(gpuParam),
   };
 }
 
@@ -163,13 +177,13 @@ export interface GpuQuoteResult {
 
 export interface GpuQuoterRead {
   /** Exact-out buy: units demanded → gUSD spent. */
-  quoteBuyExactOut(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  quoteBuyExactOut(args: [GpuPoolKeyArg, bigint, `0x${string}`]): Promise<GpuQuoteResult>;
   /** Exact-in buy: gUSD spent → net units received. */
-  quoteBuy(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  quoteBuy(args: [GpuPoolKeyArg, bigint, `0x${string}`]): Promise<GpuQuoteResult>;
   /** Exact-in sell: units sold → net gUSD received. */
-  quoteSell(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  quoteSell(args: [GpuPoolKeyArg, bigint, `0x${string}`]): Promise<GpuQuoteResult>;
   /** Exact-out sell: gUSD proceeds demanded → gross units to sell. */
-  quoteSellExactOut(args: [GpuPoolKeyArg, bigint]): Promise<GpuQuoteResult>;
+  quoteSellExactOut(args: [GpuPoolKeyArg, bigint, `0x${string}`]): Promise<GpuQuoteResult>;
 }
 
 /** GpuQuoter's PoolKey parameter — same fields as the v4 pool key. */
@@ -189,7 +203,8 @@ function gpuQuoterRead(deps: QuoteDeps): GpuQuoterRead {
 export type { QuoteFailure } from "@/domain/types";
 
 /** The deterministic mirror's one hook-state read — shared per quote so a
- *  four-desk batch doesn't fan out 4× the same 12 reads. */
+ *  four-desk batch doesn't fan out 4× the same 12 reads. Priced at the
+ *  verified report the trade will embed. */
 interface MirrorBatch {
   state: HookMarketState;
   /** The pool's native CL liquidity, raw. 0 = hook-driven (the mirror's
@@ -201,9 +216,10 @@ async function mirrorBatch(
   deps: QuoteDeps,
   gpuId: `0x${string}`,
   poolKey: GpuPoolKeyArg,
+  signed: SignedReport,
 ): Promise<MirrorBatch | null> {
   try {
-    const state = await deps.reads.hookMarketState(gpuId);
+    const state = await deps.reads.hookMarketState(gpuId, signed);
     const nativeLiquidity = await deps.contracts.stateView.read
       .getLiquidity([poolIdOf(poolKey)])
       .catch(() => 0n);
@@ -218,13 +234,16 @@ async function mirrorBatch(
 
 /** The GPU pools' quoting seam — the two-path dispatch of the module doc.
  *  Returns the decomposed result, or the typed failure the slip maps to
- *  its message. */
+ *  its message. Both paths price the SAME signed report (`updateData` rides
+ *  the eth_call on the float path; the mirror's state was verified from
+ *  it). */
 async function runGpuQuote(
   deps: QuoteDeps,
   batch: MirrorBatch | null,
   poolKey: GpuPoolKeyArg,
   method: "quoteBuyExactOut" | "quoteBuy" | "quoteSell" | "quoteSellExactOut",
   amountRaw: bigint,
+  updateData: `0x${string}`,
 ): Promise<QuoteFailure | GpuQuoteResult> {
   const nowSec = Math.floor(deps.now() / 1000);
   if (batch !== null && batch.nativeLiquidity === 0n) {
@@ -241,7 +260,7 @@ async function runGpuQuote(
     return { unavailable: true, reason: m.reason, capacityRaw: m.capacityRaw };
   }
   try {
-    return await gpuQuoterRead(deps)[method]([poolKey, amountRaw]);
+    return await gpuQuoterRead(deps)[method]([poolKey, amountRaw, updateData]);
   } catch {
     if (batch !== null && !oracleGuardOk(batch.state, nowSec)) {
       return { unavailable: true, reason: "oracle-stale" };
@@ -254,6 +273,17 @@ async function runGpuQuote(
           : "no-bid-capacity",
     };
   }
+}
+
+/** The current-epoch attestation, or the typed refusal: a quote cannot run
+ *  without one — the contract itself refuses (ReportRequired / epoch
+ *  checks), so the quote says the same thing in its own vocabulary. */
+async function currentAttestation(deps: QuoteDeps, asset: AssetId): Promise<
+  { att: Attestation & { kind: "current" } } | QuoteFailure
+> {
+  const att = await deps.attestation(asset);
+  if (att.kind !== "current") return { unavailable: true, reason: "oracle-stale" };
+  return { att };
 }
 
 /** Availability read for the slip's gate — null when unregistered. Short
@@ -273,7 +303,11 @@ export async function describeAsset(
     return null;
   }
   const reg = await deps.reads.registration(gpuId);
-  const oracle = reg ? await deps.reads.oracleUpdatedAt(gpuId) : null;
+  // The desk's reference price is the current attestation's report price —
+  // the 4-dec fixed point the protocol actually executes against. No
+  // current attestation (attestor behind, gpu never attested) is no
+  // reference at all.
+  const att = reg ? await deps.attestation(asset) : null;
   const value = reg
     ? {
         issuanceEnabled: reg.issuanceEnabled,
@@ -283,11 +317,10 @@ export async function describeAsset(
         poolFeeBps: Number(reg.poolParams.fee) / 100,
         hookFeeBps: await deps.reads.hookFeeBps(),
         issuanceFeeBps: reg.issuanceFeeBps,
-        // The oracle's own 4-decimal fixed point → gUSD per unit. A
-        // stale or empty publication is no reference at all.
+        // The report's 4-decimal price → gUSD per unit.
         oraclePrice:
-          oracle && !oracle.isStale && oracle.rawPrice > 0n
-            ? Number(oracle.rawPrice) / 10_000
+          att && att.kind === "current" && att.signed.report.price > 0n
+            ? Number(att.signed.report.price) / 10_000
             : null,
       }
     : null;
@@ -324,14 +357,26 @@ export async function quoteBuy(
   const sizeRaw = parseGpuUnits(size);
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
 
+  // No current report, no quote — the contract itself refuses to fill.
+  const attested = await currentAttestation(deps, asset);
+  if ("unavailable" in attested) return attested;
+  const att = attested.att;
+
   const blockNumber = await deps.getBlockNumber();
 
   if (!reg.poolRegistered) {
     // Genesis: no secondary market exists — the whole size prices through
-    // primary issuance. Closed issuance means the size is not buyable.
+    // primary issuance against the report. Closed issuance means the size
+    // is not buyable.
     if (!reg.issuanceEnabled) return null;
-    const [base, fee, total] = await deps.contracts.issuance.read.quoteIssue([gpuId, sizeRaw]);
-    if (base === 0n && total === 0n) return null; // no oracle publication
+    let total: bigint, base: bigint, fee: bigint;
+    try {
+      [base, fee, total] = await deps.reads.quoteIssue(gpuId, sizeRaw, att.updateData);
+    } catch {
+      // The report stopped being executable (epoch rolled mid-quote) —
+      // the same refusal the mirror would give.
+      return { unavailable: true, reason: "oracle-stale" };
+    }
     const maxPaidRaw = applyBps(total, toleranceBps, "up");
     return {
       asset,
@@ -364,8 +409,8 @@ export async function quoteBuy(
     addresses.hook as Address,
   );
 
-  const batch = await mirrorBatch(deps, gpuId, poolKey);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuyExactOut", sizeRaw);
+  const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuyExactOut", sizeRaw, att.updateData);
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   if (r.gpuOut !== sizeRaw || r.gusdIn === 0n) return null;
@@ -434,6 +479,11 @@ export async function quoteSell(
   const sizeRaw = parseGpuUnits(size);
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
 
+  // No current report, no quote — the contract itself refuses to fill.
+  const attested = await currentAttestation(deps, asset);
+  if ("unavailable" in attested) return attested;
+  const att = attested.att;
+
   const { addresses } = deps.contracts;
   const poolKey = canonicalPoolKey(
     addresses.gusd as Address,
@@ -443,8 +493,8 @@ export async function quoteSell(
   );
 
   const blockNumber = await deps.getBlockNumber();
-  const batch = await mirrorBatch(deps, gpuId, poolKey);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSell", sizeRaw);
+  const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSell", sizeRaw, att.updateData);
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   if (r.gusdOut === 0n || r.gpuIn !== sizeRaw) return null;
@@ -500,17 +550,24 @@ export async function quoteBuyBySpend(
   const spendRaw = parseGusd(gusd);
   if (spendRaw === 0n || spendRaw > UINT128_MAX) return null;
 
+  // No current report, no quote — the contract itself refuses to fill.
+  const attested = await currentAttestation(deps, asset);
+  if ("unavailable" in attested) return attested;
+  const att = attested.att;
+
   const blockNumber = await deps.getBlockNumber();
 
   if (!reg.poolRegistered) {
     // Genesis: solve the largest ledger-grain unit count the spend covers,
-    // quoted on the contract's own math. No publication or a stale oracle
-    // means issue() would revert — the honest "can't quote".
+    // quoted on the contract's own math against the report. Without a
+    // current report issue() would revert — the honest "can't quote".
     if (!reg.issuanceEnabled) return null;
-    const oracle = await deps.reads.oracleUpdatedAt(gpuId);
-    if (oracle.isStale || oracle.rawPrice === 0n) return null;
-    const solved = await issueUnitsForSpend(spendRaw, oracle.rawPrice, reg.issuanceFeeBps, (amountRaw) => {
-      const q = deps.contracts.issuance.read.quoteIssue([gpuId, amountRaw]);
+    const solved = await issueUnitsForSpend(spendRaw, att.signed.report.price, reg.issuanceFeeBps, (amountRaw) => {
+      // Raw contract quote (the solver's integer math needs it unrounded);
+      // a race past the epoch reverts — surfaced as the zero-total null.
+      const q = deps.contracts.issuance.read
+        .quoteIssue([gpuId, amountRaw, att.updateData])
+        .catch(() => [0n, 0n, 0n] as const);
       return q.then(([base, fee, total]) => ({ base, fee, total }));
     });
     if (!solved) return null;
@@ -550,8 +607,8 @@ export async function quoteBuyBySpend(
     addresses.hook as Address,
   );
 
-  const batch = await mirrorBatch(deps, gpuId, poolKey);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuy", spendRaw);
+  const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuy", spendRaw, att.updateData);
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   // The exact-in quoter must spend exactly what was typed and deliver a
@@ -627,6 +684,11 @@ export async function quoteSellByProceeds(
   const proceedsRaw = parseGusd(gusd);
   if (proceedsRaw === 0n || proceedsRaw > UINT128_MAX) return null;
 
+  // No current report, no quote — the contract itself refuses to fill.
+  const attested = await currentAttestation(deps, asset);
+  if ("unavailable" in attested) return attested;
+  const att = attested.att;
+
   const { addresses } = deps.contracts;
   const poolKey = canonicalPoolKey(
     addresses.gusd as Address,
@@ -636,8 +698,8 @@ export async function quoteSellByProceeds(
   );
 
   const blockNumber = await deps.getBlockNumber();
-  const batch = await mirrorBatch(deps, gpuId, poolKey);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSellExactOut", proceedsRaw);
+  const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
+  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSellExactOut", proceedsRaw, att.updateData);
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   // The exact-out sell must deliver exactly the typed demand and cost a

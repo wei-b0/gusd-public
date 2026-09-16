@@ -58,15 +58,6 @@ const ERROR_VOICE: Record<string, { voice: string; retryable: boolean }> = {
   DustLeft: { voice: GENERIC_RETRY, retryable: true },
   NotPoolManager: { voice: GENERIC_RETRY, retryable: true },
   // GPUIssuance
-  OracleStale: {
-    voice: "The Index for this market is stale — issuance waits for a fresh publication.",
-    retryable: true,
-  },
-  OraclePriceZero: {
-    voice: "No Index price is published for this market yet.",
-    retryable: true,
-  },
-  OracleFutureTimestamp: { voice: GENERIC_RETRY, retryable: true },
   IssuanceDisabled: {
     voice: "Issuance is disabled for this market — trade the secondary market instead.",
     retryable: false,
@@ -77,6 +68,30 @@ const ERROR_VOICE: Record<string, { voice: string; retryable: boolean }> = {
   GpuIdTooLong: { voice: GENERIC_RETRY, retryable: true },
   GpuIdNotLeftAligned: { voice: GENERIC_RETRY, retryable: true },
   InvalidGpuIdChar: { voice: GENERIC_RETRY, retryable: true },
+  // GpuOracle (pull oracle — every trade carries its own signed report)
+  ReportRequired: {
+    voice: "This trade reached the market without a price report — retry the order; a fresh one carries one.",
+    retryable: true,
+  },
+  InvalidVersion: { voice: GENERIC_RETRY, retryable: true },
+  ZeroPrice: { voice: GENERIC_RETRY, retryable: true },
+  GpuMismatch: { voice: GENERIC_RETRY, retryable: true },
+  UnknownGpuEpoch: {
+    voice: "The price report expired (the epoch rolled) — retry the order; it quotes a fresh one.",
+    retryable: true,
+  },
+  BadEpochBinding: { voice: GENERIC_RETRY, retryable: true },
+  FutureObservation: { voice: GENERIC_RETRY, retryable: true },
+  StaleObservation: {
+    voice: "The price report's observation is too old — retry the order for a fresh attestation.",
+    retryable: true,
+  },
+  InvalidSigner: {
+    voice: "The price report's signature doesn't match the oracle's attestor — retry the order.",
+    retryable: true,
+  },
+  EpochAlreadyBound: { voice: GENERIC_RETRY, retryable: true },
+  ObservationAgeBelowEpoch: { voice: GENERIC_RETRY, retryable: true },
   // GUSD
   EnforcedPause: {
     voice: "The protocol is paused by its operator — this action is unavailable right now.",

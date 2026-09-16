@@ -33,6 +33,12 @@ const HOOK = "0x00000000000000000000000000000000000a0003" as Address;
 /** gUSD sorts below the GPU token, so a buy is zeroForOne. */
 const POOL_PARAMS = { fee: 3000, tickSpacing: 60 };
 
+/** The fake attestation's wire format — a distinguishable marker the fakes
+ *  assert rides through to the contract reads untouched (the quote embeds
+ *  exactly the report it fetched, never a re-encoding). */
+const UPDATE_DATA = "0xfeedface" as const;
+const REPORT_HASH = `0x${"cd".repeat(32)}` as const;
+
 const h = vi.hoisted(() => ({
   reg: null as
     | null
@@ -44,22 +50,26 @@ const h = vi.hoisted(() => ({
         poolParams: { fee: number; tickSpacing: number };
         issuanceFeeBps: number;
       },
-  /** The oracle's 4-decimal fixed-point price and staleness, as the
-   *  genesis spend solver reads them. */
+  /** The oracle's 4-decimal fixed-point price — the fake attestation's
+   *  report carries it, and both the issuance fake and the genesis spend
+   *  solver read it. */
   oraclePrice: 12500n,
-  oracleStale: false,
+  /** The attestation seam: the kind the fake fetch answers with. */
+  attKind: "current" as "current" | "degraded" | "unknown-gpu" | "unreachable",
+  attCalls: 0,
+  attGpu: null as string | null,
   issueCalls: 0,
   /** The QuoteResult the fake GpuQuoter answers with; null = revert
    *  (the honest "can't fill this size" the desk maps to null). */
   buyResult: null as GpuQuoteResult | null,
   sellResult: null as GpuQuoteResult | null,
-  buyArgs: null as { poolKey: unknown; sizeRaw: bigint } | null,
-  sellArgs: null as { poolKey: unknown; sizeRaw: bigint } | null,
+  buyArgs: null as { poolKey: unknown; sizeRaw: bigint; updateData: `0x${string}` } | null,
+  sellArgs: null as { poolKey: unknown; sizeRaw: bigint; updateData: `0x${string}` } | null,
   /** The exact-in buy and exact-out sell answers (money-first). */
   spendBuyResult: null as GpuQuoteResult | null,
   proceedsSellResult: null as GpuQuoteResult | null,
-  spendArgs: null as { poolKey: unknown; gusdRaw: bigint } | null,
-  proceedsArgs: null as { poolKey: unknown; gusdRaw: bigint } | null,
+  spendArgs: null as { poolKey: unknown; gusdRaw: bigint; updateData: `0x${string}` } | null,
+  proceedsArgs: null as { poolKey: unknown; gusdRaw: bigint; updateData: `0x${string}` } | null,
   hookFeeBps: 50,
   block: 7,
   registrationCalls: 0,
@@ -71,16 +81,60 @@ const h = vi.hoisted(() => ({
   nativeLiquidity: 1n,
 }));
 
+/** A current attestation priced at h.oraclePrice — the fake's whole report
+ *  surface: gpuId matches the fake's H100 market, the clock fields are
+ *  epoch 0 (long gone but the fakes never clock-check; the chain does). */
+function fakeCurrentAttestation(): {
+  kind: "current";
+  signed: {
+    report: {
+      version: 1;
+      gpuId: `0x${string}`;
+      price: bigint;
+      observedAt: number;
+      epoch: number;
+      validFrom: number;
+      validUntil: number;
+      calcHash: `0x${string}`;
+    };
+    signature: `0x${string}`;
+  };
+  updateData: typeof UPDATE_DATA;
+  reportHash: typeof REPORT_HASH;
+} {
+  return {
+    kind: "current",
+    signed: {
+      report: {
+        version: 1,
+        gpuId: gpuIdForAsset("H100"),
+        price: h.oraclePrice,
+        observedAt: 0,
+        epoch: 0,
+        validFrom: 0,
+        validUntil: 60,
+        calcHash: `0x${"ab".repeat(32)}`,
+      },
+      signature: `0x${"11".repeat(65)}`,
+    },
+    updateData: UPDATE_DATA,
+    reportHash: REPORT_HASH,
+  };
+}
+
 /** The contract set the quote math reads from — same object the mocked
  *  getContracts hands out, so deps and module agree. The issuance fake
  *  computes with the contract's own ceil math at h.oraclePrice, so the
- *  spend solver inverts against a price that actually responds. */
+ *  spend solver inverts against a price that actually responds, and both
+ *  fakes assert the quote's updateData rode through unchanged. */
 const fakeContracts = {
   addresses: { gusd: GUSD, hook: HOOK },
   issuance: {
     read: {
-      quoteIssue: async ([, amountRaw]: readonly [unknown, bigint]) => {
+      quoteIssue: async ([, amountRaw, updateData]: readonly [unknown, bigint, `0x${string}`]) => {
         h.issueCalls += 1;
+        if (updateData !== UPDATE_DATA) throw new Error("wrong updateData rode through");
+        if (h.oraclePrice === 0n) throw new Error("zero price — not executable");
         const base = (amountRaw * h.oraclePrice + 10n ** 16n - 1n) / 10n ** 16n;
         const fee = (base * 50n + 9_999n) / 10_000n; // ceil — 50 bps
         return [base, fee, base + fee] as [bigint, bigint, bigint];
@@ -97,23 +151,23 @@ const fakeContracts = {
   },
   gpuQuoter: {
     read: {
-      quoteBuyExactOut: async ([poolKey, sizeRaw]: [unknown, bigint]) => {
-        h.buyArgs = { poolKey, sizeRaw };
+      quoteBuyExactOut: async ([poolKey, sizeRaw, updateData]: [unknown, bigint, `0x${string}`]) => {
+        h.buyArgs = { poolKey, sizeRaw, updateData };
         if (h.buyResult === null) throw new Error("InsufficientMarketCapacity");
         return h.buyResult;
       },
-      quoteBuy: async ([poolKey, gusdRaw]: [unknown, bigint]) => {
-        h.spendArgs = { poolKey, gusdRaw };
+      quoteBuy: async ([poolKey, gusdRaw, updateData]: [unknown, bigint, `0x${string}`]) => {
+        h.spendArgs = { poolKey, gusdRaw, updateData };
         if (h.spendBuyResult === null) throw new Error("InsufficientMarketCapacity");
         return h.spendBuyResult;
       },
-      quoteSell: async ([poolKey, sizeRaw]: [unknown, bigint]) => {
-        h.sellArgs = { poolKey, sizeRaw };
+      quoteSell: async ([poolKey, sizeRaw, updateData]: [unknown, bigint, `0x${string}`]) => {
+        h.sellArgs = { poolKey, sizeRaw, updateData };
         if (h.sellResult === null) throw new Error("InsufficientMarketCapacity");
         return h.sellResult;
       },
-      quoteSellExactOut: async ([poolKey, gusdRaw]: [unknown, bigint]) => {
-        h.proceedsArgs = { poolKey, gusdRaw };
+      quoteSellExactOut: async ([poolKey, gusdRaw, updateData]: [unknown, bigint, `0x${string}`]) => {
+        h.proceedsArgs = { poolKey, gusdRaw, updateData };
         if (h.proceedsSellResult === null) throw new Error("InsufficientMarketCapacity");
         return h.proceedsSellResult;
       },
@@ -137,11 +191,23 @@ function makeDeps(): QuoteDeps {
         return h.reg;
       },
       hookFeeBps: async () => h.hookFeeBps,
-      oracleUpdatedAt: async () => ({
-        rawPrice: h.oraclePrice,
-        updatedAt: 900,
-        isStale: h.oracleStale,
-      }),
+      // The genesis quoteBuy path: issuance quoted on the raw math through
+      // the product-unit seam, throwing (as the contract does) when the
+      // report is no longer executable — the quote maps the throw to the
+      // typed staleness refusal.
+      quoteIssue: async (gpuId: `0x${string}`, amountRaw: bigint, updateData: `0x${string}`) => {
+        h.issueCalls += 1;
+        void gpuId;
+        if (updateData !== UPDATE_DATA) throw new Error("wrong updateData rode through");
+        if (h.oraclePrice === 0n) throw new Error("zero price — not executable");
+        const base = (amountRaw * h.oraclePrice + 10n ** 16n - 1n) / 10n ** 16n;
+        const fee = (base * 50n + 9_999n) / 10_000n; // ceil — 50 bps
+        return {
+          base: Number(base) / 1e6,
+          fee: Number(fee) / 1e6,
+          totalPaid: Number(base + fee) / 1e6,
+        };
+      },
       hookMarketState: async () => {
         if (h.hookState === null) throw new Error("no hook-state seam in this fake");
         return h.hookState;
@@ -150,6 +216,15 @@ function makeDeps(): QuoteDeps {
     contracts: fakeContracts,
     getBlockNumber: async () => h.block,
     now: () => 1_000,
+    // The pull-oracle seam: one fetch per quote, classified. Non-current
+    // kinds stand in for every "attestor can't serve this gpu right now"
+    // shape — the quote maps them all to the typed staleness refusal.
+    attestation: async (gpuParam: string) => {
+      h.attCalls += 1;
+      h.attGpu = gpuParam;
+      if (h.attKind !== "current") return { kind: h.attKind };
+      return fakeCurrentAttestation();
+    },
   } as unknown as QuoteDeps;
 }
 
@@ -248,18 +323,20 @@ function makeSellProceeds(opts: {
 
 /** The hook's full plan-input state for the deterministic mirror, at the
  *  fake's scales: rawPrice 12500 (1.25 gUSD/unit) over compositionDivisor
- *  1e16, the {50, 50, 10} spread defaults, both oracle guards fresh at
- *  now=1000, and effectively unlimited caps and inventory unless a test
- *  narrows one field to build a bound. */
+ *  1e16, the {50, 50, 10} spread defaults, the report's clock fields set
+ *  so the single acceptance guard passes at the quote's nowSec, and
+ *  effectively unlimited caps and inventory unless a test narrows one
+ *  field to build a bound. */
 function makeHookState(opts?: Partial<HookMarketState>): HookMarketState {
   return {
-    // The publication is at epoch 0: the deps fake's now() is 1_000 ms, so
-    // the quote's nowSec is 1 and the age is 1s — inside both staleness
-    // limits, and a future timestamp would (correctly) fail the guard.
+    // The deps fake's now() is 1_000 ms → the mirror's nowSec is 1: the
+    // report is observed at 0 (1s old, inside the 10_000s floor) and its
+    // validity window [0, 10_000) covers nowSec — executable right now.
     rawPrice: 12_500n,
-    oracleUpdatedAtSec: 0,
-    hookMaxOracleStalenessSec: 10_000,
-    issuanceMaxOracleStalenessSec: 10_000,
+    observedAtSec: 0,
+    maxObservationAgeSec: 10_000,
+    validFromSec: 0,
+    validUntilSec: 10_000,
     askBps: 50,
     bidBps: 50,
     polFeeBps: 10,
@@ -287,7 +364,9 @@ beforeEach(() => {
     issuanceFeeBps: 50,
   };
   h.oraclePrice = 12500n;
-  h.oracleStale = false;
+  h.attKind = "current";
+  h.attCalls = 0;
+  h.attGpu = null;
   h.issueCalls = 0;
   h.buyResult = null;
   h.sellResult = null;
@@ -400,6 +479,8 @@ describe("quoteBuy", () => {
     expect(h.buyArgs).not.toBeNull();
     expect(h.buyArgs!.sizeRaw).toBe(parseGpuUnits(1));
     expect(h.buyArgs!.poolKey).toEqual(canonicalPoolKey(GUSD, GPU_TOKEN, POOL_PARAMS, HOOK));
+    // The report the quote fetched rides the eth_call untouched.
+    expect(h.buyArgs!.updateData).toBe(UPDATE_DATA);
   });
 });
 
@@ -459,6 +540,7 @@ describe("quoteSell", () => {
     expect(h.sellArgs).not.toBeNull();
     expect(h.sellArgs!.sizeRaw).toBe(parseGpuUnits(1));
     expect(h.sellArgs!.poolKey).toEqual(canonicalPoolKey(GUSD, GPU_TOKEN, POOL_PARAMS, HOOK));
+    expect(h.sellArgs!.updateData).toBe(UPDATE_DATA);
   });
 
   it("maps a reverted quote to the typed no-bid-capacity failure", async () => {
@@ -566,6 +648,7 @@ describe("quoteBuyBySpend", () => {
     expect(h.spendArgs).not.toBeNull();
     expect(h.spendArgs!.gusdRaw).toBe(2_000_000n);
     expect(h.spendArgs!.poolKey).toEqual(canonicalPoolKey(GUSD, GPU_TOKEN, POOL_PARAMS, HOOK));
+    expect(h.spendArgs!.updateData).toBe(UPDATE_DATA);
   });
 
   it("refuses dust spends whose floor cannot print", async () => {
@@ -616,11 +699,16 @@ describe("quoteBuyBySpend — genesis", () => {
     expect(q.blockNumber).toBe(7);
   });
 
-  it("refuses a stale or absent oracle — issue() would revert", async () => {
+  it("refuses a market with no current attestation or a zero price", async () => {
     h.reg = { ...h.reg!, poolRegistered: false };
-    h.oracleStale = true;
-    expect(await quoteBuyBySpend("H100", 10, 50, makeDeps())).toBeNull();
-    h.oracleStale = false;
+    // No current report — the contract itself would revert, the quote
+    // refuses in its own vocabulary before even calling.
+    h.attKind = "degraded";
+    const f = await quoteBuyBySpend("H100", 10, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("oracle-stale");
+    // A zero price is not executable either — the solver refuses.
+    h.attKind = "current";
     h.oraclePrice = 0n;
     expect(await quoteBuyBySpend("H100", 10, 50, makeDeps())).toBeNull();
   });
@@ -663,6 +751,7 @@ describe("quoteSellByProceeds", () => {
     expect(h.proceedsArgs).not.toBeNull();
     expect(h.proceedsArgs!.gusdRaw).toBe(1_900_000n);
     expect(h.proceedsArgs!.poolKey).toEqual(canonicalPoolKey(GUSD, GPU_TOKEN, POOL_PARAMS, HOOK));
+    expect(h.proceedsArgs!.updateData).toBe(UPDATE_DATA);
   });
 
   it("refuses a payout that doesn't match the demand or a dust ask", async () => {
@@ -757,13 +846,31 @@ describe("the deterministic mirror path (LP-less pool)", () => {
     expect(f.capacityRaw).toBe(1_988_070n);
   });
 
-  it("maps a stale oracle in the hook state to the typed staleness failure", async () => {
-    // Age is 1s against the deps fake's nowSec — a zero limit fails it.
-    h.hookState = makeHookState({ hookMaxOracleStalenessSec: 0 });
+  it("maps an expired report in the hook state to the typed staleness failure", async () => {
+    // The quote's nowSec is 1 (deps fake's now() = 1_000 ms); a window
+    // that closes at 1 excludes nowSec — the report is no longer the
+    // executable one and every mirror shape refuses.
+    h.hookState = makeHookState({ validUntilSec: 1 });
     h.nativeLiquidity = 0n;
     const f = await quoteSell("H100", 1, 50, makeDeps());
     if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
     expect(f.reason).toBe("oracle-stale");
+  });
+
+  it("refuses every shape without a current attestation — before any chain call", async () => {
+    h.attKind = "unreachable";
+    for (const q of [
+      () => quoteBuy("H100", 2, 50, makeDeps()),
+      () => quoteSell("H100", 2, 50, makeDeps()),
+      () => quoteBuyBySpend("H100", 10, 50, makeDeps()),
+      () => quoteSellByProceeds("H100", 2, 50, makeDeps()),
+    ]) {
+      const f = await q();
+      if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+      expect(f.reason).toBe("oracle-stale");
+    }
+    // The fetch names the market's canonical gpuId.
+    expect(h.attGpu).toBe(gpuIdForAsset("H100"));
   });
 
   it("degrades to the float-seeded lens when the hook-state seam is missing", async () => {
