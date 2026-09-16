@@ -22,7 +22,7 @@ export const REPO_ROOT = path.resolve(INDEXER_DIR, "../..");
 export const ANVIL_URL = "http://127.0.0.1:18545";
 export const ANVIL_PORT = 18545;
 export const DATABASE_URL = "postgres://gusd:gusd@localhost:54329/gusd";
-/** Anvil's default mnemonic account 0 — the deployer AND the oracle publisher. */
+/** Anvil's default mnemonic account 0 — the deployer AND the oracle admin. */
 export const DEPLOYER_PK = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 /** Scratch schemas the suite owns; dropped before and after each run. */
@@ -310,9 +310,9 @@ export async function connectPg(): Promise<pg.Client> {
 export type TableDump = Record<string, string>;
 
 const ENTITY_TABLES = [
-  "GpuAsset", "GpuCreated", "GpuFill", "GpuIssued", "GpuToken", "GusdMinted",
-  "GusdRedeemed", "HookPoolRegistered", "HookSwap", "OraclePriceOverridden",
-  "OraclePricePublished", "OraclePublisherAccepted", "OracleState", "PmDonate",
+  "GpuAsset", "GpuCreated", "GpuFill", "GpuIssued", "GpuOracleState", "GpuToken",
+  "GusdMinted", "GusdRedeemed", "HookPoolRegistered", "HookSwap",
+  "PriceConsumed", "SignerAccepted", "SignerTransferStarted", "PmDonate",
   "PmLiquidityModified", "PmPoolInitialized", "PmSwap", "Pool",
   "PoolLiquidityPosition", "PoolStatsHourly", "PosmPositionModified", "ProtocolStats",
   "ProtocolStatsDaily", "RevenueDistributed", "RouterBuy", "RouterSell",

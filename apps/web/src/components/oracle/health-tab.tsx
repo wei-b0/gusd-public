@@ -2,10 +2,10 @@
  * Health — three layers, reported separately: the benchmark engine's
  * candidates (publication identity, source counts, per-panel freshness), the
  * collectors behind them (breakers from GET /v1/health), and the onchain
- * publication layer (what the publisher has written to GPUPriceOracle, from
- * the indexed oracle state). A candidate's status is not the publisher's
- * verdict, and neither is the onchain state — every figure here says which
- * layer it belongs to.
+ * report layer (what trades have consumed from GpuOracle, from the indexed
+ * oracle state). A candidate's status is not the attestor's verdict, and
+ * neither is the onchain state — every figure here says which layer it
+ * belongs to.
  */
 
 import { ASSET_IDS, indexName, type AssetId } from "@/domain/types";
@@ -14,7 +14,7 @@ import { DATA_SOURCE } from "@/data/oracle/config";
 import { ORACLE_PANELS } from "@/data/oracle/panel-map";
 import { mapIndexStatus } from "@/data/oracle/map";
 import { protocolEnabled } from "@/data/protocol/enabled";
-import { useOraclePublication } from "@/data/protocol/hooks";
+import { useOracleReport } from "@/data/protocol/hooks";
 import type { CandidateDto, CollectorHealthDto } from "@/data/oracle/dto";
 import {
   useNowTick,
@@ -32,10 +32,10 @@ export function HealthTab() {
       <p className="max-w-prose mb-5 text-[12.5px] leading-relaxed text-primary">
         The stack reporting itself — not a dashboard's opinion of it. Benchmark health comes off
         the same wire the benchmarks do: candidate freshness, contributing providers, collector
-        breakers, per-panel verdicts. Onchain publication health comes from the indexed
-        GPUPriceOracle state — what the publisher last wrote, and how the benchmark has moved
-        since. The layers report separately because they are separate: a candidate's status is
-        not the publisher's verdict, and neither is the onchain state.
+        breakers, per-panel verdicts. Onchain report health comes from the indexed GpuOracle
+        state — what trades last consumed, and how the benchmark has moved since. The layers
+        report separately because they are separate: a candidate's status is not the attestor's
+        verdict, and neither is the onchain state.
       </p>
 
       {/* 01 — benchmark candidates, from the latest publications */}
@@ -57,14 +57,14 @@ export function HealthTab() {
         </TuiPanel>
       </div>
 
-      {/* 04 — the onchain publication layer */}
+      {/* 04 — the onchain report layer */}
       <div className="mt-5">
         <TuiPanel
           no="04"
-          title="Onchain publication"
-          meta="GPUPriceOracle · indexed state · GET /v1/protocol/oracle/:gpu"
+          title="Onchain report"
+          meta="GpuOracle · indexed state · GET /v1/protocol/oracle/:gpu"
         >
-          <OnchainPublication />
+          <OnchainReport />
         </TuiPanel>
       </div>
     </>
@@ -291,14 +291,14 @@ function PanelFreshness() {
 }
 
 /**
- * The onchain publication layer: what the publisher has written to
- * GPUPriceOracle, from the Envio-indexed oracle state (a publication is
- * policy-driven — ~0.5% deviation from the last published value, or a ~24 h
- * heartbeat — so a gap between benchmark and onchain price within policy is
- * expected, not a fault). Price is stored as USD/GPU-hr × 10⁴ and printed at
- * that scale for audit; it is never a market price.
+ * The onchain report layer: what trades have consumed from GpuOracle, from
+ * the Envio-indexed oracle state (the pull oracle has no publication policy —
+ * the attestor signs a report per epoch and every trade embeds one, so the
+ * gap between benchmark and last consumed price is simply the time since the
+ * last trade). Price is stored as USD/GPU-hr × 10⁴ and printed at that scale
+ * for audit; it is never a market price.
  */
-function OnchainPublication() {
+function OnchainReport() {
   const latest = useWireLatest();
   const now = useNowTick();
 
@@ -306,8 +306,8 @@ function OnchainPublication() {
     return (
       <p className="num p-6 text-center text-[11.5px] text-dim">
         {DATA_SOURCE === "oracle"
-          ? "Indexed publication state prints when the indexer is configured (NEXT_PUBLIC_INDEXER_URL)."
-          : "Indexed publication state prints when the indexer is configured."}
+          ? "Indexed report state prints when the indexer is configured (NEXT_PUBLIC_INDEXER_URL)."
+          : "Indexed report state prints when the indexer is configured."}
       </p>
     );
   }
@@ -321,10 +321,10 @@ function OnchainPublication() {
           <thead>
             <tr className="border-b border-rule-strong text-left">
               <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Panel</th>
-              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="The value currently published onchain — USD/GPU-hr × 10⁴, printed at scale">Onchain</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="The price of the last report consumed onchain — USD/GPU-hr × 10⁴, printed at scale">Onchain</th>
               <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Benchmark</th>
-              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="Benchmark candidate vs the onchain publication — within the publisher's deviation policy it is expected, not an error">Gap</th>
-              <th scope="col" className="slug px-2.5 py-2 text-dim">Publication</th>
+              <th scope="col" className="slug px-2.5 py-2 text-right text-dim" title="Benchmark candidate vs the last consumed report — a gap is the benchmark's move since the last trade, not an error">Gap</th>
+              <th scope="col" className="slug px-2.5 py-2 text-dim">Report</th>
               <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">Age</th>
             </tr>
           </thead>
@@ -341,11 +341,10 @@ function OnchainPublication() {
         </table>
       </div>
       <p className="max-w-prose px-3.5 pb-3.5 pt-3 text-[11.5px] leading-relaxed text-dim">
-        The publisher audits every candidate against the stored methodology and records
-        violations in its own ledger (not exposed here); publication itself follows the
-        deviation/heartbeat policy, so the onchain value lags the benchmark by design. Stale
-        means the publication outlived the protocol's staleness window; a dash means the indexer
-        has seen no publication for that panel. Blocks, not client clocks, date a publication.
+        Every trade embeds an attestor-signed report and consumes it in the same transaction,
+        so the onchain value is the price the market actually last paid. Expired means the
+        report outlived the protocol's max observation age; a dash means the indexer has seen
+        no consumed report for that panel. Blocks, not client clocks, date a consumption.
       </p>
     </div>
   );
@@ -360,15 +359,15 @@ function OnchainRow({
   candidate: CandidateDto | null;
   now: number | null;
 }) {
-  const state = useOraclePublication(asset);
+  const state = useOracleReport(asset);
   // The wire stores USD/GPU-hr × PRICE_SCALE (10_000) — printed at scale.
   const onchain = state?.price != null ? Number(state.price) / state.priceScale : null;
-  const publishedAt = state?.updatedAtSec != null ? state.updatedAtSec * 1000 : null;
+  const consumedAt = state?.observedAtSec != null ? state.observedAtSec * 1000 : null;
   const gap =
     onchain !== null && candidate?.price != null && onchain > 0
       ? (candidate.price / onchain - 1) * 100
       : null;
-  const age = publishedAt !== null && now !== null ? now - publishedAt : null;
+  const age = consumedAt !== null && now !== null ? now - consumedAt : null;
 
   return (
     <tr className="border-b border-rule last:border-b-0">
@@ -385,23 +384,23 @@ function OnchainRow({
       <td className="px-2.5 py-2.5">
         {state === null ? (
           <span className="num text-[11px] text-dim">none indexed</span>
-        ) : state.staleness === "fresh" ? (
-          <span className="slug text-up">fresh</span>
-        ) : state.staleness === "stale" ? (
-          <span className="slug text-amber">stale</span>
+        ) : state.freshness === "current" ? (
+          <span className="slug text-up">current</span>
+        ) : state.freshness === "expired" ? (
+          <span className="slug text-amber">expired</span>
         ) : (
           <span className="slug text-dim">unknown</span>
         )}
-        {state?.lastPublishedBlockNumber != null && (
-          <span className="num ml-2 text-[10px] text-dim">blk {state.lastPublishedBlockNumber}</span>
+        {state?.lastConsumedBlockNumber != null && (
+          <span className="num ml-2 text-[10px] text-dim">blk {state.lastConsumedBlockNumber}</span>
         )}
       </td>
       <td className="num py-2.5 pr-3.5 text-right text-[11px] text-dim">
-        {age === null || publishedAt === null
+        {age === null || consumedAt === null
           ? "—"
           : now === null
-            ? fmtStamp(publishedAt)
-            : fmtAge(publishedAt, now)}
+            ? fmtStamp(consumedAt)
+            : fmtAge(consumedAt, now)}
       </td>
     </tr>
   );

@@ -288,7 +288,7 @@ export function deriveWindowStats(
  * Panel contributors → ProviderObservation rows. The oracle publishes what
  * it measures — price, weight, method, last observation — and nothing else,
  * so coverage stays null. Lamp semantics follow the Age column: an
- * observation fresher than the publisher's gate is live; anything older is
+ * observation fresher than the oracle's gate is live; anything older is
  * delayed (its influence is aging out); unparseable/absent timestamps are
  * delayed rather than live — freshness we cannot vouch for is not live.
  *

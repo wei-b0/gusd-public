@@ -27,14 +27,14 @@ const address = deployment.addresses;
 const events = {
   GUSD: ["Minted", "Redeemed", "FeesUpdated", "Transfer"],
   SgUSD: ["Deposit", "Withdraw", "Seeded", "Transfer"],
-  GPUIssuance: ["GpuCreated", "Issued", "IssuanceEnabledSet", "IssuanceFeeSet", "MaxOracleStalenessSet"],
+  GPUIssuance: ["GpuCreated", "Issued", "IssuanceEnabledSet", "IssuanceFeeSet"],
   GPUToken: ["Transfer"],
   GpuRouter: ["Buy", "Sell"],
   StableRouter: ["MintedViaSwap", "RedeemedViaSwap"],
   RevenueLedger: ["Distributed", "SplitUpdated", "RecipientsUpdated"],
   GPUMarketLiquidity: ["BidCredited", "GpuNoted", "InventoryPulled"],
   GPUHook: ["PoolRegistered", "HookSwap", "GpuFill", "HookFeeBpsSet"],
-  GPUPriceOracle: ["PricePublished", "PriceOverridden", "PublisherAccepted", "MaxDeviationBpsSet"],
+  GpuOracle: ["PriceConsumed", "SignerTransferStarted", "SignerAccepted", "EpochLengthSet", "MaxObservationAgeSet"],
   PoolManager: ["Initialize", "Swap", "ModifyLiquidity", "Donate"],
   PositionManager: ["ModifyPosition"],
 } as const;
@@ -48,7 +48,7 @@ const abiFiles: Record<keyof typeof events, string> = {
   RevenueLedger: "abis/ledger.json",
   GPUMarketLiquidity: "abis/market_liquidity.json",
   GPUHook: "abis/hook.json",
-  GPUPriceOracle: "abis/oracle.json",
+  GpuOracle: "abis/oracle.json",
   PoolManager: "abis/pool_manager.json",
   PositionManager: "abis/position_manager.json",
 };
@@ -61,7 +61,7 @@ const addresses: Partial<Record<keyof typeof events, string>> = {
   RevenueLedger: address.ledger,
   GPUMarketLiquidity: address.marketLiquidity,
   GPUHook: address.hook,
-  GPUPriceOracle: address.oracle,
+  GpuOracle: address.oracle,
   PoolManager: address.poolManager,
   PositionManager: address.positionManager,
 };
