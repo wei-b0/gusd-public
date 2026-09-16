@@ -108,28 +108,43 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
 
     // ---------------------------------------------------------------- quotes
 
-    /// @notice Quote an exactIn gUSD -> GPU buy.
-    function quoteBuy(PoolKey calldata key, uint256 gusdIn) external returns (QuoteResult memory r) {
+    /// @notice Quote an exactIn gUSD -> GPU buy. `updateData` is the signed
+    ///         oracle report the simulated swap must consume (the hook fails
+    ///         closed without a valid current-epoch report — a quote can only
+    ///         exist for a report execution would accept).
+    function quoteBuy(PoolKey calldata key, uint256 gusdIn, bytes calldata updateData)
+        external
+        returns (QuoteResult memory r)
+    {
         if (gusdIn == 0) revert ZeroAmount();
-        r = _run(abi.encodeCall(this._quoteBuy, (key, gusdIn)));
+        r = _run(abi.encodeCall(this._quoteBuy, (key, gusdIn, updateData)));
     }
 
     /// @notice Quote an exactIn GPU -> gUSD sell.
-    function quoteSell(PoolKey calldata key, uint256 gpuIn) external returns (QuoteResult memory r) {
+    function quoteSell(PoolKey calldata key, uint256 gpuIn, bytes calldata updateData)
+        external
+        returns (QuoteResult memory r)
+    {
         if (gpuIn == 0) revert ZeroAmount();
-        r = _run(abi.encodeCall(this._quoteSell, (key, gpuIn)));
+        r = _run(abi.encodeCall(this._quoteSell, (key, gpuIn, updateData)));
     }
 
     /// @notice Quote an exactOut GPU buy (demand GPU, pay gUSD at ask).
-    function quoteBuyExactOut(PoolKey calldata key, uint256 gpuDemand) external returns (QuoteResult memory r) {
+    function quoteBuyExactOut(PoolKey calldata key, uint256 gpuDemand, bytes calldata updateData)
+        external
+        returns (QuoteResult memory r)
+    {
         if (gpuDemand == 0) revert ZeroAmount();
-        r = _run(abi.encodeCall(this._quoteBuyExactOut, (key, gpuDemand)));
+        r = _run(abi.encodeCall(this._quoteBuyExactOut, (key, gpuDemand, updateData)));
     }
 
     /// @notice Quote an exactOut gUSD sell (demand gUSD, pay GPU at bid).
-    function quoteSellExactOut(PoolKey calldata key, uint256 gusdDemand) external returns (QuoteResult memory r) {
+    function quoteSellExactOut(PoolKey calldata key, uint256 gusdDemand, bytes calldata updateData)
+        external
+        returns (QuoteResult memory r)
+    {
         if (gusdDemand == 0) revert ZeroAmount();
-        r = _run(abi.encodeCall(this._quoteSellExactOut, (key, gusdDemand)));
+        r = _run(abi.encodeCall(this._quoteSellExactOut, (key, gusdDemand, updateData)));
     }
 
     function _run(bytes memory data) internal returns (QuoteResult memory) {
@@ -180,12 +195,12 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
 
     // ------------------------------------------------------------ simulation
 
-    function _quoteBuy(PoolKey calldata key, uint256 gusdIn) external selfOnly {
+    function _quoteBuy(PoolKey calldata key, uint256 gusdIn, bytes calldata updateData) external selfOnly {
         (bool gIsC0, bytes32 gpuId, Currency gpuCur) = _ctx(key);
         GPUHook hook = GPUHook(address(key.hooks));
         Snap memory s0 = _snap(hook, gpuId);
         _seed(Currency.wrap(gUSD), gUSD);
-        _swap(key, gIsC0, -int256(gusdIn));
+        _swap(key, gIsC0, -int256(gusdIn), updateData);
         QuoteResult memory r = _finish(hook, gpuId, s0, true, true);
         r.gusdIn = gusdIn;
         int256 dGpu = poolManager.currencyDelta(address(this), gpuCur);
@@ -197,12 +212,12 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         revert QuoteGpu(r);
     }
 
-    function _quoteSell(PoolKey calldata key, uint256 gpuIn) external selfOnly {
+    function _quoteSell(PoolKey calldata key, uint256 gpuIn, bytes calldata updateData) external selfOnly {
         (bool gIsC0, bytes32 gpuId, Currency gpuCur) = _ctx(key);
         GPUHook hook = GPUHook(address(key.hooks));
         Snap memory s0 = _snap(hook, gpuId);
         _seed(gpuCur, Currency.unwrap(gpuCur));
-        _swap(key, !gIsC0, -int256(gpuIn));
+        _swap(key, !gIsC0, -int256(gpuIn), updateData);
         QuoteResult memory r = _finish(hook, gpuId, s0, false, true);
         r.gpuIn = gpuIn;
         int256 dGusd = poolManager.currencyDelta(address(this), Currency.wrap(gUSD));
@@ -212,12 +227,12 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         revert QuoteGpu(r);
     }
 
-    function _quoteBuyExactOut(PoolKey calldata key, uint256 gpuDemand) external selfOnly {
+    function _quoteBuyExactOut(PoolKey calldata key, uint256 gpuDemand, bytes calldata updateData) external selfOnly {
         (bool gIsC0, bytes32 gpuId,) = _ctx(key);
         GPUHook hook = GPUHook(address(key.hooks));
         Snap memory s0 = _snap(hook, gpuId);
         uint256 float = _seed(Currency.wrap(gUSD), gUSD);
-        _swap(key, gIsC0, int256(gpuDemand));
+        _swap(key, gIsC0, int256(gpuDemand), updateData);
         QuoteResult memory r = _finish(hook, gpuId, s0, true, false);
         r.gpuOut = gpuDemand;
         r.nativeGpu = gpuDemand - r.polGpu - r.backstopGpu;
@@ -228,12 +243,12 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         revert QuoteGpu(r);
     }
 
-    function _quoteSellExactOut(PoolKey calldata key, uint256 gusdDemand) external selfOnly {
+    function _quoteSellExactOut(PoolKey calldata key, uint256 gusdDemand, bytes calldata updateData) external selfOnly {
         (bool gIsC0, bytes32 gpuId, Currency gpuCur) = _ctx(key);
         GPUHook hook = GPUHook(address(key.hooks));
         Snap memory s0 = _snap(hook, gpuId);
         uint256 float = _seed(gpuCur, Currency.unwrap(gpuCur));
-        _swap(key, !gIsC0, int256(gusdDemand));
+        _swap(key, !gIsC0, int256(gusdDemand), updateData);
         QuoteResult memory r = _finish(hook, gpuId, s0, false, false);
         r.gusdOut = gusdDemand;
         int256 dGpu = poolManager.currencyDelta(address(this), gpuCur);
@@ -278,7 +293,10 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
         poolManager.settle();
     }
 
-    function _swap(PoolKey calldata key, bool zeroForOne, int256 amountSpecified) internal returns (BalanceDelta) {
+    function _swap(PoolKey calldata key, bool zeroForOne, int256 amountSpecified, bytes calldata hookData)
+        internal
+        returns (BalanceDelta)
+    {
         return poolManager.swap(
             key,
             SwapParams({
@@ -286,7 +304,7 @@ contract GpuQuoter is SafeCallback, Ownable2Step {
                 amountSpecified: amountSpecified,
                 sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
-            ""
+            hookData
         );
     }
 

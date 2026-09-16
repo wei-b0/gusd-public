@@ -31,18 +31,18 @@ import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {StableRouter} from "../src/StableRouter.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
-import {MockGPUPriceOracle} from "../src/oracle/MockGPUPriceOracle.sol";
-import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
+import {GpuOracle} from "../src/oracle/GpuOracle.sol";
+import {IGpuOracle} from "../src/oracle/IGpuOracle.sol";
 import {Deploy} from "./Deploy.s.sol";
 
 /// @notice Full-catalogue dev/testnet deployment: runs the production Deploy
 ///         unchanged, then seeds EVERYTHING the web app exercises onchain —
-///         all 4 launch SKUs (registered, oracle-priced, issuance-enabled,
-///         canonical pools live from Deploy.run), a deterministic mock USDT
-///         whitelisted on the StableRouter with a funded USDT/reserve pool,
-///         and a compact demo-activity pass (genesis backstop buys, bootstrap
-///         conversion sells, actor trades, an instant-reprice proof,
-///         distribute + staking) so the tape, activity ledgers, vault
+///         all 4 launch SKUs (registered, issuance-enabled, canonical pools
+///         live at the seed anchors from Deploy.run), a deterministic mock
+///         USDT whitelisted on the StableRouter with a funded USDT/reserve
+///         pool, and a compact demo-activity pass (genesis backstop buys,
+///         bootstrap conversion sells, actor trades, a next-epoch reprice
+///         proof, distribute + staking) so the tape, activity ledgers, vault
 ///         inventory and cost basis are populated the moment the stack is up.
 ///
 ///         Seeding doctrine (C-max): no treasury LP seeds on GPU pools — the
@@ -52,6 +52,16 @@ import {Deploy} from "./Deploy.s.sol";
 ///         so the vault holds genuine ask-side GPU. GpuQuoter drives every
 ///         activity buy (quote == execution). GPU pools carry no LP depth:
 ///         the hook IS the book; only the hook-free stable pool is LP'd.
+///
+///         Pull-oracle posture: every trade embeds a signed current-epoch
+///         report (updateData) — the script signs with the attestor key
+///         (ORACLE_ATTESTOR_PK, defaulting to PRIVATE_KEY, which must match
+///         the oracle's signer). There is NO oracle transaction anywhere in
+///         the pass; repricing is epoch arithmetic, and the reprice segment
+///         targets the epoch the broadcast has rolled into. If a broadcast
+///         spans epochs, segments simulated in one epoch may revert
+///         UnknownGpuEpoch on landing — rerun (dev-only posture); for long
+///         broadcasts set ORACLE_EPOCH_LENGTH above the expected duration.
 ///
 ///         Run: forge script script/Deploy.full.s.sol --rpc-url <url> --broadcast --sig "runFull()"
 ///         The chain it produces is NON-VIRGIN: Demo.s.sol (virgin-state
@@ -98,6 +108,10 @@ contract DeployFull is Deploy {
     uint256 constant ALICE_PK = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
     uint256 constant BOB_PK = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
 
+    // the demo attestor's calcHash receipt binding (unconstrained by the
+    // acceptance set — it exists to bind reports to a methodology offchain)
+    bytes32 constant DEMO_CALC_HASH = keccak256("gusd.demo.report.v1");
+
     constructor() {
         CATALOGUE.push(H100);
         CATALOGUE.push(H200);
@@ -133,6 +147,12 @@ contract DeployFull is Deploy {
         Deploy inner = new Deploy();
         d = inner.run();
         require(d.underlying != address(0), "core deploy");
+
+        // the demo signs reports with the attestor key: default PRIVATE_KEY
+        // (Deploy's attestor default is the deployer), override with
+        // ORACLE_ATTESTOR_PK when Deploy ran with a separate ORACLE_ATTESTOR
+        uint256 attestorPk = vm.envOr("ORACLE_ATTESTOR_PK", pk);
+        require(vm.addr(attestorPk) == GpuOracle(d.oracle).signer(), "attestor key != oracle signer");
 
         vm.startBroadcast(pk);
         GUSD gusd = GUSD(d.gusd);
@@ -201,7 +221,8 @@ contract DeployFull is Deploy {
                     maxPaid: charge + hfee + 2,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: deployer
+                    recipient: deployer,
+                    updateData: _updateData(d.oracle, attestorPk, gpuId, price)
                 })
             );
             require(paid == charge + hfee, "genesis charge chain");
@@ -235,13 +256,14 @@ contract DeployFull is Deploy {
                     gpuId: gpuId,
                     gpuIn: 100e18,
                     payout: d.underlying,
-                    // bid = oracle - 0.5%; the seller also bears the 0.1% POL
+                    // bid = report - 0.5%; the seller also bears the 0.1% POL
                     // fee and the 0.5% hook fee — proceeds land ~1.1% under
-                    // the oracle, so 2% slack
+                    // the report, so 2% slack
                     minOut: expected * 98 / 100,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: deployer
+                    recipient: deployer,
+                    updateData: _updateData(d.oracle, attestorPk, gpuId, price)
                 })
             );
         }
@@ -308,7 +330,8 @@ contract DeployFull is Deploy {
         // the same number.
         {
             PoolKey memory ahkey = _canonicalKey(d, H100);
-            GpuQuoter.QuoteResult memory ra = gq.quoteBuyExactOut(ahkey, 50e18);
+            GpuQuoter.QuoteResult memory ra =
+                gq.quoteBuyExactOut(ahkey, 50e18, _updateData(d.oracle, attestorPk, H100, _priceOf(H100)));
             require(ra.gusdIn == 126_253_125, "alice quote at ask ceiling");
             uint256 paidA = _buy(
                 router,
@@ -319,7 +342,8 @@ contract DeployFull is Deploy {
                     maxPaid: ra.gusdIn,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: alice
+                    recipient: alice,
+                    updateData: _updateData(d.oracle, attestorPk, H100, _priceOf(H100))
                 })
             );
             require(paidA == ra.gusdIn, "alice quote==execution");
@@ -348,7 +372,8 @@ contract DeployFull is Deploy {
             GPUToken token = GPUToken(issuance.tokenOf(gpuId));
             PoolKey memory key = _canonicalKey(d, gpuId);
 
-            GpuQuoter.QuoteResult memory rb = gq.quoteBuyExactOut(key, 2e18);
+            GpuQuoter.QuoteResult memory rb =
+                gq.quoteBuyExactOut(key, 2e18, _updateData(d.oracle, attestorPk, gpuId, _priceOf(gpuId)));
             uint256 paidB = _buy(
                 router,
                 GpuRouter.BuyParams({
@@ -358,7 +383,8 @@ contract DeployFull is Deploy {
                     maxPaid: rb.gusdIn,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: bob
+                    recipient: bob,
+                    updateData: _updateData(d.oracle, attestorPk, gpuId, _priceOf(gpuId))
                 })
             );
             require(paidB == rb.gusdIn, "bob quote==execution");
@@ -371,24 +397,26 @@ contract DeployFull is Deploy {
                     gpuIn: 1e18,
                     payout: d.underlying,
                     // 100% POL bid fill: proceeds land ~1.1% under the
-                    // oracle (bid spread + POL fee + hook fee)
+                    // report (bid spread + POL fee + hook fee)
                     minOut: price * 98 / 100,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: bob
+                    recipient: bob,
+                    updateData: _updateData(d.oracle, attestorPk, gpuId, price)
                 })
             );
         }
         vm.stopBroadcast();
 
-        // --------------------------- oracle reprice: instant and structural
-        // The C-max proof segment. One oracle publish — no keeper, no
-        // recenter, no pending phase — and the very next swap prices both
-        // edges from the fresh reference. bob's buy fills from the vault's
-        // ask at the NEW ask ($3.0150); its proceeds re-enter the bid
+        // ------------------- report reprice: next epoch, attestor-signed
+        // The C-max proof segment, pull-oracle edition. There is no publish
+        // tx: the reprice is a fresh report at the NEW price, executable once
+        // the chain has rolled into a new epoch (one price per epoch — the
+        // epoch binding IS the repricing gate). bob's buy fills from the
+        // vault's ask at the NEW ask ($3.0150); its proceeds re-enter the bid
         // inventory without re-counting principal (provenance invariant);
         // polState shows the repriced book immediately.
-        (uint256 base6,,) = _repriceAndQuote(d, deployer, H100, 30_000);
+        (uint256 base6,,) = _repriceAndQuote(d.oracle, attestorPk, d.issuance, H100, 30_000);
         require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
         vm.startBroadcast(BOB_PK);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
@@ -398,9 +426,10 @@ contract DeployFull is Deploy {
             uint256 bidBefore = vault.bidInventoryGusd(H100);
             uint256 principalBefore = vault.principalContributed(H100);
             uint256 askBefore = vault.askInventoryGpu(H100);
-            GpuQuoter.QuoteResult memory r6 = gq.quoteBuyExactOut(hkey, 2e18);
+            GpuQuoter.QuoteResult memory r6 =
+                gq.quoteBuyExactOut(hkey, 2e18, _updateData(d.oracle, attestorPk, H100, 30_000));
             // 2 GPU at the new ask 30_000 x 1.005 = 30_150: charge
-            // 6_030_000 + hook fee 30_150 — instantly repriced.
+            // 6_030_000 + hook fee 30_150 — repriced by the fresh report.
             require(r6.gusdIn == 6_060_150, "quote at the new ask");
             uint256 paid6 = _buy(
                 router,
@@ -411,14 +440,18 @@ contract DeployFull is Deploy {
                     maxPaid: r6.gusdIn,
                     deadline: 0,
                     sqrtLimitX96: 0,
-                    recipient: bob
+                    recipient: bob,
+                    updateData: _updateData(d.oracle, attestorPk, H100, 30_000)
                 })
             );
             require(paid6 == r6.gusdIn, "quote==execution (repriced)");
             require(vault.bidInventoryGusd(H100) - bidBefore == 6_023_970, "POL proceeds -> bid capacity");
             require(vault.principalContributed(H100) == principalBefore, "principal never re-counted");
             require(askBefore - vault.askInventoryGpu(H100) == 2e18, "ask inventory consumed");
-            (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) = hook.polState(H100);
+            IGpuOracle oracle = IGpuOracle(d.oracle);
+            IGpuOracle.Report memory rr6 = _reportFor(oracle, H100, 30_000);
+            (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) =
+                hook.polState(H100, rr6, _sigFor(oracle, attestorPk, rr6));
             require(live6, "pol live post-reprice");
             require(askPrice6 == 30_150 && bidPrice6 == 29_850, "edges repriced in-swap");
         }
@@ -482,32 +515,62 @@ contract DeployFull is Deploy {
 
     // ------------------------------------------------------------------ helpers
 
-    /// @dev Reprice through whichever oracle deployment is live — identical
-    ///      dispatch to Demo's helper. Returns the post-reprice issue quote
-    ///      for 1 whole GPU (base only, fee excluded).
-    function _repriceAndQuote(Deployment memory d, address deployer, bytes32 gpuId, uint256 price)
+    /// @dev Next-epoch reprice, pull-oracle edition: there is no oracle tx —
+    ///      the new price is simply what the attestor signs next. Returns the
+    ///      post-reprice issue quote for 1 whole GPU (base only, fee
+    ///      excluded). The segment's trades must land in an epoch LATER than
+    ///      the one the seed-price trades bound (the epoch binding rejects
+    ///      two prices in one epoch); any real-network broadcast rolls epochs
+    ///      within the pass (Anvil +1s/tx, testnets ~2s/block).
+    function _repriceAndQuote(address oracleAddr, uint256 attestorPk, address issuanceAddr, bytes32 gpuId, uint256 price)
         internal
+        view
         returns (uint256 base, uint256 fee, uint256 total)
     {
-        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
-        _setPrice(deployer, d.oracle, gpuId, price);
-        vm.stopBroadcast();
-        return GPUIssuance(d.issuance).quoteIssue(gpuId, 1e18);
+        bytes memory updateData = _updateData(oracleAddr, attestorPk, gpuId, price);
+        return GPUIssuance(issuanceAddr).quoteIssue(gpuId, 1e18, updateData);
     }
 
-    /// @dev Oracle seeding dispatch, verbatim from Demo: publish() when the
-    ///      deployer is the publisher (the Deploy default), setPriceOverride()
-    ///      when a separate PUBLISHER was granted, the legacy mock otherwise.
-    function _setPrice(address deployer, address oracleAddr, bytes32 gpuId, uint256 price) internal {
-        try GPUPriceOracle(oracleAddr).publisher() returns (address pub) {
-            if (pub == deployer) {
-                GPUPriceOracle(oracleAddr).publish(gpuId, price, block.timestamp);
-            } else {
-                GPUPriceOracle(oracleAddr).setPriceOverride(gpuId, price, block.timestamp);
-            }
-        } catch {
-            MockGPUPriceOracle(oracleAddr).setPrice(gpuId, price, block.timestamp);
-        }
+    /// @dev The signed current-epoch report the demo's trades carry as
+    ///      updateData. Signed with the attestor key at sim time;
+    ///      observedAt = now (age 0, inside the maxObservationAge floor);
+    ///      calcHash is the demo receipt binding.
+    function _updateData(address oracleAddr, uint256 attestorPk, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (bytes memory)
+    {
+        IGpuOracle oracle = IGpuOracle(oracleAddr);
+        IGpuOracle.Report memory r = _reportFor(oracle, gpuId, price);
+        return abi.encode(r, _sigFor(oracle, attestorPk, r));
+    }
+
+    function _reportFor(IGpuOracle oracle, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (IGpuOracle.Report memory r)
+    {
+        uint64 epoch = oracle.currentEpoch();
+        uint64 len = oracle.epochLength();
+        r = IGpuOracle.Report({
+            version: 1,
+            gpuId: gpuId,
+            price: price,
+            observedAt: uint64(block.timestamp),
+            epoch: epoch,
+            validFrom: epoch * len,
+            validUntil: (epoch + 1) * len,
+            calcHash: DEMO_CALC_HASH
+        });
+    }
+
+    function _sigFor(IGpuOracle oracle, uint256 attestorPk, IGpuOracle.Report memory r)
+        internal
+        view
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(attestorPk, oracle.reportDigest(r));
+        return abi.encodePacked(r32, s, v);
     }
 
     function _buy(GpuRouter router, GpuRouter.BuyParams memory p) internal returns (uint256 paid) {
@@ -542,9 +605,10 @@ contract DeployFull is Deploy {
         posm.modifyLiquidities(plan.finalizeModifyLiquidityWithClose(key), block.timestamp + 3600);
     }
 
-    /// @dev The deploy-time seed table — the same constants Deploy used to seed
-    ///      the oracle, reused for spend caps and sell floors. Single-sourced
-    ///      from Deploy's catalogue: no second price table here.
+    /// @dev The deploy-time seed table — the same anchors Deploy initialized
+    ///      the pools at, reused for spend caps, sell floors and the demo
+    ///      reports. Single-sourced from Deploy's catalogue: no second price
+    ///      table here.
     function _priceOf(bytes32 gpuId) internal view returns (uint256) {
         GpuCatalogEntry[] memory e = gpuCatalogue();
         for (uint256 i; i < e.length; ++i) {
@@ -588,8 +652,8 @@ contract DeployFull is Deploy {
         vm.serializeAddress(obj, "marketLiquidity", d.marketLiquidity);
         vm.serializeAddress(obj, "issuance", d.issuance);
         vm.serializeAddress(obj, "oracle", d.oracle);
-        try GPUPriceOracle(d.oracle).publisher() returns (address pub) {
-            vm.serializeAddress(obj, "oraclePublisher", pub);
+        try GpuOracle(d.oracle).signer() returns (address attestor) {
+            vm.serializeAddress(obj, "oracleAttestor", attestor);
         } catch {}
         vm.serializeAddress(obj, "hook", d.hook);
         vm.serializeAddress(obj, "router", d.router);

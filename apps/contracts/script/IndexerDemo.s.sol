@@ -33,15 +33,23 @@ import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
 import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
-import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
+import {GpuOracle} from "../src/oracle/GpuOracle.sol";
+import {IGpuOracle} from "../src/oracle/IGpuOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @notice Indexer demo activity — seeded trades so the index has tape to
-///         verify against. REFUSES mainnets (TestnetOnly).
+///         verify against. Every trade carries the signed current-epoch
+///         report (updateData) signed with the attestor key
+///         (ORACLE_ATTESTOR_PK, defaulting to PRIVATE_KEY); the reprice
+///         segment warps to a fresh epoch in sim (forge scripts simulate at
+///         a constant timestamp) and signs at the NEW price — a live rerun
+///         must land its txs inside matching epochs. REFUSES mainnets
+///         (TestnetOnly).
 contract IndexerDemo is Script, TestnetOnly {
     using PoolIdLibrary for PoolKey;
 
     bytes32 constant H100 = bytes32(bytes("H100_SXM_80GB"));
+    bytes32 constant DEMO_CALC_HASH = keccak256("gusd.demo.report.v1");
     uint256 constant ALICE_PK = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
     uint256 constant BOB_PK = 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6;
 
@@ -64,6 +72,10 @@ contract IndexerDemo is Script, TestnetOnly {
         address gpuQuoterAddr = vm.parseJsonAddress(json, ".gpuQuoter");
         address oracleAddr = vm.parseJsonAddress(json, ".oracle");
         address polAddr = vm.parseJsonAddress(json, ".marketLiquidity");
+
+        // the demo signs every trade's updateData with the attestor key
+        uint256 attestorPk = vm.envOr("ORACLE_ATTESTOR_PK", pk);
+        require(vm.addr(attestorPk) == GpuOracle(oracleAddr).signer(), "attestor key != oracle signer");
 
         GUSD gusd = GUSD(gusdAddr);
         GPUIssuance issuance = GPUIssuance(issuanceAddr);
@@ -108,7 +120,7 @@ contract IndexerDemo is Script, TestnetOnly {
         vm.stopBroadcast();
         vm.startBroadcast(BOB_PK);
         underlying.approve(routerAddr, type(uint256).max);
-        GpuQuoter.QuoteResult memory q3 = gpuQuoter.quoteBuyExactOut(key, 2e18);
+        GpuQuoter.QuoteResult memory q3 = gpuQuoter.quoteBuyExactOut(key, 2e18, _updateData(oracleAddr, attestorPk, H100, 25_000));
         require(q3.gpuOut == 2e18 && q3.gusdIn > 0, "step3 quote shape");
         (uint256 f0, uint256 f1) = stateView.getFeeGrowthGlobals(poolId);
         uint256 fgBuy = gIsC0 ? f0 : f1;
@@ -119,7 +131,8 @@ contract IndexerDemo is Script, TestnetOnly {
             maxPaid: q3.gusdIn,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         uint256 paid3 = router.buy(b3);
         vm.stopBroadcast();
@@ -137,7 +150,8 @@ contract IndexerDemo is Script, TestnetOnly {
             maxPaid: 20e6,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         router.buy(b4);
         vm.stopBroadcast();
@@ -145,23 +159,27 @@ contract IndexerDemo is Script, TestnetOnly {
         // 5) SELL
         vm.startBroadcast(BOB_PK);
         h100.approve(routerAddr, type(uint256).max);
-        GpuRouter.SellParams memory s5 =
-            GpuRouter.SellParams({gpuId: H100, gpuIn: 1e18, payout: usdcAddr, minOut: 2e6, deadline: 0, sqrtLimitX96: 0, recipient: bob});
+        GpuRouter.SellParams memory s5 = GpuRouter.SellParams({
+            gpuId: H100,
+            gpuIn: 1e18,
+            payout: usdcAddr,
+            minOut: 2e6,
+            deadline: 0,
+            sqrtLimitX96: 0,
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
+        });
         router.sell(s5);
         vm.stopBroadcast();
 
-        // 6) oracle reprice -> instant, structural (polState + repriced buy)
-        vm.startBroadcast(pk);
-        GPUPriceOracle(oracleAddr).publish(H100, 30_000, block.timestamp);
-        vm.stopBroadcast();
-        (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) = hook.polState(H100);
-        require(live6, "step6 hook live");
-        require(askPrice6 == 30_150 && bidPrice6 == 29_850, "step6 edges repriced in-swap");
+        // 6) report reprice -> next epoch, structural (repriced buy; the
+        //    fresh report IS the reprice — there is no publish tx)
+        _nextEpoch();
         vm.startBroadcast(BOB_PK);
         underlying.approve(gusdAddr, type(uint256).max);
         gusd.mint(10e6, bob);
         gusd.approve(routerAddr, type(uint256).max);
-        GpuQuoter.QuoteResult memory q6 = gpuQuoter.quoteBuyExactOut(key, 1e18);
+        GpuQuoter.QuoteResult memory q6 = gpuQuoter.quoteBuyExactOut(key, 1e18, _updateData(oracleAddr, attestorPk, H100, 30_000));
         require(q6.gusdIn <= 3_015_000, "step6 blended at or below the new primary ask");
         GpuRouter.BuyParams memory b6 = GpuRouter.BuyParams({
             gpuId: H100,
@@ -170,7 +188,8 @@ contract IndexerDemo is Script, TestnetOnly {
             maxPaid: q6.gusdIn,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 30_000)
         });
         uint256 paid6 = router.buy(b6);
         vm.stopBroadcast();
@@ -184,5 +203,55 @@ contract IndexerDemo is Script, TestnetOnly {
 
         console2.log("indexer demo complete: alice", alice);
         console2.log("indexer demo complete: bob", bob);
+    }
+
+    // ------------------------------------------------------------- helpers
+
+    /// @dev The signed current-epoch report the demo's trades carry as
+    ///      updateData (observedAt = now; calcHash = demo receipt binding).
+    function _updateData(address oracleAddr, uint256 attestorPk, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (bytes memory)
+    {
+        IGpuOracle oracle = IGpuOracle(oracleAddr);
+        IGpuOracle.Report memory r = _reportFor(oracle, gpuId, price);
+        return abi.encode(r, _sigFor(oracle, attestorPk, r));
+    }
+
+    function _reportFor(IGpuOracle oracle, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (IGpuOracle.Report memory r)
+    {
+        uint64 epoch = oracle.currentEpoch();
+        uint64 len = oracle.epochLength();
+        r = IGpuOracle.Report({
+            version: 1,
+            gpuId: gpuId,
+            price: price,
+            observedAt: uint64(block.timestamp),
+            epoch: epoch,
+            validFrom: epoch * len,
+            validUntil: (epoch + 1) * len,
+            calcHash: DEMO_CALC_HASH
+        });
+    }
+
+    function _sigFor(IGpuOracle oracle, uint256 attestorPk, IGpuOracle.Report memory r)
+        internal
+        view
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(attestorPk, oracle.reportDigest(r));
+        return abi.encodePacked(r32, s, v);
+    }
+
+    /// @dev Sim-only clock advance to the next epoch boundary (see the class
+    ///      docstring): the reprice segment's reports must bind an epoch the
+    ///      seed-price trades did not.
+    function _nextEpoch() internal {
+        uint64 len = uint64(vm.envOr("ORACLE_EPOCH_LENGTH", uint256(60)));
+        vm.warp((block.timestamp / len + 1) * len);
     }
 }

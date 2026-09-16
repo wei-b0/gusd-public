@@ -27,7 +27,7 @@ import {sgUSD} from "../../src/sgUSD.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
 import {GpuQuoter} from "../../src/lens/GpuQuoter.sol";
-import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
+import {IGpuOracle} from "../../src/oracle/IGpuOracle.sol";
 import {IGPUIssuance} from "../../src/interfaces/IGPUIssuance.sol";
 import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -35,20 +35,23 @@ import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
+import {OracleReports} from "../utils/OracleReports.sol";
 
 /// @notice End-to-end product chain on a deploy-mirror rig: genesis BUY
 ///         (cold pool: 100% in-swap issuance backstop) -> external LP
 ///         (PositionManager/Permit2) -> pool BUY (quote == execution) ->
 ///         mixed BUY -> SELL -> distribute -> sgUSD accrual, plus failure
 ///         shapes (oversized BUY filled by the backstop, honest finite sell
-///         liquidity, stale-oracle degradation). One ordering: currency
+///         liquidity, fail-closed report gating). One ordering: currency
 ///         ordering is covered exhaustively in the unit + LP suites.
-contract E2ETest is Test, DeployPermit2 {
+/// @dev    Pull-oracle rig: every trade carries the signed current-epoch
+///         report as `updateData`. Repricing moves to a fresh epoch — the
+///         first consumer binds the epoch's reportHash per GPU.
+contract E2ETest is Test, DeployPermit2, OracleReports {
     using PoolIdLibrary for PoolKey;
 
     MockERC20 internal underlying;
     GUSD internal gusd;
-    MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
     GPUHook internal hook;
     GpuRouter internal router;
@@ -64,6 +67,7 @@ contract E2ETest is Test, DeployPermit2 {
     PoolId internal poolId;
     bool internal gIsC0;
     GPUMarketLiquidity internal pol;
+    uint256 internal price = 25_000; // report convention: 4 decimals
 
     bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
     uint24 internal constant POOL_FEE = 3000;
@@ -78,9 +82,8 @@ contract E2ETest is Test, DeployPermit2 {
     address internal treasury = makeAddr("treasury");
 
     function setUp() public {
-        vm.warp(1_000_000);
+        _deployOracle();
         underlying = new MockERC20("USD Coin", "USDC", 6);
-        oracle = new MockGPUPriceOracle(address(this));
         manager = IPoolManager(address(new PoolManager(address(this))));
         stateView = new StateView(manager);
         // precompiled canonical Permit2 bytecode (permit2 pins solc 0.8.17)
@@ -128,7 +131,6 @@ contract E2ETest is Test, DeployPermit2 {
 
         issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(H100, true);
-        oracle.setPrice(H100, 25_000, block.timestamp); // $2.50/GPU-hour
         gpu = GPUToken(issuance.tokenOf(H100));
 
         gIsC0 = address(gusd) < address(gpu);
@@ -189,7 +191,7 @@ contract E2ETest is Test, DeployPermit2 {
     function _issueGpuTo(address who, uint256 amount) internal {
         vm.startPrank(who);
         gusd.approve(address(issuance), type(uint256).max);
-        issuance.issue(H100, amount, who);
+        issuance.issue(H100, amount, who, _updateData(H100, price));
         vm.stopPrank();
     }
 
@@ -212,7 +214,8 @@ contract E2ETest is Test, DeployPermit2 {
             maxPaid: maxPaid,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: to
+            recipient: to,
+            updateData: _updateData(H100, price)
         });
         return router.buy(p);
     }
@@ -222,12 +225,24 @@ contract E2ETest is Test, DeployPermit2 {
         returns (uint256 out)
     {
         GpuRouter.SellParams memory p = GpuRouter.SellParams({
-            gpuId: H100, gpuIn: gpuIn, payout: payout, minOut: minOut, deadline: 0, sqrtLimitX96: 0, recipient: to
+            gpuId: H100, gpuIn: gpuIn, payout: payout, minOut: minOut, deadline: 0, sqrtLimitX96: 0, recipient: to,
+            updateData: _updateData(H100, price)
         });
         vm.startPrank(who);
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
         out = router.sell(p);
         vm.stopPrank();
+    }
+
+    /// @dev Wrapped hook revert (ERC-7751) over raw inner error bytes.
+    function _wrapHook(bytes memory inner) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.beforeSwap.selector,
+            inner,
+            abi.encodePacked(Hooks.HookCallFailed.selector)
+        );
     }
 
     // -------------------------------------------------------------- tests
@@ -238,7 +253,7 @@ contract E2ETest is Test, DeployPermit2 {
     ///         reconcile to the ledger to the wei.
     function test_fullProductChain() public {
         // 1) genesis BUY: zero circulating supply, cold pool -> 100% in-swap
-        //    backstop at oracle + fees; principal capitalizes the vault as
+        //    backstop at report + fees; principal capitalizes the vault as
         //    bid capacity immediately
         uint256 ledger0 = gusd.balanceOf(address(ledger));
         uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
@@ -258,6 +273,9 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(gusd.balanceOf(address(issuance)), 0, "issuance holds no gUSD");
         assertEq(gusd.balanceOf(address(router)), 0, "router empty");
         assertEq(gusd.balanceOf(address(hook)), 0, "hook holds nothing at rest");
+        // the report that executed is on the oracle as consumed state
+        (uint256 p1,,,) = hook.oracleLastConsumed(H100);
+        assertEq(p1, 25_000, "execution priced at the submitted report");
 
         // 2) external LP via PositionManager + Permit2
         uint256 tokenId = _lpAlice();
@@ -266,7 +284,7 @@ contract E2ETest is Test, DeployPermit2 {
 
         // 3) BUY 2 H100 via pool, USDC payment; quote == execution, counters
         //    reconcile against the quoted decomposition
-        GpuQuoter.QuoteResult memory q3 = gq.quoteBuyExactOut(key, 2e18);
+        GpuQuoter.QuoteResult memory q3 = gq.quoteBuyExactOut(key, 2e18, _updateData(H100, price));
         assertEq(q3.gpuOut, 2e18);
         assertGt(q3.gusdIn, 0);
         uint256 hookFees3 = hook.totalHookFeesGusd();
@@ -346,17 +364,19 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(posm.balanceOf(address(router)), 0, "router holds no NFTs");
     }
 
-    /// @notice Oracle reprice: next issuance reprices; pool + reserves do not.
+    /// @notice Oracle reprice: a FRESH EPOCH's report reprices the next
+    ///         issuance; pool + reserves do not. Within an epoch the price
+    ///         is pinned by the first consumer (equivocation reverts).
     function test_oracleReprice() public {
-        (uint256 base0,,) = issuance.quoteIssue(H100, 1e18);
+        (uint256 base0,,) = issuance.quoteIssue(H100, 1e18, _updateData(H100, price));
         assertEq(base0, 2_500_000);
         (, int24 tickBefore,,) = stateView.getSlot0(poolId);
         uint256 principal = pol.principalContributed(H100);
 
-        oracle.setPrice(H100, 30_000, block.timestamp); // $3.00
-
-        (uint256 base1,,) = issuance.quoteIssue(H100, 1e18);
-        assertEq(base1, 3_000_000, "issuance repriced");
+        _nextEpoch();
+        price = 30_000; // $3.00 in the new epoch
+        (uint256 base1,,) = issuance.quoteIssue(H100, 1e18, _updateData(H100, price));
+        assertEq(base1, 3_000_000, "issuance repriced at the fresh report");
         (, int24 tickAfter,,) = stateView.getSlot0(poolId);
         assertEq(tickBefore, tickAfter, "pool price moved?");
         assertEq(pol.principalContributed(H100), principal, "principal moved?");
@@ -377,7 +397,7 @@ contract E2ETest is Test, DeployPermit2 {
 
         uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
         uint256 principal0 = pol.principalContributed(H100); // alice's direct-issuance LP seed
-        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(key, 1_000e18);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(key, 1_000e18, _updateData(H100, price));
         assertEq(q.gpuOut, 1_000e18);
         assertEq(q.polGpu, 0, "no ask inventory on this rig");
         assertGt(q.backstopGpu, 0, "backstop covers the tail");
@@ -406,13 +426,14 @@ contract E2ETest is Test, DeployPermit2 {
         _buyGusd(bob, 5_000_000e6);
         vm.startPrank(bob);
         gusd.approve(address(issuance), type(uint256).max);
-        issuance.issue(H100, 1_000e18, bob);
+        issuance.issue(H100, 1_000e18, bob, _updateData(H100, price));
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
         vm.stopPrank();
-        // price x4: the vault's fixed gUSD bid now buys ~277 GPU, so a
-        // 1,000-GPU dump exceeds the merged book (fresh issuance alone
+        // fresh epoch, price x4: the vault's fixed gUSD bid now buys ~25 GPU,
+        // so a 1,000-GPU dump exceeds the merged book (fresh issuance alone
         // can never exhaust it -- bid < issue price per GPU)
-        oracle.setPrice(H100, 100_000, block.timestamp);
+        _nextEpoch();
+        price = 100_000;
 
         uint256 bid0 = pol.bidInventoryGusd(H100);
         uint256 ask0 = pol.askInventoryGpu(H100);
@@ -420,18 +441,11 @@ contract E2ETest is Test, DeployPermit2 {
 
         // 1000 GPU exceeds the merged book: honest closed-market revert
         GpuRouter.SellParams memory big = GpuRouter.SellParams({
-            gpuId: H100, gpuIn: 1_000e18, payout: address(gusd), minOut: 0, deadline: 0, sqrtLimitX96: 0, recipient: bob
+            gpuId: H100, gpuIn: 1_000e18, payout: address(gusd), minOut: 0, deadline: 0, sqrtLimitX96: 0, recipient: bob,
+            updateData: _updateData(H100, price)
         });
         vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                CustomRevert.WrappedError.selector,
-                address(hook),
-                IHooks.beforeSwap.selector,
-                abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector),
-                abi.encodePacked(Hooks.HookCallFailed.selector)
-            )
-        );
+        vm.expectRevert(_wrapHook(abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector)));
         router.sell(big);
         assertEq(gpu.balanceOf(bob), 1_000e18, "tokens intact");
         assertEq(pol.bidInventoryGusd(H100), bid0, "bid inventory untouched by revert");
@@ -439,7 +453,8 @@ contract E2ETest is Test, DeployPermit2 {
 
         // a finite size fills at the bid edge
         GpuRouter.SellParams memory small = GpuRouter.SellParams({
-            gpuId: H100, gpuIn: 50e18, payout: address(gusd), minOut: 100e6, deadline: 0, sqrtLimitX96: 0, recipient: bob
+            gpuId: H100, gpuIn: 50e18, payout: address(gusd), minOut: 100e6, deadline: 0, sqrtLimitX96: 0, recipient: bob,
+            updateData: _updateData(H100, price)
         });
         vm.prank(bob);
         uint256 out = router.sell(small);
@@ -465,21 +480,21 @@ contract E2ETest is Test, DeployPermit2 {
         router.sell(
             GpuRouter.SellParams({
                 gpuId: H100, gpuIn: 50e18, payout: address(gusd), minOut: 0, deadline: 0, sqrtLimitX96: 0,
-                recipient: alice
+                recipient: alice, updateData: _updateData(H100, price)
             })
         );
         vm.stopPrank();
         assertGt(pol.askInventoryGpu(H100), 0, "vault holds ask inventory");
 
         _buyGusd(bob, 1_000_000e6);
-        GpuQuoter.QuoteResult memory q = gq.quoteBuy(key, 10e6);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuy(key, 10e6, _updateData(H100, price));
         assertGt(q.gpuOut, 0, "quote fills");
         assertGt(q.polGpu, 0, "POL ask fills beyond the edge");
 
         uint256 hookFees0 = hook.totalHookFeesGusd();
         vm.startPrank(bob);
         gusd.approve(address(router), type(uint256).max);
-        uint256 gpuOut = router.buyExactIn(H100, 10e6, q.gpuOut, 0, 0, bob);
+        uint256 gpuOut = router.buyExactIn(H100, 10e6, q.gpuOut, 0, 0, bob, _updateData(H100, price));
         vm.stopPrank();
         assertEq(gpuOut, q.gpuOut, "quote == execution");
         assertGt(q.hookFeeGusd, 0, "exactIn buy fee charged in gUSD");
@@ -489,34 +504,58 @@ contract E2ETest is Test, DeployPermit2 {
         assertEq(gusd.balanceOf(address(router)), 0, "router dust-free");
     }
 
-    /// @notice Stale oracle: the hook fills NOTHING — no POL, no backstop,
-    ///         no fees; small flows proceed pure-native through the LP book.
-    function test_staleOracle_hookInert() public {
+    /// @notice Fail-closed end to end: every trade NEEDS a current-epoch
+    ///         authenticated report. An old-epoch report reverts
+    ///         UnknownGpuEpoch, a stale observation reverts
+    ///         StaleObservation, empty updateData reverts on decode — and a
+    ///         fresh report prices the same flow normally. There is no
+    ///         native-only degradation anywhere on the product surface.
+    function test_failClosed_reportsGateEveryTrade() public {
         _issueGpuTo(alice, 1_100e18);
         _lpAlice();
-        vm.warp(block.timestamp + 26 hours); // staleness window: 25 hours
 
-        (, , , bool live,,) = hook.polState(H100);
-        assertFalse(live, "POL inert on stale oracle");
-
-        uint256 polFees0 = hook.totalPolFeesGusd();
-        uint256 hookFees0 = hook.totalHookFeesGusd();
-        uint256 principal0 = pol.principalContributed(H100);
-        uint256 issued0 = issuance.gpuConfig(H100).totalIssued;
-
-        // small BUY proceeds pure-native (LPs only)
+        // report signed in epoch E...
+        IGpuOracle.Report memory oldReport = _report(H100, price);
+        // ...used in epoch E+1
+        _nextEpoch();
         vm.startPrank(alice);
+        vm.expectRevert(
+            _wrapHook(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), oldReport.epoch))
+        );
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: H100, gpuOut: 5e16, payment: address(gusd), maxPaid: 200e6, deadline: 0, sqrtLimitX96: 0,
+                recipient: alice, updateData: _updateDataFor(oldReport)
+            })
+        );
+        // a stale OBSERVATION inside the current epoch is equally dead
+        IGpuOracle.Report memory stale = _reportAt(H100, price, uint64(block.timestamp - MAX_AGE - 1));
+        vm.expectRevert(
+            _wrapHook(abi.encodeWithSelector(IGpuOracle.StaleObservation.selector, stale.observedAt, uint64(block.timestamp - MAX_AGE)))
+        );
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: H100, gpuOut: 5e16, payment: address(gusd), maxPaid: 200e6, deadline: 0, sqrtLimitX96: 0,
+                recipient: alice, updateData: _updateDataFor(stale)
+            })
+        );
+        // garbled/empty updateData reverts on decode
+        vm.expectRevert();
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: H100, gpuOut: 5e16, payment: address(gusd), maxPaid: 200e6, deadline: 0, sqrtLimitX96: 0,
+                recipient: alice, updateData: ""
+            })
+        );
+        // a fresh current-epoch report prices the flow normally
         uint256 paid = _buyGpu(5e16, address(gusd), 200e6, alice);
         vm.stopPrank();
-        assertGt(paid, 0, "native-only buy works");
-        assertEq(hook.totalPolFeesGusd(), polFees0, "no POL fee when stale");
-        assertEq(hook.totalHookFeesGusd(), hookFees0, "no hook fee when stale");
-        assertEq(pol.principalContributed(H100), principal0, "no backstop when stale");
-        assertEq(issuance.gpuConfig(H100).totalIssued, issued0, "no in-swap issuance when stale");
+        assertGt(paid, 0, "fresh-report buy works");
+        assertEq(gpu.balanceOf(alice), 1_100e18 + 5e16, "GPU delivered");
 
-        // SELL also proceeds (never fabricates bid liquidity)
-        uint256 out = _sellGpu(alice, 5e17, address(gusd), 1, alice);
-        assertGt(out, 0, "native-only sell works");
-        assertEq(hook.totalHookFeesGusd(), hookFees0, "sell also hook-free when stale");
+        // polState remains live at a verified report (live == !polPaused now)
+        IGpuOracle.Report memory fresh = _report(H100, price);
+        (, , , bool live, , ) = hook.polState(H100, fresh, _sign(fresh));
+        assertTrue(live, "live at a verified current-epoch report");
     }
 }

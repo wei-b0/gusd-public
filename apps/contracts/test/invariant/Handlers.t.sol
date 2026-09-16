@@ -30,12 +30,20 @@ interface IWorld {
     function issuance() external view returns (address);
     function h100() external view returns (address);
     function ledger() external view returns (address);
-    function oracle() external view returns (address);
     function hookT() external view returns (address);
     function actors(uint256) external view returns (address);
     function swapRouterT() external view returns (address);
     function marketLiquidity() external view returns (address);
     function poolKey() external view returns (PoolKey memory);
+    /// @notice The report price every handler-signed updateData carries (the
+    ///         pull-oracle analog of the old pushed oracle price).
+    function currentPrice() external view returns (uint256);
+    /// @notice Signs a current-epoch report at `price` for `gpuId` with the
+    ///         world's attestor key: the updateData handlers embed in trades.
+    function signUpdateData(bytes32 gpuId, uint256 price) external view returns (bytes memory);
+    /// @notice Arms a new report price — effective in a NEW epoch (warps to
+    ///         the next epoch boundary first), mirroring real repricing.
+    function reprice(uint256 price) external;
     function recordIssuance(uint256 base, uint256 fee) external;
     function recordMarketBase(uint256 amount) external;
     function recordSwapInflow(uint256 amount) external;
@@ -110,7 +118,9 @@ contract HandlerIssuance is HandlerBase {
         address actor = _actor(actorSeed);
         amount = bound(amount, 1, 1_000e18);
         GPUIssuance iss = GPUIssuance(w.issuance());
-        (,, uint256 need) = iss.quoteIssue(H100Id.id(), amount);
+        // the pull oracle: the caller carries the signed current-epoch report
+        bytes memory updateData = w.signUpdateData(H100Id.id(), w.currentPrice());
+        (,, uint256 need) = iss.quoteIssue(H100Id.id(), amount, updateData);
         uint256 have = GusdLike(w.gusd()).balanceOf(actor);
         if (have < need) {
             uint256 deficit = need - have;
@@ -122,7 +132,7 @@ contract HandlerIssuance is HandlerBase {
             vm.stopPrank();
         }
         vm.prank(actor);
-        (uint256 base, uint256 fee) = iss.issue(H100Id.id(), amount, actor);
+        (uint256 base, uint256 fee) = iss.issue(H100Id.id(), amount, actor, updateData);
         // ghosts live on the world; the fuzzer never targets it
         w.recordIssuance(base, fee);
     }
@@ -133,6 +143,10 @@ contract HandlerIssuance is HandlerBase {
 ///         handlers' in-swap fills instead. Direct PoolManager swaps here are
 ///         also the R3 actor: a caller that settles late leaves the PM short
 ///         and the hook must degrade to native-only fills, never revert.
+///         Every swap embeds the signed current-epoch report (updateData) —
+///         direct PoolManager swaps are report-gated exactly like router
+///         trades, and byte-identical reports within an epoch dedupe on the
+///         oracle (no equivocation across handlers).
 contract HandlerMarket is HandlerBase {
     constructor(IWorld world) HandlerBase(world) {}
 
@@ -176,7 +190,7 @@ contract HandlerMarket is HandlerBase {
                 sqrtPriceLimitX96: gIsC0 ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
                 PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-                ""
+                w.signUpdateData(H100Id.id(), w.currentPrice())
             );
         vm.stopPrank();
         _recordSwap(ledger0, principal0);
@@ -203,7 +217,7 @@ contract HandlerMarket is HandlerBase {
                 sqrtPriceLimitX96: gIsC0 ? TickMath.MAX_SQRT_PRICE - 1 : TickMath.MIN_SQRT_PRICE + 1
             }),
                 PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-                ""
+                w.signUpdateData(H100Id.id(), w.currentPrice())
             );
         vm.stopPrank();
         _recordSwap(ledger0, principal0);
@@ -222,8 +236,12 @@ contract HandlerGovernance is HandlerBase {
         RevenueLedgerLike(w.ledger()).setSplit(uint16(bound(bps, 0, 10_000)));
     }
 
+    /// @notice The pull-oracle price lever: arms a new report price effective
+    ///         in a fresh epoch (the world warps + stores it; handlers sign
+    ///         their updateData at the armed price). No on-chain write exists
+    ///         — prices move only through reports carried by trades.
     function setPrice(uint256 price) external {
-        OracleLike(w.oracle()).setPrice(H100Id.id(), bound(price, 1, 100_000), block.timestamp);
+        w.reprice(price);
     }
 
     function distribute() external {
@@ -247,8 +265,4 @@ interface RevenueLedgerLike {
 
 interface MarketLiquidityPrincipal {
     function principalContributed(bytes32) external view returns (uint256);
-}
-
-interface OracleLike {
-    function setPrice(bytes32, uint256, uint256) external;
 }
