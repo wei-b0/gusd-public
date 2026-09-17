@@ -315,12 +315,23 @@ d("trading desk against the deployed protocol", () => {
       gpuQuoterReadFor(contracts).quoteSell([poolKey, parseGpuUnits(15_000), att.updateData]),
     ).rejects.toThrow();
 
-    const q = await quoteSell("H100", 15_000);
+    // The mirror answers beyond-lens sizes — and when the size also exceeds
+    // the demo-funded bid book, its refusal carries the book's true capacity.
+    // Either way the follow-up size sits beyond the lens's simulation float
+    // (1,000 GPU) yet inside the real capacity, so the mirror must price it.
+    let size = 15_000;
+    const first = await quoteSell("H100", size);
+    if (first !== null && "unavailable" in first) {
+      if (first.capacityRaw === undefined) throw new Error("expected the mirror's capacity");
+      size = Math.floor((Number(first.capacityRaw) / 1e18) * 0.9);
+    }
+    expect(size).toBeGreaterThan(1_000);
+    const q = await quoteSell("H100", size);
     expect(q).not.toBeNull();
     if (q === null || "unavailable" in q) throw new Error("expected a mirror quote");
     expect(q.notional).toBeGreaterThan(0);
     // Priced at the bid net of both fees — strictly below the bid edge.
-    const { bidEdge } = await hookEdges(gpuId);
+    const { bidEdge } = await hookEdges(gpuId, await currentAttestation(gpuId));
     expect(q.price).toBeLessThanOrEqual(bidEdge);
     expect(q.minOut).toBeLessThan(q.notional);
   }, 30_000);

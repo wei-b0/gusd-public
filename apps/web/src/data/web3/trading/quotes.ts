@@ -246,15 +246,15 @@ async function runGpuQuote(
   updateData: `0x${string}`,
 ): Promise<QuoteFailure | GpuQuoteResult> {
   const nowSec = Math.floor(deps.now() / 1000);
+  const mirror =
+    method === "quoteBuyExactOut"
+      ? quoteBuyExactOutMirror
+      : method === "quoteBuy"
+        ? quoteBuyMirror
+        : method === "quoteSell"
+          ? quoteSellMirror
+          : quoteSellExactOutMirror;
   if (batch !== null && batch.nativeLiquidity === 0n) {
-    const mirror =
-      method === "quoteBuyExactOut"
-        ? quoteBuyExactOutMirror
-        : method === "quoteBuy"
-          ? quoteBuyMirror
-          : method === "quoteSell"
-            ? quoteSellMirror
-            : quoteSellExactOutMirror;
     const m = mirror(batch.state, amountRaw, nowSec);
     if (m.ok) return { ...m.r, nativeGpu: 0n, endTick: 0 };
     return { unavailable: true, reason: m.reason, capacityRaw: m.capacityRaw };
@@ -262,16 +262,26 @@ async function runGpuQuote(
   try {
     return await gpuQuoterRead(deps)[method]([poolKey, amountRaw, updateData]);
   } catch {
-    if (batch !== null && !oracleGuardOk(batch.state, nowSec)) {
+    if (batch === null) {
+      return {
+        unavailable: true,
+        reason:
+          method === "quoteBuyExactOut" || method === "quoteBuy"
+            ? "no-ask-capacity"
+            : "no-bid-capacity",
+      };
+    }
+    if (!oracleGuardOk(batch.state, nowSec)) {
       return { unavailable: true, reason: "oracle-stale" };
     }
-    return {
-      unavailable: true,
-      reason:
-        method === "quoteBuyExactOut" || method === "quoteBuy"
-          ? "no-ask-capacity"
-          : "no-bid-capacity",
-    };
+    // The lens's simulation float is seeded per-SKU, so a size beyond it
+    // reverts the SIMULATION while the hook's real inventory (primary-
+    // capitalized) may still fill — the mirror prices the real market the
+    // trade will ride (the P0 fix). Its own rejection carries the capacity
+    // the bid book can actually absorb.
+    const m = mirror(batch.state, amountRaw, nowSec);
+    if (m.ok) return { ...m.r, nativeGpu: 0n, endTick: 0 };
+    return { unavailable: true, reason: m.reason, capacityRaw: m.capacityRaw };
   }
 }
 

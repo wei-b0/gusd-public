@@ -218,7 +218,7 @@ d("attestor over the real schema (RUN_DB_TESTS=1)", () => {
     const row = rows.rows[0];
     expect(row).toBeDefined();
     expect(Number(row!.price)).toBe(6_200); // 0.62 × PRICE_SCALE
-    expect(Number(row!.validUntil) - Number(row!.validFrom)).toBe(EPOCH_LENGTH);
+    expect(Number(row!.valid_until) - Number(row!.valid_from)).toBe(EPOCH_LENGTH);
     expect(row!.signature).toMatch(/^0x[0-9a-f]{130}$/);
     expect(row!.calc_hash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(row!.report_hash).toMatch(/^0x[0-9a-f]{64}$/);

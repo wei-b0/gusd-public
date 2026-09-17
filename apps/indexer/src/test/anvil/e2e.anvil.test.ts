@@ -124,10 +124,11 @@ d("indexer onchain suites (gated)", () => {
       // last-landed protocol events; their presence in the derived state
       // means the historical backfill reached the churn's final blocks. The
       // figures are the script's deterministic closing state (the same
-      // numbers two independent Deploy.full replays landed) — 10,397.45 gUSD
-      // vault share under the four-SKU universe, recomputed when Deploy.full
-      // slimmed from seven SKUs (the pre-cut figure was 12,014.37 and is
-      // what the stale pin on main still names).
+      // number two independent Deploy.full replays landed — the manual
+      // dev-chain deploy and this suite's own) — 10,397.39 gUSD vault share
+      // under the four-SKU universe. Recomputed each time the demo's shape
+      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, and the
+      // two-phase rework (runReprice extraction) moved it to 10,397.39.
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -136,7 +137,7 @@ d("indexer onchain suites (gated)", () => {
       );
       expect(closing).toHaveLength(1);
       expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
-      expect(closing[0]!.revenue_gusd).toBe("10397454680");
+      expect(closing[0]!.revenue_gusd).toBe("10397386590");
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_envio_e2e_a"."PmSwap"`,
@@ -247,29 +248,35 @@ d("indexer onchain suites (gated)", () => {
         );
       const swapsBefore = await swapCount();
 
-      // Snapshot → admin sets 310 → indexed → revert → admin sets 320.
+      // Snapshot → admin sets 86,410 → indexed → revert → admin sets 86,420.
+      // The write values ride just above the deployment's epoch grid: the
+      // harness deploys with the 86,400s day grid (the only grid that
+      // survives forge's sim→broadcast clock gap on an idle anvil), and the
+      // setter's floor is the epoch length — setMaxObservationAge reverts
+      // ObservationAgeBelowEpoch below it. The values are arbitrary beyond
+      // that; they only need to differ so the rollback is observable.
       const snapshot = await evmSnapshot();
-      await setObservationAge(310);
-      await waitForSchema("age 310 indexed", async () => {
+      await setObservationAge(86_410);
+      await waitForSchema("age 86410 indexed", async () => {
         const rows = await schemaQuery<{ max_observation_age_sec: string }>(
           `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
           [],
         );
-        return rows[0]?.max_observation_age_sec === "310";
+        return rows[0]?.max_observation_age_sec === "86410";
       });
       const replacedForkTip = await envioProcessedBlock(instE);
 
       await evmRevert(snapshot);
-      await setObservationAge(320);
+      await setObservationAge(86_420);
       while (Number(BigInt(await anvilRpc<string>("eth_blockNumber", []))) <= replacedForkTip) {
         await anvilRpc("evm_mine", []);
       }
-      await waitForSchema("age 320 indexed", async () => {
+      await waitForSchema("age 86420 indexed", async () => {
         const rows = await schemaQuery<{ max_observation_age_sec: string }>(
           `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
           [],
         );
-        return rows[0]?.max_observation_age_sec === "320";
+        return rows[0]?.max_observation_age_sec === "86420";
       });
 
       // The reverted admin write is gone from derived state (the singleton
@@ -279,7 +286,7 @@ d("indexer onchain suites (gated)", () => {
         `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
         [],
       );
-      expect(stats[0]!.max_observation_age_sec).toBe("320");
+      expect(stats[0]!.max_observation_age_sec).toBe("86420");
 
       expect(await swapCount()).toBe(swapsBefore);
       await instE.kill();

@@ -83,7 +83,9 @@ export async function spawnAnvil(): Promise<void> {
   // forever in its receipt-wait loop (receipts exist on-chain; forge never
   // accepts them). Auto-mine (default) broadcasts Deploy+Demo in seconds and
   // the suite's reorg/live tests don't need periodic empty blocks.
-  anvilProc = spawn("anvil", ["--port", String(ANVIL_PORT)], {
+  // --gas-limit mirrors the dev-chain posture (AGENTS.md): the default 30M
+  // block limit is below the largest Deploy tx, which then OutOfGas'es.
+  anvilProc = spawn("anvil", ["--port", String(ANVIL_PORT), "--gas-limit", "1000000000"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   anvilProc.stdout?.on("data", (d: Buffer) => {
@@ -156,6 +158,14 @@ export async function runForgeScript(script: string, sig?: string): Promise<void
       "--rpc-url",
       ANVIL_URL,
       "--broadcast",
+      // Fixed gas: skips forge's per-tx re-estimation phase and bounds the
+      // script's WHOLE sim frame (sum of all broadcast calls + script
+      // overhead ≈ 78M for runFull, plus HookMiner.find's CREATE2 loop whose
+      // quadratic memory cost can burn ~500M before it finds a salt — 300M
+      // OOG'd there). Unused gas is unspent on-chain; the anvil side runs
+      // with a 1e9 block limit so the per-tx caps fit.
+      "--gas-limit",
+      "600000000",
     ],
     { cwd: dir, env: { ...process.env, PRIVATE_KEY: DEPLOYER_PK } },
   );

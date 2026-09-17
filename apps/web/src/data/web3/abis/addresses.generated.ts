@@ -61,6 +61,8 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "startBlock": 0,
     "stateView": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     "underlying": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    "weth": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"
+    "weth": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+    "oracleEpochLength": 60,
+    "oracleMaxObservationAge": 300
   }
 };

@@ -747,6 +747,10 @@ contract DeployFull is Deploy {
         vm.serializeAddress(obj, "oracle", d.oracle);
         try GpuOracle(d.oracle).signer() returns (address attestor) {
             vm.serializeAddress(obj, "oracleAttestor", attestor);
+            // Keys Deploy._persist emits; the attestor client's report-validity
+            // math reads them. Grep skips: try-block above.
+            vm.serializeUint(obj, "oracleEpochLength", GpuOracle(d.oracle).epochLength());
+            vm.serializeUint(obj, "oracleMaxObservationAge", GpuOracle(d.oracle).maxObservationAge());
         } catch {}
         vm.serializeAddress(obj, "hook", d.hook);
         vm.serializeAddress(obj, "router", d.router);
