@@ -135,7 +135,18 @@ record_ok() { # the freshly written deployment record must be complete
 }
 
 # --- 1. prereqs ---------------------------------------------------------------
-docker info >/dev/null 2>&1 || die "Docker daemon not running — start Docker Desktop" 1
+# Rootless docker's socket is not the default path — when the default fails,
+# try the standard rootless socket before giving up. Exported so compose and
+# every later docker call in this script inherit it.
+docker info >/dev/null 2>&1 || {
+  rootless_sock="unix:///run/user/$(id -u)/docker.sock"
+  if [ -S "${rootless_sock#unix://}" ] && DOCKER_HOST="$rootless_sock" docker info >/dev/null 2>&1; then
+    export DOCKER_HOST="$rootless_sock"
+    log "using the rootless docker socket $rootless_sock"
+  else
+    die "Docker daemon not running — start Docker Desktop" 1
+  fi
+}
 command -v pnpm >/dev/null 2>&1 || die "pnpm not found — corepack enable" 1
 command -v forge >/dev/null 2>&1 || die "forge not on PATH — install Foundry" 1
 command -v anvil >/dev/null 2>&1 || die "anvil not on PATH — install Foundry" 1

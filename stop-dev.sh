@@ -26,7 +26,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-docker info >/dev/null 2>&1 || die "Docker daemon not running — nothing docker-side to stop" 1
+# Rootless docker fallback — same as start-dev.sh: try the standard rootless
+# socket before declaring the daemon absent (exported for every later call).
+docker info >/dev/null 2>&1 || {
+  rootless_sock="unix:///run/user/$(id -u)/docker.sock"
+  if [ -S "${rootless_sock#unix://}" ] && DOCKER_HOST="$rootless_sock" docker info >/dev/null 2>&1; then
+    export DOCKER_HOST="$rootless_sock"
+  else
+    die "Docker daemon not running — nothing docker-side to stop" 1
+  fi
+}
 
 if [ "$VOLUMES" = 1 ]; then
   reply=""
