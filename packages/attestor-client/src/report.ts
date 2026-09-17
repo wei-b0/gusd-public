@@ -265,14 +265,16 @@ export function reportTypedData(r: ReportV1, domain: GpuOracleDomain) {
     domain: domainSeparatorInputs(domain),
     types: REPORT_TYPE,
     primaryType: "Report" as const,
+    // The uint64 fields ride as bigint — the ABI's own width, and what
+    // viem's hashTypedData/signTypedData expect for the declared types.
     message: {
       version: r.version,
       gpuId: r.gpuId,
       price: r.price,
-      observedAt: r.observedAt,
-      epoch: r.epoch,
-      validFrom: r.validFrom,
-      validUntil: r.validUntil,
+      observedAt: BigInt(r.observedAt),
+      epoch: BigInt(r.epoch),
+      validFrom: BigInt(r.validFrom),
+      validUntil: BigInt(r.validUntil),
       calcHash: r.calcHash,
     },
   };

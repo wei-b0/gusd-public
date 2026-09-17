@@ -68,6 +68,19 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         uint16 polFeeBps;
     }
 
+    /// @dev The buy-ladder fill (see `_buyLadder`): POL ask fill plus the
+    ///      issuance backstop fill. Memory struct rather than a 7-tuple so
+    ///      settle functions stay inside the EVM stack limit.
+    struct Ladder {
+        uint256 polGpu;
+        uint256 polSpend;
+        uint256 polFee;
+        uint256 issueGpu;
+        uint256 base;
+        uint256 fee;
+        uint256 total;
+    }
+
     struct PoolCtx {
         bool gIsC0;
         bool exactIn;
@@ -693,34 +706,35 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         PolParams memory pp = _paramsFor(ctx.gpuId);
         uint256 cd = issuance.compositionDivisor();
         uint16 issueFeeBps = issuance.feeBpsOf(ctx.gpuId);
-        (uint256 polGpu, uint256 polSpend, uint256 polFee, uint256 issueGpu, uint256 base, uint256 fee, uint256 total) =
+        Ladder memory L;
+        (L.polGpu, L.polSpend, L.polFee, L.issueGpu, L.base, L.fee, L.total) =
             _buyLadder(ctx.gpuId, pp, price, _effAskBps(pp, ctx.gpuId), cd, issueFeeBps, budget, type(uint256).max, updateData);
         poolManager.take(Currency.wrap(gUSD), address(this), absorb);
         Currency gpuCur = ctx.gIsC0 ? key.currency1 : key.currency0;
-        if (polGpu > 0) {
+        if (L.polGpu > 0) {
             poolManager.sync(gpuCur);
-            _vault.pullGpuToManager(ctx.gpuId, polGpu);
+            _vault.pullGpuToManager(ctx.gpuId, L.polGpu);
             poolManager.settle();
         }
-        if (issueGpu > 0) {
+        if (L.issueGpu > 0) {
             // The pull bound is budget−polSpend, not absorb−polSpend: the
             // ladder's total ≤ leftover is measured against the fee-net
             // budget, and issuance's fail-closed transferFrom must not reach
             // past it into the fee reserve.
-            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), budget - polSpend, updateData);
+            issuance.issueCredited(ctx.gpuId, L.issueGpu, address(this), budget - L.polSpend, updateData);
             poolManager.sync(gpuCur);
-            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), issueGpu);
+            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), L.issueGpu);
             poolManager.settle();
         }
-        uint256 grossGpu = polGpu + issueGpu;
-        uint256 tail = budget - (polSpend + total);
-        if (polFee + hookFeeGusd > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee + hookFeeGusd);
+        uint256 grossGpu = L.polGpu + L.issueGpu;
+        uint256 tail = budget - (L.polSpend + L.total);
+        if (L.polFee + hookFeeGusd > 0) IERC20(gUSD).safeTransfer(revenueLedger, L.polFee + hookFeeGusd);
         totalHookFeesGusd += hookFeeGusd;
-        if (polSpend > polFee) _vault.creditBidFromTrade(ctx.gpuId, polSpend - polFee + tail);
+        if (L.polSpend > L.polFee) _vault.creditBidFromTrade(ctx.gpuId, L.polSpend - L.polFee + tail);
         else if (tail > 0) _vault.creditBidFromTrade(ctx.gpuId, tail);
-        _bookPol(polSpend, polFee);
-        if (polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, polGpu, polSpend, polFee, 0);
-        if (issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, issueGpu, base + fee, fee, 1);
+        _bookPol(L.polSpend, L.polFee);
+        if (L.polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.polGpu, L.polSpend, L.polFee, 0);
+        if (L.issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.issueGpu, L.base + L.fee, L.fee, 1);
         _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(absorb), _toI128(grossGpu));
         return -_toI128(grossGpu);
     }
@@ -771,45 +785,46 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         uint256 price,
         bytes calldata updateData
     ) internal returns (int128) {
-        PolParams memory pp = _paramsFor(ctx.gpuId);
-        uint16 effAskBps = _effAskBps(pp, ctx.gpuId);
-        uint256 denomAsk = price * (1e4 + uint256(effAskBps));
-        uint256 capLeft = _polCapLeft();
-        uint256 capGpu = capLeft == 0 ? 0 : Math.mulDiv(capLeft, 1e20, denomAsk);
-        uint256 polGpu = Math.min(Math.min(supplied, _vault.askInventoryGpu(ctx.gpuId)), capGpu);
-        uint256 polSpend = Math.mulDiv(polGpu, denomAsk, 1e20, Math.Rounding.Ceil);
-        uint256 polFee = Math.mulDiv(polSpend, pp.polFeeBps, 1e4, Math.Rounding.Ceil);
-        uint256 issueGpu = supplied - polGpu;
-        uint256 base;
-        uint256 fee;
-        uint256 charge = polSpend;
-        if (issueGpu > 0) {
-            (uint256 b, uint256 f, uint256 t) = issuance.quoteIssueCredited(ctx.gpuId, issueGpu, updateData);
-            base = b;
-            fee = f;
-            charge = polSpend + t;
+        Ladder memory L;
+        uint256 charge;
+        {
+            PolParams memory pp = _paramsFor(ctx.gpuId);
+            uint16 effAskBps = _effAskBps(pp, ctx.gpuId);
+            uint256 denomAsk = price * (1e4 + uint256(effAskBps));
+            uint256 capLeft = _polCapLeft();
+            uint256 capGpu = capLeft == 0 ? 0 : Math.mulDiv(capLeft, 1e20, denomAsk);
+            L.polGpu = Math.min(Math.min(supplied, _vault.askInventoryGpu(ctx.gpuId)), capGpu);
+            L.polSpend = Math.mulDiv(L.polGpu, denomAsk, 1e20, Math.Rounding.Ceil);
+            L.polFee = Math.mulDiv(L.polSpend, pp.polFeeBps, 1e4, Math.Rounding.Ceil);
+            L.issueGpu = supplied - L.polGpu;
+            charge = L.polSpend;
+            if (L.issueGpu > 0) {
+                uint256 t;
+                (L.base, L.fee, t) = issuance.quoteIssueCredited(ctx.gpuId, L.issueGpu, updateData);
+                charge = L.polSpend + t;
+            }
         }
         uint256 hookFee = Math.mulDiv(charge, hookFeeBps, 1e4, Math.Rounding.Ceil);
         poolManager.take(Currency.wrap(gUSD), address(this), charge + hookFee);
         Currency gpuCur = ctx.gIsC0 ? key.currency1 : key.currency0;
-        if (polGpu > 0) {
+        if (L.polGpu > 0) {
             poolManager.sync(gpuCur);
-            _vault.pullGpuToManager(ctx.gpuId, polGpu);
+            _vault.pullGpuToManager(ctx.gpuId, L.polGpu);
             poolManager.settle();
         }
-        if (issueGpu > 0) {
-            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), charge - polSpend, updateData);
+        if (L.issueGpu > 0) {
+            issuance.issueCredited(ctx.gpuId, L.issueGpu, address(this), charge - L.polSpend, updateData);
             poolManager.sync(gpuCur);
-            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), issueGpu);
+            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), L.issueGpu);
             poolManager.settle();
         }
-        if (polFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee);
+        if (L.polFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, L.polFee);
         if (hookFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, hookFee);
         totalHookFeesGusd += hookFee;
-        if (polSpend > polFee) _vault.creditBidFromTrade(ctx.gpuId, polSpend - polFee);
-        _bookPol(polSpend, polFee);
-        if (polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, polGpu, polSpend, polFee, 0);
-        if (issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, issueGpu, base + fee, fee, 1);
+        if (L.polSpend > L.polFee) _vault.creditBidFromTrade(ctx.gpuId, L.polSpend - L.polFee);
+        _bookPol(L.polSpend, L.polFee);
+        if (L.polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.polGpu, L.polSpend, L.polFee, 0);
+        if (L.issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.issueGpu, L.base + L.fee, L.fee, 1);
         _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(charge + hookFee), _toI128(supplied));
         // The unspecified leg is the gUSD input for buys: the fee rides on
         // top of the beforeSwap charge, so afterSwap must ADD it to the

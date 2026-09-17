@@ -90,7 +90,7 @@ describe("epoch arithmetic", () => {
 
 describe("observation clamping", () => {
   it("clamps a future observation to now", () => {
-    expect(observationSeconds(2_000_000_000, 1_000_000_000)).toBe(1_000_000_000);
+    expect(observationSeconds(2_000_000_000, 1_000_000_000)).toBe(1_000_000); // seconds out
     expect(observationSeconds(999_999_999, 1_000_000_000)).toBe(999_999);
   });
 
@@ -101,10 +101,11 @@ describe("observation clamping", () => {
 
 describe("buildReport", () => {
   it("binds the report to the epoch containing now, not observedAt's epoch", () => {
-    // observed late in epoch E (t=1_000_059), attested just past the boundary
-    // into E+1: the report must carry epoch E+1 with bounds [1_000_060, 1_000_120)
-    const r = report({ observedAtSec: 1_000_059, nowSec: 1_000_060 });
-    expect(r.epoch).toBe(16_668); // floor(1_000_060 / 60)
+    // observed late in epoch E (t=1_000_059, E = floor(1_000_059/60) = 16_667),
+    // attested just past the boundary into E+1 (t = 1_000_080): the report
+    // must carry epoch E+1 with bounds [1_000_080, 1_000_140)
+    const r = report({ observedAtSec: 1_000_059, nowSec: 1_000_080 });
+    expect(r.epoch).toBe(16_668); // floor(1_000_080 / 60)
     expect(r.validFrom).toBe(16_668 * 60);
     expect(r.validUntil).toBe(16_669 * 60);
     expect(r.observedAt).toBe(1_000_059);
@@ -141,10 +142,12 @@ describe("updateData encoding", () => {
 
   it("abi-encodes (report, signature) — the exact trade-embedded bytes", () => {
     const updateData = encodeUpdateData({ report: report(), signature: SIG });
-    // layout: 8 tuple words + offset word + length word + 65B signature + pad
-    expect(updateData.length).toBe(2 + 10 * 64 + 130);
-    // price 25_000 sits in word 2 of the tuple
-    expect(updateData.slice(2 + 2 * 64, 2 + 3 * 64)).toBe("61a8");
+    // layout: 8 inline tuple words (all-static struct, no leading offset) +
+    // offset word + length word, then the 65B signature ABI-padded to 96B
+    // (3 tail words): 13 words total
+    expect(updateData.length).toBe(2 + 13 * 64);
+    // price 25_000 sits in word 2 of the tuple (right-aligned in the word)
+    expect(updateData.slice(2 + 2 * 64, 2 + 3 * 64).endsWith("61a8")).toBe(true);
     expect(reportHash({ report: report(), signature: SIG })).toBe(keccak256(updateData));
   });
 

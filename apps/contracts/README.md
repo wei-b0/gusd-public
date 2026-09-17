@@ -135,6 +135,11 @@ unchanged production deploy:
 $ anvil
 $ PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 --broadcast --sig "runFull()"
+# then, after the oracle epoch has rolled (60s default — a failed attempt
+# prints the wait; on an idle auto-mine anvil nudge the head clock first:
+#   cast rpc anvil_mine 2 1
+$ PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script script/Deploy.full.s.sol --fork-url http://127.0.0.1:8545 --broadcast --sig "runReprice()"
 ```
 
 Works on Anvil or any testnet with a funded deployer key (same env
@@ -152,7 +157,7 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
   the stable pool below).
 - **A mock second stable** (`Mock Tether USD`, 6 decimals) deployed through
   the CREATE2 proxy with the fixed salt `gusd.mock.usdt.v1` — the address is
-  deterministic per chain (Anvil: `0xAd8F7921738819152FFA371c984D736842ed8AFE`)
+  deterministic per chain (Anvil: `0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64`)
   — whitelisted on the StableRouter, and paired with the reserve in a
   hook-free fee-100/tickSpacing-1 pool at 1:1, exactly the key the web's
   funding panel quotes.
@@ -164,27 +169,21 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
   the fresh bid band, converting ~1% of each band into ask-side inventory
   so pool buy legs are quotable immediately.
 - **Compact activity pass** (anvil keys #2/#3): buys, sells, a USDT→gUSD
-  mint plus redeem, an oracle reprice with an issuance-only buy (whose
-  principal honestly DEFERS while its pool still trades at the old
-  price), fee harvest, revenue distribution, and a stake — so the tape,
+  mint plus redeem, revenue distribution, and a stake — so the tape,
   ledgers, cost basis, and sgUSD accrual are populated immediately.
-- **Convergence pass** (H100, after the reprice): a permissionless
-  `recenter` removes the stale $2.50-anchored bands and redeploys the
-  same real inventory around $3.00 (GPU → ask band now; the recovered
-  gUSD honestly defers — the pool is still cheaper than the whole new
-  bid zone), then an arbitrage buy lifts the pool spot from ~$2.50 into
-  the fresh ask band (~$3.02, the force the design waits for), and the
-  deferred principal — bob's 3 gUSD plus the recentred band — places as
-  the new bid band at the oracle anchor. The desk ends the run showing
-  market ≈ oracle ≈ index (spot within 720 ticks of the reference,
-  asserted) instead of a 17% discount.
+- **Reprice proof** (a second invocation, `runReprice()`, after the oracle
+  epoch rolls past the seed binding — a broadcast's simulation is one
+  frozen block, so `runFull` cannot sign a report for a later epoch):
+  the attestor signs H100 at \$3.00, bob's buy fills from the vault's ask
+  at the new ask (\$3.0150, quote == execution), the fill's proceeds
+  re-enter the bid inventory without re-counting principal, and
+  `polState` shows the repriced book immediately — fees distributed.
 - **End asserts**: every SKU's `principalContributed` equals its seeded
-  demand, `pendingPrincipal == 0` everywhere (H100's via the
-  convergence pass), `bidDepth > 0` per SKU, router/hook dust drained,
-  both stables whitelisted, stable-pool 1:1 within tolerance, sgUSD
-  accreting. The record is re-persisted with `stables = [reserve,
-  USDT]` and a `startBlock` captured before any of the run's
-  transactions (the indexer's backfill anchor).
+  demand, `bidDepth > 0` per SKU, router/hook dust drained, both stables
+  whitelisted, stable-pool 1:1 within tolerance, sgUSD accreting. The
+  record is re-persisted with `stables = [reserve, USDT]` and a
+  `startBlock` captured before any of the run's transactions (the
+  indexer's backfill anchor).
 
 After deploying, run `pnpm --filter @gusd/web abi:sync` and pin the mock
 USDT in `apps/web/src/data/web3/stables.ts` (already pinned for
@@ -200,11 +199,12 @@ virgin, so `Demo` will not run after it. Two corollaries:
   does not whitelist. Re-run `Deploy.full` (or remove the pin deliberately)
   to restore the multi-stable surface.
 - The web anvil suite's trading tests (`trading.anvil.test.ts`) assert the
-  *genesis* posture — an empty canonical pool, buys = 100% issuance, and
-  sells quoting against the bid band that the same buy's principal just
-  capitalized (proceeds ≤ the issuance price). They hold only against a
-  plain `Deploy` chain; after `Deploy.full` the pool has third-party-scale
-  depth and trades no longer price 100% through issuance.
+  *Deploy.full* posture — the hook's merged ladder against the deployed
+  protocol: a covered buy is a pure pool fill priced under the hook's ask
+  edge, a buy beyond ask inventory splits pool + issuance legs, the
+  executed buy pays exactly the quote, and sells quote against the
+  primary-capitalized bid at or below the bid edge. They need the full
+  `Deploy.full` chain (both phases) plus the attestor/oracle stack.
 - The indexer derives canonical GPU pools on-chain at boot, so start it
   fresh after this deploy. An indexer already running against the same
   chain/schema misses pools created after it started — follow the

@@ -341,10 +341,13 @@ abstract contract GpuRouterTestBase is Test, Deployers, OracleReports {
         IGpuOracle.Report memory r = _report(GPU_ID, 25_000);
         bytes memory updateData = _updateDataFor(r);
         _nextEpoch();
-        vm.prank(alice);
+        // arm before pranking: the expectation's arguments (oracle views)
+        // are evaluated before arming, so a prank armed first would be
+        // consumed by the argument evaluation
         vm.expectRevert(
             _wrapHook(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch))
         );
+        vm.prank(alice);
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
@@ -359,10 +362,13 @@ abstract contract GpuRouterTestBase is Test, Deployers, OracleReports {
         IGpuOracle.Report memory r = _report(GENESIS_ID, 25_000);
         bytes memory updateData = _updateDataFor(r);
         _nextEpoch();
-        vm.prank(alice);
+        // arm before pranking: the expectation's arguments (oracle views)
+        // are evaluated before arming, so a prank armed first would be
+        // consumed by the argument evaluation
         vm.expectRevert(
             abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch)
         );
+        vm.prank(alice);
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GENESIS_ID, gpuOut: 1e18, payment: address(gusd), maxPaid: 2_000_000e6,
@@ -506,7 +512,12 @@ abstract contract GpuRouterTestBase is Test, Deployers, OracleReports {
     /// Empty pool (initialized, zero liquidity, zero bid inventory): SELL
     /// fails closed — the honest closed market.
     function test_sell_emptyPoolRevertsCleanly() public {
-        manager.initialize(_canonicalKeyFor(GENESIS_ID), SQRT_PRICE_1_1); // no LP
+        // init at the report anchor (orientation-adjusted, like the main
+        // pool) so the sell walk actually reaches the bid edge — at a
+        // disconnected price the walk can never hit the edge and the swap
+        // degrades to a native no-op on the empty book instead of the
+        // honest capacity revert under test
+        manager.initialize(_canonicalKeyFor(GENESIS_ID), TickMath.getSqrtPriceAtTick(initTick)); // no LP
         GPUToken genGpu = GPUToken(issuance.tokenOf(GENESIS_ID));
         _issueGpuTo(GENESIS_ID, bob, 10e18);
         vm.startPrank(bob);

@@ -45,7 +45,7 @@ contract InvariantTest is Test, Deployers, OracleReports, IWorld {
     HandlerMarket public hMarket;
     HandlerGovernance public hGov;
 
-    bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
+    // H100 comes from OracleReports (shared rig constant)
     uint160 constant HOOK_FLAGS = uint160(
         Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG

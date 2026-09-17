@@ -143,10 +143,18 @@ contract AttestationConsumptionTest is OracleReports {
         // one second past the floor, next epoch: both paths fail closed
         _nextEpoch();
         IGpuOracle.Report memory stale = _reportAt(H100, 25_000, uint64(block.timestamp - MAX_AGE - 1));
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector, stale.observedAt, uint64(block.timestamp - MAX_AGE)
+            )
+        );
         issuance.quoteIssue(H100, 1e18, _updateDataFor(stale));
         vm.prank(alice);
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector, stale.observedAt, uint64(block.timestamp - MAX_AGE)
+            )
+        );
         issuance.issue(H100, 1e18, alice, _updateDataFor(stale));
     }
 

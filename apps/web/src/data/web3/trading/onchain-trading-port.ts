@@ -173,8 +173,10 @@ export class OnChainTradingPort implements TradingPort {
     // Everything else fails with its own voice.
     let lastVoice: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      // 1. The report this order will embed — fetched fresh at submit.
-      const attestation = await this.quoteDeps.attestation(request.asset);
+      // 1. The report this order will embed — fetched fresh at submit, named
+      //    by the market's canonical bytes32 gpuId (the key every layer
+      //    agrees on — the asset label is the UI's vocabulary, not the API's).
+      const attestation = await this.quoteDeps.attestation(gpuId);
       if (attestation.kind !== "current") {
         if (attempt === 0) continue; // one refetch before refusing
         throw new Error(NO_ATTESTATION);

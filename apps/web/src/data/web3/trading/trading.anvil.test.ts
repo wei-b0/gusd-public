@@ -12,6 +12,7 @@ import { mintSpec, planMintApproval } from "../gusd/actions";
 import { formatGpuUnits, parseGpuUnits, parseGusd } from "@/domain/units";
 import { gpuIdForAsset } from "../gpu-id";
 import { canonicalPoolKey, poolIdOf } from "../pool";
+import { fetchAttestation, type Attestation } from "@/data/oracle/attestation";
 import { quoteBuy, quoteSell, gpuQuoterReadFor } from "./quotes";
 import { quoteBuyExactOutMirror, quoteSellMirror } from "./hook-quote";
 import { buySpec } from "./specs";
@@ -86,26 +87,48 @@ d("trading desk against the deployed protocol", () => {
     await waitForTransactionReceipt(getPublicClient(), { hash });
   }, 30_000);
 
-  /** The hook's oracle-priced edges (polState: askBps, bidBps, polFeeBps,
-   *  live, askPrice, bidPrice) and the vault's ask inventory. */
-  async function hookEdges(gpuId: `0x${string}`) {
+  /** ONE current attestation per test — every read and the trade embed the
+   *  same report the contract verifies. */
+  async function currentAttestation(gpuId: `0x${string}`) {
+    const att = await fetchAttestation(gpuId);
+    if (att.kind !== "current") throw new Error(`no current attestation for the market: ${att.kind}`);
+    return att as Attestation & { kind: "current" };
+  }
+
+  /** The hook's oracle-priced edges (hook.polState re-verifies the report
+   *  the caller embeds, then returns askBps/bidBps/polFeeBps/live) and the
+   *  vault's ask inventory. The edges are the report price ± the bps. */
+  async function hookEdges(gpuId: `0x${string}`, att: Attestation & { kind: "current" }) {
     const contracts = getContracts();
-    const state = await contracts.hook.read.polState([gpuId]);
+    const r = att.signed.report;
+    const reportArg = {
+      version: r.version,
+      gpuId: r.gpuId,
+      price: r.price,
+      observedAt: BigInt(r.observedAt),
+      epoch: BigInt(r.epoch),
+      validFrom: BigInt(r.validFrom),
+      validUntil: BigInt(r.validUntil),
+      calcHash: r.calcHash,
+    };
+    const [askBps, bidBps] = await contracts.hook.read.polState([gpuId, reportArg, att.signed.signature]);
     const vault = getContract({
       address: await contracts.issuance.read.marketLiquidity(),
       abi: GPU_MARKET_LIQUIDITY_ABI,
       client: getPublicClient(),
     });
+    const reportPrice = Number(r.price) / 10_000;
     return {
-      askEdge: Number(state[4]) / 10_000,
-      bidEdge: Number(state[5]) / 10_000,
+      askEdge: (reportPrice * (10_000 + Number(askBps))) / 10_000,
+      bidEdge: (reportPrice * (10_000 - Number(bidBps))) / 10_000,
       askInventory: await vault.read.askInventoryGpu([gpuId]),
     };
   }
 
   it("quotes a buy the ask inventory covers as a pure pool fill under the ask edge", async () => {
     const gpuId = gpuIdForAsset("H100");
-    const { askEdge, askInventory } = await hookEdges(gpuId);
+    const att = await currentAttestation(gpuId);
+    const { askEdge, askInventory } = await hookEdges(gpuId, att);
     // The seeded chain's vault holds ask inventory bought from real primary
     // flows, so a 1-GPU buy fills entirely off the market — no issuance leg.
     expect(askInventory).toBeGreaterThanOrEqual(parseGpuUnits(1));
@@ -131,7 +154,8 @@ d("trading desk against the deployed protocol", () => {
 
   it("splits a buy beyond ask inventory into pool and issuance legs", async () => {
     const gpuId = gpuIdForAsset("H100");
-    const { askInventory } = await hookEdges(gpuId);
+    const att = await currentAttestation(gpuId);
+    const { askInventory } = await hookEdges(gpuId, att);
     const size = formatGpuUnits(askInventory) + 1;
     const quote = await quoteBuy("H100", size);
     expect(quote).not.toBeNull();
@@ -148,8 +172,8 @@ d("trading desk against the deployed protocol", () => {
     expect(issueLeg.gpuUnits).toBeCloseTo(1, 9);
     // The backstop leg prices exactly what the primary itself quotes —
     // execution-identical pricing, one unit of it (quoteIssue returns
-    // product units).
-    const issue = await contractReads().quoteIssue(gpuId, parseGpuUnits(1));
+    // product units, priced at the report the quote embeds).
+    const issue = await contractReads().quoteIssue(gpuId, parseGpuUnits(1), att.updateData);
     expect(issueLeg.gUsd).toBeCloseTo(issue.totalPaid, 9);
     expect(issueLeg.fees.issuance).toBeCloseTo(issue.fee, 9);
     // The pool leg carries the remainder of the all-in total.
@@ -159,6 +183,7 @@ d("trading desk against the deployed protocol", () => {
   it("executes a buy that pays exactly the quote", async () => {
     const contracts = getContracts();
     const gpuId = gpuIdForAsset("H100");
+    const att = await currentAttestation(gpuId);
     const quote = await quoteBuy("H100", 1);
     expect(quote).not.toBeNull();
     if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
@@ -189,6 +214,7 @@ d("trading desk against the deployed protocol", () => {
         maxPaid: maxPaidRaw,
         deadline: 0n,
         sqrtLimitX96: 0n,
+        updateData: att.updateData,
       },
       owner,
     ).execute(wallet);
@@ -213,12 +239,14 @@ d("trading desk against the deployed protocol", () => {
     // Primary principal capitalizes the POL bid, priced bidBps under the
     // oracle; the sell fills there net of the protocol's take, so proceeds
     // sit strictly below the bid edge — never null.
+    const gpuId = gpuIdForAsset("H100");
+    const att = await currentAttestation(gpuId);
     const q = await quoteSell("H100", 1);
     expect(q).not.toBeNull();
     if (q === null || "unavailable" in q) throw new Error("expected a quote");
     expect(q.side).toBe("sell");
     expect(q.notional).toBeGreaterThan(0);
-    const { bidEdge } = await hookEdges(gpuIdForAsset("H100"));
+    const { bidEdge } = await hookEdges(gpuId, att);
     expect(q.price).toBeLessThanOrEqual(bidEdge);
     // The signed floor is the proceeds minus the tolerance slack.
     expect(q.minOut).toBeLessThan(q.notional);
@@ -226,6 +254,7 @@ d("trading desk against the deployed protocol", () => {
 
   it("matches the on-chain GpuQuoter fill-for-fill on the LP-less pool", async () => {
     const gpuId = gpuIdForAsset("H100");
+    const att = await currentAttestation(gpuId);
     const reg = await contractReads().registration(gpuId);
     if (reg === null) throw new Error("H100 unregistered");
     const contracts = getContracts();
@@ -239,13 +268,13 @@ d("trading desk against the deployed protocol", () => {
     // liquidity, so the deterministic mirror is the desk's pricing path.
     expect(await contracts.stateView.read.getLiquidity([poolIdOf(poolKey)])).toBe(0n);
 
-    const state = await contractReads().hookMarketState(gpuId);
+    const state = await contractReads().hookMarketState(gpuId, att.signed);
     const nowSec = Math.floor(Date.now() / 1000);
     const lens = gpuQuoterReadFor(contracts);
 
     // Sell parity: units sold → net gUSD, fee split identical.
     const sell = quoteSellMirror(state, parseGpuUnits(1), nowSec);
-    const lensSell = await lens.quoteSell([poolKey, parseGpuUnits(1)]);
+    const lensSell = await lens.quoteSell([poolKey, parseGpuUnits(1), att.updateData]);
     expect(sell.ok).toBe(true);
     if (!sell.ok) throw new Error("mirror sell rejected");
     expect(lensSell.gusdOut).toBe(sell.r.gusdOut);
@@ -255,7 +284,7 @@ d("trading desk against the deployed protocol", () => {
 
     // Buy parity: units demanded → all-in gUSD, ladder split identical.
     const buy = quoteBuyExactOutMirror(state, parseGpuUnits(1), nowSec);
-    const lensBuy = await lens.quoteBuyExactOut([poolKey, parseGpuUnits(1)]);
+    const lensBuy = await lens.quoteBuyExactOut([poolKey, parseGpuUnits(1), att.updateData]);
     expect(buy.ok).toBe(true);
     if (!buy.ok) throw new Error("mirror buy rejected");
     expect(lensBuy.gusdIn).toBe(buy.r.gusdIn);
@@ -273,6 +302,7 @@ d("trading desk against the deployed protocol", () => {
     // inventory (primary-capitalized) is ample. The lens demonstrably
     // cannot answer it; the mirror prices the real market.
     const gpuId = gpuIdForAsset("H100");
+    const att = await currentAttestation(gpuId);
     const reg = await contractReads().registration(gpuId);
     if (reg === null) throw new Error("H100 unregistered");
     const poolKey = canonicalPoolKey(
@@ -282,7 +312,7 @@ d("trading desk against the deployed protocol", () => {
       contracts.addresses.hook as Address,
     );
     await expect(
-      gpuQuoterReadFor(contracts).quoteSell([poolKey, parseGpuUnits(15_000)]),
+      gpuQuoterReadFor(contracts).quoteSell([poolKey, parseGpuUnits(15_000), att.updateData]),
     ).rejects.toThrow();
 
     const q = await quoteSell("H100", 15_000);

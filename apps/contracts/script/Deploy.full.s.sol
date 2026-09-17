@@ -57,13 +57,29 @@ import {Deploy} from "./Deploy.s.sol";
 ///         report (updateData) — the script signs with the attestor key
 ///         (ORACLE_ATTESTOR_PK, defaulting to PRIVATE_KEY, which must match
 ///         the oracle's signer). There is NO oracle transaction anywhere in
-///         the pass; repricing is epoch arithmetic, and the reprice segment
-///         targets the epoch the broadcast has rolled into. If a broadcast
-///         spans epochs, segments simulated in one epoch may revert
-///         UnknownGpuEpoch on landing — rerun (dev-only posture); for long
-///         broadcasts set ORACLE_EPOCH_LENGTH above the expected duration.
+///         the pass; repricing is epoch arithmetic.
+///
+///         The reprice proof CANNOT ride this pass: a forge-script
+///         simulation is one frozen block — block.timestamp never moves
+///         across the recorded txs, and vm.warp only moves the simulation
+///         (forge does not forward it to the node) — while the chain keeps
+///         wall time. So every report the pass signs carries epochOf(sim
+///         start), the seed trades bind that epoch, and no trick makes a
+///         single pass sign a report for a LATER epoch and still land
+///         legally. The reprice is its own invocation, runReprice(): fork
+///         the live chain after the clock has rolled past the seed binding
+///         and it signs and trades at the new price in its own current epoch
+///         (it self-guards: reverted with a wait hint if the epoch has not
+///         rolled yet — just rerun it).
+///
+///         For long runFull broadcasts, set ORACLE_EPOCH_LENGTH above the
+///         expected duration — a broadcast that lands its seed trades in a
+///         later epoch than it signed them for reverts UnknownGpuEpoch
+///         (dev-only posture: rerun).
 ///
 ///         Run: forge script script/Deploy.full.s.sol --rpc-url <url> --broadcast --sig "runFull()"
+///              then, after the epoch rolls:
+///              forge script script/Deploy.full.s.sol --fork-url <url> --broadcast --sig "runReprice()"
 ///         The chain it produces is NON-VIRGIN: Demo.s.sol (virgin-state
 ///         requires) will not run after it. Minimal flow-testing recipe
 ///         remains Deploy + Demo; this script is the whole-app recipe for
@@ -408,54 +424,10 @@ contract DeployFull is Deploy {
         }
         vm.stopBroadcast();
 
-        // ------------------- report reprice: next epoch, attestor-signed
-        // The C-max proof segment, pull-oracle edition. There is no publish
-        // tx: the reprice is a fresh report at the NEW price, executable once
-        // the chain has rolled into a new epoch (one price per epoch — the
-        // epoch binding IS the repricing gate). bob's buy fills from the
-        // vault's ask at the NEW ask ($3.0150); its proceeds re-enter the bid
-        // inventory without re-counting principal (provenance invariant);
-        // polState shows the repriced book immediately.
-        (uint256 base6,,) = _repriceAndQuote(d.oracle, attestorPk, d.issuance, H100, 30_000);
-        require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
-        vm.startBroadcast(BOB_PK);
-        IERC20(d.underlying).approve(d.gusd, type(uint256).max);
-        gusd.mint(20e6, bob);
-        {
-            PoolKey memory hkey = _canonicalKey(d, H100);
-            uint256 bidBefore = vault.bidInventoryGusd(H100);
-            uint256 principalBefore = vault.principalContributed(H100);
-            uint256 askBefore = vault.askInventoryGpu(H100);
-            GpuQuoter.QuoteResult memory r6 =
-                gq.quoteBuyExactOut(hkey, 2e18, _updateData(d.oracle, attestorPk, H100, 30_000));
-            // 2 GPU at the new ask 30_000 x 1.005 = 30_150: charge
-            // 6_030_000 + hook fee 30_150 — repriced by the fresh report.
-            require(r6.gusdIn == 6_060_150, "quote at the new ask");
-            uint256 paid6 = _buy(
-                router,
-                GpuRouter.BuyParams({
-                    gpuId: H100,
-                    gpuOut: 2e18,
-                    payment: d.gusd,
-                    maxPaid: r6.gusdIn,
-                    deadline: 0,
-                    sqrtLimitX96: 0,
-                    recipient: bob,
-                    updateData: _updateData(d.oracle, attestorPk, H100, 30_000)
-                })
-            );
-            require(paid6 == r6.gusdIn, "quote==execution (repriced)");
-            require(vault.bidInventoryGusd(H100) - bidBefore == 6_023_970, "POL proceeds -> bid capacity");
-            require(vault.principalContributed(H100) == principalBefore, "principal never re-counted");
-            require(askBefore - vault.askInventoryGpu(H100) == 2e18, "ask inventory consumed");
-            IGpuOracle oracle = IGpuOracle(d.oracle);
-            IGpuOracle.Report memory rr6 = _reportFor(oracle, H100, 30_000);
-            (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) =
-                hook.polState(H100, rr6, _sigFor(oracle, attestorPk, rr6));
-            require(live6, "pol live post-reprice");
-            require(askPrice6 == 30_150 && bidPrice6 == 29_850, "edges repriced in-swap");
-        }
-        vm.stopBroadcast();
+        // The reprice proof is a separate invocation: runReprice() (see its
+        // doc). A broadcast's simulation is one frozen block and vm.warp
+        // never reaches the chain, so this pass cannot sign a report for an
+        // epoch later than the one the seed trades just bound.
 
         // ----------------------------- distribute protocol revenue
         // Fees route to the revenue ledger in-swap (POL fee, hook fee,
@@ -513,15 +485,136 @@ contract DeployFull is Deploy {
         console2.log("vault revenue to date", ledger.totalToVault());
     }
 
+    /// @notice The reprice proof — phase 2 of the full deploy. A separate
+    ///         forge-script invocation, forked from the live chain AFTER the
+    ///         epoch has rolled past the one runFull's seed trades bound:
+    ///
+    ///   forge script script/Deploy.full.s.sol --fork-url http://127.0.0.1:8545 \
+    ///       --broadcast --sig "runReprice()"
+    ///
+    ///         Why not part of runFull: a script simulation is one frozen
+    ///         block — its timestamp never moves across the recorded txs —
+    ///         and vm.warp only moves the simulation (forge does not forward
+    ///         it to the node), so a single pass can never sign a report for
+    ///         an epoch later than the one its seed trades bind. This
+    ///         invocation's simulation starts at the fork head's wall clock,
+    ///         so the $3.00 report it signs is current when the broadcast
+    ///         lands seconds later. Self-guards: reverted with a wait hint
+    ///         if the chain has not rolled into a fresh epoch yet, or is too
+    ///         close to the next boundary for the txs to land inside it —
+    ///         wait and rerun.
+    function runReprice() external {
+        _refuseOnMainnet();
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        uint256 attestorPk = vm.envOr("ORACLE_ATTESTOR_PK", pk);
+
+        // The fork has the contracts, but this script does not deploy them —
+        // the addresses come from the record runFull persisted.
+        string memory json = vm.readFile(string.concat("./deployments/", vm.toString(block.chainid), ".json"));
+        address oracleAddr = vm.parseJsonAddress(json, ".oracle");
+        address issuanceAddr = vm.parseJsonAddress(json, ".issuance");
+        address hookAddr = vm.parseJsonAddress(json, ".hook");
+        address routerAddr = vm.parseJsonAddress(json, ".router");
+        address quoterAddr = vm.parseJsonAddress(json, ".gpuQuoter");
+        address gusdAddr = vm.parseJsonAddress(json, ".gusd");
+        address ledgerAddr = vm.parseJsonAddress(json, ".ledger");
+        address polAddr = vm.parseJsonAddress(json, ".marketLiquidity");
+        address underlyingAddr = vm.parseJsonAddress(json, ".underlying");
+        require(vm.addr(attestorPk) == GpuOracle(oracleAddr).signer(), "attestor key != oracle signer");
+
+        // Epoch gate: one price per (gpu, epoch) — the seed trades bound the
+        // epoch they broadcast in; the reprice needs a fresh one. The
+        // broadcast lands seconds after this fork timestamp, so also refuse
+        // to sign too near the next boundary.
+        IGpuOracle oracle = IGpuOracle(oracleAddr);
+        uint64 epochLen = oracle.epochLength();
+        (, , uint64 boundEpoch, ) = GPUHook(hookAddr).oracleLastConsumed(H100);
+        uint64 current = oracle.currentEpoch();
+        if (current <= boundEpoch) {
+            uint256 waitSecs = (uint256(boundEpoch) + 1) * epochLen + 5 - block.timestamp;
+            console2.log("epoch not rolled yet; wait ~", waitSecs);
+            revert("reprice epoch not reached; wait and rerun");
+        }
+        require(epochLen - uint64(block.timestamp % epochLen) > 15, "too near the epoch boundary; rerun");
+
+        GPUHook hook = GPUHook(hookAddr);
+        GUSD gusd = GUSD(gusdAddr);
+        GPUIssuance issuance = GPUIssuance(issuanceAddr);
+        GpuQuoter gq = GpuQuoter(quoterAddr);
+        GPUMarketLiquidity vault = GPUMarketLiquidity(polAddr);
+        RevenueLedger ledger = RevenueLedger(ledgerAddr);
+        address bob = vm.addr(BOB_PK);
+
+        // ------------------- report reprice: this epoch, attestor-signed
+        // The C-max proof segment, pull-oracle edition. There is no publish
+        // tx: the reprice is a fresh report at the NEW price, executable in
+        // this invocation's own (fresh) epoch — one price per epoch, the
+        // epoch binding IS the repricing gate. bob's buy fills from the
+        // vault's ask at the NEW ask ($3.0150); its proceeds re-enter the
+        // bid inventory without re-counting principal (provenance invariant);
+        // polState shows the repriced book immediately.
+        (uint256 base6,,) = _repriceAndQuote(oracleAddr, attestorPk, issuanceAddr, H100, 30_000);
+        require(base6 == 3_000_000, "repriced issuance (1 x 3.00)");
+        vm.startBroadcast(BOB_PK);
+        IERC20(underlyingAddr).approve(gusdAddr, type(uint256).max);
+        gusd.mint(20e6, bob);
+        {
+            address gpuToken = issuance.tokenOf(H100);
+            IGPUIssuance.PoolParams memory pp = issuance.poolParamsOf(H100);
+            PoolKey memory hkey = GpuPoolKey.canonical(gusdAddr, gpuToken, pp, hook);
+            uint256 bidBefore = vault.bidInventoryGusd(H100);
+            uint256 principalBefore = vault.principalContributed(H100);
+            uint256 askBefore = vault.askInventoryGpu(H100);
+            GpuQuoter.QuoteResult memory r6 =
+                gq.quoteBuyExactOut(hkey, 2e18, _updateData(oracleAddr, attestorPk, H100, 30_000));
+            // 2 GPU at the new ask 30_000 x 1.005 = 30_150: charge
+            // 6_030_000 + hook fee 30_150 — repriced by the fresh report.
+            require(r6.gusdIn == 6_060_150, "quote at the new ask");
+            uint256 paid6 = _buy(
+                GpuRouter(routerAddr),
+                GpuRouter.BuyParams({
+                    gpuId: H100,
+                    gpuOut: 2e18,
+                    payment: gusdAddr,
+                    maxPaid: r6.gusdIn,
+                    deadline: 0,
+                    sqrtLimitX96: 0,
+                    recipient: bob,
+                    updateData: _updateData(oracleAddr, attestorPk, H100, 30_000)
+                })
+            );
+            require(paid6 == r6.gusdIn, "quote==execution (repriced)");
+            require(vault.bidInventoryGusd(H100) - bidBefore == 6_023_970, "POL proceeds -> bid capacity");
+            require(vault.principalContributed(H100) == principalBefore, "principal never re-counted");
+            require(askBefore - vault.askInventoryGpu(H100) == 2e18, "ask inventory consumed");
+            IGpuOracle.Report memory rr6 = _reportFor(oracle, H100, 30_000);
+            (, , , bool live6, uint256 askPrice6, uint256 bidPrice6) =
+                hook.polState(H100, rr6, _sigFor(oracle, attestorPk, rr6));
+            require(live6, "pol live post-reprice");
+            require(askPrice6 == 30_150 && bidPrice6 == 29_850, "edges repriced in-swap");
+        }
+        vm.stopBroadcast();
+
+        // The reprice trades left their fees in the ledger — distribute them
+        // too, so the record ends drained.
+        vm.startBroadcast(pk);
+        ledger.distribute();
+        require(gusd.balanceOf(ledgerAddr) == 0, "ledger drained");
+        vm.stopBroadcast();
+
+        console2.log("H100 repriced to $3.00/GPU-hour; edges repriced in-swap");
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /// @dev Next-epoch reprice, pull-oracle edition: there is no oracle tx —
     ///      the new price is simply what the attestor signs next. Returns the
     ///      post-reprice issue quote for 1 whole GPU (base only, fee
-    ///      excluded). The segment's trades must land in an epoch LATER than
-    ///      the one the seed-price trades bound (the epoch binding rejects
-    ///      two prices in one epoch); any real-network broadcast rolls epochs
-    ///      within the pass (Anvil +1s/tx, testnets ~2s/block).
+    ///      excluded). The quote must run in an epoch LATER than the one the
+    ///      seed-price trades bound (the epoch binding rejects two prices in
+    ///      one epoch) — which is exactly what runReprice()'s invocation
+    ///      epoch is; a single broadcast cannot reach it (sim clock frozen,
+    ///      warp not forwarded — see the header).
     function _repriceAndQuote(address oracleAddr, uint256 attestorPk, address issuanceAddr, bytes32 gpuId, uint256 price)
         internal
         view

@@ -204,6 +204,36 @@ ORACLE_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.arg
 USDT_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.stables[1])' "$RECORD")
 log "deployed — oracle $ORACLE_ADDR"
 
+# --- 5.5 the reprice proof (phase 2) --------------------------------------------------
+# runReprice() is a separate fork invocation — see Deploy.full.s.sol's header (a
+# script simulation is one frozen block, so runFull can never sign a report for
+# an epoch later than the seed trades bound). The gate: the chain must have
+# rolled into a fresh epoch AND carry a head block that shows it — an auto-mine
+# anvil produces no blocks when idle, so each attempt nudges the head clock with
+# a few mined heartbeats before forking.
+log "running the reprice proof (epoch-gated)..."
+reprice_ok=""
+for attempt in 1 2 3 4 5 6 7 8; do
+  curl -fsS --max-time 2 -X POST -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"anvil_mine","params":["3","1"]}' \
+    "$RPC_URL" >/dev/null 2>&1 || true
+  if ( cd "$CONTRACTS" && PRIVATE_KEY="$ANVIL_KEY" forge script script/Deploy.full.s.sol \
+        --fork-url "$RPC_URL" --broadcast --sig "runReprice()" ) >"$LOG_DIR/reprice.log" 2>&1; then
+    reprice_ok=1
+    break
+  fi
+  if grep -qE "reprice epoch not reached|too near the epoch boundary" "$LOG_DIR/reprice.log"; then
+    log "reprice epoch not rolled yet (attempt $attempt) — retrying"
+  else
+    echo "[start-dev] reprice proof failed — last 40 lines of $LOG_DIR/reprice.log:" >&2
+    tail -n 40 "$LOG_DIR/reprice.log" >&2 || true
+    exit 4
+  fi
+done
+if [ -z "$reprice_ok" ]; then
+  die "reprice epoch never rolled past the seed binding — see $LOG_DIR/reprice.log" 4
+fi
+
 # --- 6. postgres first, then reset the selected indexer schemas --------------------------
 log "starting postgres..."
 docker compose -f "$COMPOSE" up -d postgres >>"$LOG_DIR/stack.log" 2>&1 \

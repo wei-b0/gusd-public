@@ -53,6 +53,16 @@ contract GpuOracleTest is Test {
         sig = abi.encodePacked(r32, s, v);
     }
 
+    /// @dev Splits a 65-byte (r, s, v) signature so tests can re-run the
+    ///      precompile recovery for deterministic expected-error args.
+    function _split(bytes memory sig) internal pure returns (uint8 v, bytes32 r32, bytes32 s32) {
+        assembly ("memory-safe") {
+            r32 := mload(add(sig, 0x20))
+            s32 := mload(add(sig, 0x40))
+            v := byte(0, mload(add(sig, 0x60)))
+        }
+    }
+
     // ------------------------------------------------------------- defaults
 
     function test_defaults() public view {
@@ -135,18 +145,23 @@ contract GpuOracleTest is Test {
         assertEq(oracle.lastConsumedReportHash(H100), oracle.reportHash(rA, sigA));
     }
 
-    function test_consume_sameContentDifferentSignatureReverts() public {
-        // reportHash binds the full updateData bytes (Report, signature):
-        // two valid signatures over identical content are still "different
-        // reports" — an honest attestor signs once per (gpuId, epoch).
+    function test_consume_resignedContentCannotPoisonTheBinding() public {
+        // The reportHash binds the full (Report, signature) bytes, but a
+        // byte-different signature over identical content can never reach the
+        // binding: a different key fails verify (InvalidSigner, which runs
+        // first), and a malleated signature from the SAME key is rejected by
+        // ECDSA's high-s check — so first-consumer-wins only ever sees
+        // attestor-signed bytes. Equivocation over DIFFERENT content is
+        // covered by test_consume_equivocationReverts_firstConsumerWins.
         IGpuOracle.Report memory r = _report();
-        oracle.consume(H100, r, _sign(SIGNER_PK, r));
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IGpuOracle.EpochAlreadyBound.selector, oracle.reportHash(r, _sign(SIGNER_PK, r)), oracle.reportHash(r, _sign(OTHER_PK, r))
-            )
-        );
-        oracle.consume(H100, r, _sign(OTHER_PK, r));
+        bytes memory sigA = _sign(SIGNER_PK, r);
+        bytes memory sigB = _sign(OTHER_PK, r); // pre-computed: argument calls would eat the expectation
+        oracle.consume(H100, r, sigA);
+        vm.expectRevert(abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, vm.addr(OTHER_PK), signerAddr));
+        oracle.consume(H100, r, sigB);
+        // the binding is untouched: the first report stays the executable one
+        assertEq(oracle.lastConsumedPrice(H100), 25_000);
+        assertEq(oracle.lastConsumedReportHash(H100), oracle.reportHash(r, sigA));
     }
 
     function test_consume_nextEpochRebinds() public {
@@ -171,20 +186,23 @@ contract GpuOracleTest is Test {
     function test_verify_wrongVersionReverts() public {
         IGpuOracle.Report memory r = _report();
         r.version = 2;
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.InvalidVersion.selector, 2));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_zeroPriceReverts() public {
         IGpuOracle.Report memory r = _report(H100, 0);
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(IGpuOracle.ZeroPrice.selector);
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_wrongGpuReverts() public {
         IGpuOracle.Report memory r = _report(H200, 12_000); // H200 report…
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.GpuMismatch.selector, H100, H200));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r)); // …consumed as H100
+        oracle.verify(H100, r, sig); // …consumed as H100
     }
 
     function test_verify_oldEpochReverts() public {
@@ -200,40 +218,45 @@ contract GpuOracleTest is Test {
         r.epoch = r.epoch + 1;
         r.validFrom = r.epoch * EPOCH_LENGTH;
         r.validUntil = (r.epoch + 1) * EPOCH_LENGTH;
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_badValidFromReverts() public {
         IGpuOracle.Report memory r = _report();
         r.validFrom = r.validFrom + 1;
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.BadEpochBinding.selector, r.validFrom, r.validUntil));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_badValidUntilReverts() public {
         IGpuOracle.Report memory r = _report();
         r.validUntil = r.validUntil - 1;
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.BadEpochBinding.selector, r.validFrom, r.validUntil));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_futureObservationReverts() public {
         IGpuOracle.Report memory r = _report();
         r.observedAt = uint64(block.timestamp + 10); // still inside the epoch, but ahead of the chain clock
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(
             abi.encodeWithSelector(IGpuOracle.FutureObservation.selector, r.observedAt, block.timestamp)
         );
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_staleObservationReverts() public {
         IGpuOracle.Report memory r = _report();
         r.observedAt = uint64(block.timestamp - MAX_AGE - 1);
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(
             abi.encodeWithSelector(IGpuOracle.StaleObservation.selector, r.observedAt, block.timestamp - MAX_AGE)
         );
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_observationAtMaxAgeBoundaryPasses() public {
@@ -244,10 +267,11 @@ contract GpuOracleTest is Test {
 
     function test_verify_wrongSignerReverts() public {
         IGpuOracle.Report memory r = _report();
+        bytes memory sig = _sign(OTHER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(
             abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, vm.addr(OTHER_PK), signerAddr)
         );
-        oracle.verify(H100, r, _sign(OTHER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_verify_tamperedReportReverts() public {
@@ -256,9 +280,12 @@ contract GpuOracleTest is Test {
         IGpuOracle.Report memory r = _report();
         bytes memory sig = _sign(SIGNER_PK, r);
         r.price = 26_000;
-        // recovery over the tampered digest lands on an unpredictable address,
-        // so match on the selector only
-        vm.expectRevert(IGpuOracle.InvalidSigner.selector);
+        // recovery over the tampered digest is deterministic: recover with the
+        // precompile to state the expected error args exactly
+        bytes32 tamperedDigest = oracle.reportDigest(r);
+        (uint8 v, bytes32 r32, bytes32 s32) = _split(sig);
+        address recovered = ecrecover(tamperedDigest, v, r32, s32);
+        vm.expectRevert(abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, recovered, signerAddr));
         oracle.verify(H100, r, sig);
     }
 
@@ -266,9 +293,14 @@ contract GpuOracleTest is Test {
         // the EIP-712 domain binds chainId: a signature produced for another
         // chain (or another verifying contract) cannot verify here
         IGpuOracle.Report memory r = _report();
-        bytes memory sig = _sign(SIGNER_PK, r);
+        bytes memory sig = _sign(SIGNER_PK, r); // signed for this chain's domain
         vm.chainId(1);
-        vm.expectRevert(IGpuOracle.InvalidSigner.selector);
+        // the oracle now hashes a different domain: recovery lands on a
+        // deterministic-but-wrong address, stated exactly
+        bytes32 otherDigest = oracle.reportDigest(r);
+        (uint8 v, bytes32 r32, bytes32 s32) = _split(sig);
+        address recovered = ecrecover(otherDigest, v, r32, s32);
+        vm.expectRevert(abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, recovered, signerAddr));
         oracle.verify(H100, r, sig);
         vm.chainId(31_337);
     }
@@ -347,11 +379,13 @@ contract GpuOracleTest is Test {
         assertEq(oracle.pendingSigner(), address(0));
 
         IGpuOracle.Report memory r = _report();
+        bytes memory oldSig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
+        bytes memory newSig = _sign(OTHER_PK, r);
         // the old signer's reports are rejected…
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, signerAddr, next));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, oldSig);
         // …and the new signer's verify
-        assertEq(oracle.verify(H100, r, _sign(OTHER_PK, r)), 25_000);
+        assertEq(oracle.verify(H100, r, newSig), 25_000);
     }
 
     // ------------------------------------------------------------ admin params
@@ -381,10 +415,11 @@ contract GpuOracleTest is Test {
         oracle.setEpochLength(120);
 
         assertEq(oracle.epochLength(), 120);
-        assertEq(oracle.currentEpoch(), 1_000_000 / 120);
+        assertEq(oracle.currentEpoch(), uint64(1_000_000) / 120); // floor
         // the previous report is no longer executable on the new grid
+        bytes memory sig = _sign(SIGNER_PK, r); // pre-computed: argument calls would eat the expectation
         vm.expectRevert(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch));
-        oracle.verify(H100, r, _sign(SIGNER_PK, r));
+        oracle.verify(H100, r, sig);
     }
 
     function test_setMaxObservationAge_onlyOwner() public {

@@ -168,7 +168,8 @@ contract GPUIssuanceTest is OracleReports {
         vm.prank(alice);
         (uint256 base, uint256 fee) = issuance.issue(H100, 1e18, alice, updateData);
         assertEq(base, 2_500_000);
-        assertEq(fee, 125_000);
+        // 50 bps of base, rounded up: 2_500_000 * 50 / 10_000 = 12_500
+        assertEq(fee, 12_500);
     }
 
     function test_nextEpochRebinds() public {
@@ -242,7 +243,7 @@ contract GPUIssuanceTest is OracleReports {
 
     function test_compositionDivisorDerivedFromPriceScale() public {
         // derived from the coordination-fixed PRICE_SCALE, not a re-declared literal
-        assertEq(issuance.compositionDivisor(), 1e18 * GPUIssuance.PRICE_SCALE / 1e6);
+        assertEq(issuance.compositionDivisor(), 1e18 * issuance.PRICE_SCALE() / 1e6);
         assertEq(issuance.compositionDivisor(), 1e16);
     }
 
@@ -269,12 +270,20 @@ contract GPUIssuanceTest is OracleReports {
         (uint256 base,,) = issuance.quoteIssue(H100, 1e18, _updateDataFor(_reportAt(H100, 25_000, uint64(block.timestamp - MAX_AGE))));
         assertEq(base, 2_500_000);
         // +1 second: quote reverts exactly like issue does
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector,
+                uint64(block.timestamp - MAX_AGE - 1),
+                uint64(block.timestamp - MAX_AGE)
+            )
+        );
         issuance.quoteIssue(H100, 1e18, _updateDataFor(_reportAt(H100, 25_000, uint64(block.timestamp - MAX_AGE - 1))));
     }
 
     function test_quoteIssue_revertsOnFutureTimestamp() public {
-        vm.expectRevert(IGpuOracle.FutureObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IGpuOracle.FutureObservation.selector, uint64(block.timestamp + 1), block.timestamp)
+        );
         issuance.quoteIssue(H100, 1e18, _updateDataFor(_reportAt(H100, 25_000, uint64(block.timestamp + 1))));
     }
 
@@ -311,7 +320,13 @@ contract GPUIssuanceTest is OracleReports {
         // a stale observation reverts — nothing is ever placed at an
         // unverified reference
         IGpuOracle.Report memory stale = _reportAt(H100, 25_000, uint64(block.timestamp - MAX_AGE - 1));
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector,
+                stale.observedAt,
+                uint64(block.timestamp - MAX_AGE)
+            )
+        );
         issuance.reportSqrtPriceX96(H100, stale, _sign(stale));
     }
 
@@ -338,7 +353,13 @@ contract GPUIssuanceTest is OracleReports {
     }
 
     function test_quoteIssueCredited_revertsOnStaleReport() public {
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector,
+                uint64(block.timestamp - MAX_AGE - 1),
+                uint64(block.timestamp - MAX_AGE)
+            )
+        );
         issuance.quoteIssueCredited(
             H100, 1e18, _updateDataFor(_reportAt(H100, 25_000, uint64(block.timestamp - MAX_AGE - 1)))
         );

@@ -196,7 +196,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint256 deadline,
         uint160 sqrtLimitX96,
         address recipient,
-        bytes calldata updateData
+        bytes memory updateData
     ) external nonReentrant returns (uint256 gpuOut) {
         if (gusdMaxIn == 0) revert ZeroAmount();
         _checkDeadline(deadline);
@@ -271,7 +271,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint8 action = abi.decode(data[:32], (uint8));
 
         if (action == ACTION_BUY) {
-            (, PoolKey memory key, uint256 gpuOut, uint160 sqrtLimit, address recipient, bytes calldata updateData) =
+            (, PoolKey memory key, uint256 gpuOut, uint160 sqrtLimit, address recipient, bytes memory updateData) =
                 abi.decode(data, (uint8, PoolKey, uint256, uint160, address, bytes));
 
             // Pay-then-swap: settle the router's FULL gUSD balance first so
@@ -312,7 +312,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
                 uint256 minGpuOut,
                 uint160 sqrtLimit,
                 address to,
-                bytes calldata updateData
+                bytes memory updateData
             ) = abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address, bytes));
 
             _settleGusd();
@@ -345,7 +345,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             uint160 sqrtLimit,
             address to,
             address seller,
-            bytes calldata updateData
+            bytes memory updateData
         ) = abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address, address, bytes));
 
         _settleGpu(gpuToken, gpuIn);

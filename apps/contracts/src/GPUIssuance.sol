@@ -275,7 +275,7 @@ contract GPUIssuance is IGPUIssuance, Ownable2Step, Pausable, ReentrancyGuard {
     ///         currency ordering (deploy inverts it when gUSD is currency0).
     ///         Pure math on a scaled price; the full acceptance set is applied
     ///         by `reportSqrtPriceX96` when the report itself is the source.
-    function priceSqrtPriceX96(uint256 price) public pure returns (uint256) {
+    function priceSqrtPriceX96(uint256 price) public view returns (uint256) {
         // radicand = (price / compositionDivisor) * 2^192; its sqrt is
         // sqrt(ratio) * 2^96 — exactly v4's sqrtPriceX96 convention
         uint256 sqrt = FixedPointMathLib.sqrt(Math.mulDiv(price, 1 << 192, compositionDivisor));

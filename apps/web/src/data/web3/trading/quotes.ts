@@ -277,11 +277,13 @@ async function runGpuQuote(
 
 /** The current-epoch attestation, or the typed refusal: a quote cannot run
  *  without one — the contract itself refuses (ReportRequired / epoch
- *  checks), so the quote says the same thing in its own vocabulary. */
-async function currentAttestation(deps: QuoteDeps, asset: AssetId): Promise<
+ *  checks), so the quote says the same thing in its own vocabulary. The
+ *  fetch names the market's canonical bytes32 gpuId — the one key the
+ *  contract, the report, and the API all agree on. */
+async function currentAttestation(deps: QuoteDeps, gpuId: `0x${string}`): Promise<
   { att: Attestation & { kind: "current" } } | QuoteFailure
 > {
-  const att = await deps.attestation(asset);
+  const att = await deps.attestation(gpuId);
   if (att.kind !== "current") return { unavailable: true, reason: "oracle-stale" };
   return { att };
 }
@@ -307,7 +309,7 @@ export async function describeAsset(
   // the 4-dec fixed point the protocol actually executes against. No
   // current attestation (attestor behind, gpu never attested) is no
   // reference at all.
-  const att = reg ? await deps.attestation(asset) : null;
+  const att = reg ? await deps.attestation(gpuId) : null;
   const value = reg
     ? {
         issuanceEnabled: reg.issuanceEnabled,
@@ -358,7 +360,7 @@ export async function quoteBuy(
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
 
   // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, asset);
+  const attested = await currentAttestation(deps, gpuId);
   if ("unavailable" in attested) return attested;
   const att = attested.att;
 
@@ -369,30 +371,35 @@ export async function quoteBuy(
     // primary issuance against the report. Closed issuance means the size
     // is not buyable.
     if (!reg.issuanceEnabled) return null;
-    let total: bigint, base: bigint, fee: bigint;
+    // The read seam quotes in product units (gUSD floats) — the raw bigints
+    // stay inside reads.ts. The tolerance cap needs raw precision, so parse
+    // the all-in total back to its 6-dec fixed point for the bps math.
+    let totalPaid: number, feePaid: number;
     try {
-      [base, fee, total] = await deps.reads.quoteIssue(gpuId, sizeRaw, att.updateData);
+      const quote = await deps.reads.quoteIssue(gpuId, sizeRaw, att.updateData);
+      totalPaid = quote.totalPaid;
+      feePaid = quote.fee;
     } catch {
       // The report stopped being executable (epoch rolled mid-quote) —
       // the same refusal the mirror would give.
       return { unavailable: true, reason: "oracle-stale" };
     }
-    const maxPaidRaw = applyBps(total, toleranceBps, "up");
+    const maxPaid = Number(applyBps(parseGusd(totalPaid), toleranceBps, "up")) / 1e6;
     return {
       asset,
       side: "buy",
       size,
-      price: Number(total) / 1e6 / size,
-      notional: Number(total) / 1e6,
-      maxPaid: Number(maxPaidRaw) / 1e6,
+      price: totalPaid / size,
+      notional: totalPaid,
+      maxPaid,
       minOut: 0,
       minSize: 0,
       legs: [
         {
           kind: "issuance",
           gpuUnits: size,
-          gUsd: Number(total) / 1e6,
-          fees: { issuance: Number(fee) / 1e6 },
+          gUsd: totalPaid,
+          fees: { issuance: feePaid },
         },
       ],
       toleranceBps,
@@ -480,7 +487,7 @@ export async function quoteSell(
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
 
   // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, asset);
+  const attested = await currentAttestation(deps, gpuId);
   if ("unavailable" in attested) return attested;
   const att = attested.att;
 
@@ -551,7 +558,7 @@ export async function quoteBuyBySpend(
   if (spendRaw === 0n || spendRaw > UINT128_MAX) return null;
 
   // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, asset);
+  const attested = await currentAttestation(deps, gpuId);
   if ("unavailable" in attested) return attested;
   const att = attested.att;
 
@@ -685,7 +692,7 @@ export async function quoteSellByProceeds(
   if (proceedsRaw === 0n || proceedsRaw > UINT128_MAX) return null;
 
   // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, asset);
+  const attested = await currentAttestation(deps, gpuId);
   if ("unavailable" in attested) return attested;
   const att = attested.att;
 

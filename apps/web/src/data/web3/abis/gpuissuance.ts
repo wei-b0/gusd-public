@@ -83,22 +83,7 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "error",
-    "name": "OracleFutureTimestamp",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "OraclePriceRange",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "OraclePriceZero",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "OracleStale",
     "inputs": []
   },
   {
@@ -122,11 +107,6 @@ export const GPUISSUANCE_ABI = [
         "internalType": "address"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "PriceScaleMismatch",
-    "inputs": []
   },
   {
     "type": "error",
@@ -670,25 +650,6 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
-    "name": "oracleSqrtPriceX96",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "owner",
     "inputs": [],
     "outputs": [
@@ -766,6 +727,25 @@ export const GPUISSUANCE_ABI = [
   },
   {
     "type": "function",
+    "name": "priceSqrtPriceX96",
+    "inputs": [
+      {
+        "name": "price",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "quoteIssue",
     "inputs": [
       {
@@ -836,25 +816,6 @@ export const GPUISSUANCE_ABI = [
       },
       {
         "name": "total",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "referenceSqrtPriceX96",
-    "inputs": [
-      {
-        "name": "gpuId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }

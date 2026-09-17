@@ -100,12 +100,12 @@ contract GpuOracle is IGpuOracle, EIP712, Ownable2Step {
     }
 
     /// @inheritdoc IGpuOracle
-    function reportHash(Report calldata report, bytes calldata signature) external pure override returns (bytes32) {
+    function reportHash(Report calldata report, bytes calldata signature) public pure override returns (bytes32) {
         return keccak256(abi.encode(report, signature));
     }
 
     /// @inheritdoc IGpuOracle
-    function reportDigest(Report calldata report) external view override returns (bytes32) {
+    function reportDigest(Report calldata report) public view override returns (bytes32) {
         return _hashTypedDataV4(_reportStructHash(report));
     }
 

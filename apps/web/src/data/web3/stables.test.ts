@@ -117,11 +117,11 @@ describe("stableConfig — the real wiring (deployment record + table)", () => {
     // re-pin intentionally.
     expect(cfg.others).toHaveLength(1);
     expect(cfg.others[0]).toEqual({
-      address: "0xAd8F7921738819152FFA371c984D736842ed8AFE",
+      address: "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64",
       symbol: "USDT",
       name: "Mock Tether USD",
     });
-    expect(stableMetaOf("0xad8f7921738819152ffa371c984d736842ed8afe", 31337)).toEqual(cfg.others[0]);
+    expect(stableMetaOf("0x0ad4a493ea649e4a2c31d6128dd35995d51a0c64", 31337)).toEqual(cfg.others[0]);
   });
 });
 

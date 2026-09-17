@@ -7,6 +7,7 @@ import {
   reportHash,
   reportTypedData,
 } from "@gusd/attestor-client";
+import { DEFAULT_METHODOLOGY_CONFIG } from "@gusd/pricing-engine";
 import type { Logger } from "@gusd/types";
 import { AttestorPoller } from "../src/poller.js";
 import type { AttestorStore } from "../src/store.js";
@@ -92,8 +93,12 @@ function memoryStore(candidates: CandidateLike[]): AttestorStore & {
       return candidates;
     },
     async methodologyConfig(version) {
+      // a real methodology row: the poller resolves per-panel thresholds from
+      // it via effectiveConfigFor, which reads panelOverrides — a bare
+      // {version} stub crashes there, so ship the shipped defaults under the
+      // pinned version with no per-panel overrides
       return version === "0.1.0"
-        ? ({ version: "0.1.0" } as unknown as Awaited<
+        ? ({ ...DEFAULT_METHODOLOGY_CONFIG, version: "0.1.0", panelOverrides: {} } as Awaited<
             ReturnType<AttestorStore["methodologyConfig"]>
           >)
         : null;

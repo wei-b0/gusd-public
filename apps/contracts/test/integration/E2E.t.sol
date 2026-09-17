@@ -69,7 +69,7 @@ contract E2ETest is Test, DeployPermit2, OracleReports {
     GPUMarketLiquidity internal pol;
     uint256 internal price = 25_000; // report convention: 4 decimals
 
-    bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
+    // H100 comes from OracleReports (shared rig constant)
     uint24 internal constant POOL_FEE = 3000;
     int24 internal constant TICK_SPACING = 60;
     uint160 constant HOOK_FLAGS = uint160(
@@ -513,6 +513,9 @@ contract E2ETest is Test, DeployPermit2, OracleReports {
     function test_failClosed_reportsGateEveryTrade() public {
         _issueGpuTo(alice, 1_100e18);
         _lpAlice();
+        // the LP position consumes part of alice's issuance; every gate
+        // assertion below is relative to this post-LP balance
+        uint256 gpuAfterLp = gpu.balanceOf(alice);
 
         // report signed in epoch E...
         IGpuOracle.Report memory oldReport = _report(H100, price);
@@ -551,7 +554,7 @@ contract E2ETest is Test, DeployPermit2, OracleReports {
         uint256 paid = _buyGpu(5e16, address(gusd), 200e6, alice);
         vm.stopPrank();
         assertGt(paid, 0, "fresh-report buy works");
-        assertEq(gpu.balanceOf(alice), 1_100e18 + 5e16, "GPU delivered");
+        assertEq(gpu.balanceOf(alice), gpuAfterLp + 5e16, "GPU delivered");
 
         // polState remains live at a verified report (live == !polPaused now)
         IGpuOracle.Report memory fresh = _report(H100, price);

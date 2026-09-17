@@ -44,6 +44,33 @@ export const GPU_ORACLE_ABI = [
   },
   {
     "type": "error",
+    "name": "ECDSAInvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureLength",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureS",
+    "inputs": [
+      {
+        "name": "s",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "EpochAlreadyBound",
     "inputs": [
       {
@@ -94,6 +121,11 @@ export const GPU_ORACLE_ABI = [
         "internalType": "bytes32"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidShortString",
+    "inputs": []
   },
   {
     "type": "error",
@@ -188,6 +220,17 @@ export const GPU_ORACLE_ABI = [
   },
   {
     "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "str",
+        "type": "string",
+        "internalType": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "UnknownGpuEpoch",
     "inputs": [
       {
@@ -214,162 +257,172 @@ export const GPU_ORACLE_ABI = [
   },
   {
     "type": "event",
+    "name": "EIP712DomainChanged",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "EpochLengthSet",
-    "anonymous": false,
     "inputs": [
       {
         "name": "seconds_",
         "type": "uint64",
+        "indexed": false,
         "internalType": "uint64"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "MaxObservationAgeSet",
-    "anonymous": false,
     "inputs": [
       {
         "name": "seconds_",
         "type": "uint64",
+        "indexed": false,
         "internalType": "uint64"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "OwnershipTransferStarted",
-    "anonymous": false,
     "inputs": [
       {
         "name": "previousOwner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       },
       {
         "name": "newOwner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "OwnershipTransferred",
-    "anonymous": false,
     "inputs": [
       {
         "name": "previousOwner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       },
       {
         "name": "newOwner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "PriceConsumed",
-    "anonymous": false,
     "inputs": [
       {
         "name": "gpuId",
         "type": "bytes32",
-        "internalType": "bytes32",
-        "indexed": true
+        "indexed": true,
+        "internalType": "bytes32"
       },
       {
         "name": "price",
         "type": "uint256",
+        "indexed": false,
         "internalType": "uint256"
       },
       {
         "name": "epoch",
         "type": "uint64",
-        "internalType": "uint64",
-        "indexed": true
+        "indexed": true,
+        "internalType": "uint64"
       },
       {
         "name": "observedAt",
         "type": "uint64",
+        "indexed": false,
         "internalType": "uint64"
       },
       {
         "name": "reportHash",
         "type": "bytes32",
-        "internalType": "bytes32",
-        "indexed": true
+        "indexed": true,
+        "internalType": "bytes32"
       },
       {
         "name": "caller",
         "type": "address",
+        "indexed": false,
         "internalType": "address"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "SignerAccepted",
-    "anonymous": false,
     "inputs": [
       {
         "name": "previousSigner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       },
       {
         "name": "newSigner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
     "name": "SignerTransferStarted",
-    "anonymous": false,
     "inputs": [
       {
         "name": "currentSigner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       },
       {
         "name": "nextSigner",
         "type": "address",
-        "internalType": "address",
-        "indexed": true
+        "indexed": true,
+        "internalType": "address"
       }
-    ]
+    ],
+    "anonymous": false
   },
   {
     "type": "function",
     "name": "acceptOwnership",
-    "stateMutability": "nonpayable",
     "inputs": [],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "acceptSigner",
-    "stateMutability": "nonpayable",
     "inputs": [],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "consume",
-    "stateMutability": "nonpayable",
     "inputs": [
       {
         "name": "gpuId",
@@ -435,12 +488,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint256",
         "internalType": "uint256"
       }
-    ]
+    ],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "currentEpoch",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -448,12 +501,55 @@ export const GPU_ORACLE_ABI = [
         "type": "uint64",
         "internalType": "uint64"
       }
-    ]
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "eip712Domain",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "fields",
+        "type": "bytes1",
+        "internalType": "bytes1"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "version",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "verifyingContract",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensions",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "epochLength",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -461,12 +557,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint64",
         "internalType": "uint64"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "lastConsumedAt",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "gpuId",
@@ -480,12 +576,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint64",
         "internalType": "uint64"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "lastConsumedEpoch",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "gpuId",
@@ -499,12 +595,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint64",
         "internalType": "uint64"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "lastConsumedPrice",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "gpuId",
@@ -518,12 +614,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint256",
         "internalType": "uint256"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "lastConsumedReportHash",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "gpuId",
@@ -537,12 +633,12 @@ export const GPU_ORACLE_ABI = [
         "type": "bytes32",
         "internalType": "bytes32"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "maxObservationAge",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -550,12 +646,12 @@ export const GPU_ORACLE_ABI = [
         "type": "uint64",
         "internalType": "uint64"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "owner",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -563,12 +659,12 @@ export const GPU_ORACLE_ABI = [
         "type": "address",
         "internalType": "address"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "pendingOwner",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -576,12 +672,12 @@ export const GPU_ORACLE_ABI = [
         "type": "address",
         "internalType": "address"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "pendingSigner",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -589,19 +685,19 @@ export const GPU_ORACLE_ABI = [
         "type": "address",
         "internalType": "address"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "renounceOwnership",
-    "stateMutability": "nonpayable",
     "inputs": [],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "reportDigest",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "report",
@@ -657,12 +753,12 @@ export const GPU_ORACLE_ABI = [
         "type": "bytes32",
         "internalType": "bytes32"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "reportHash",
-    "stateMutability": "pure",
     "inputs": [
       {
         "name": "report",
@@ -723,12 +819,12 @@ export const GPU_ORACLE_ABI = [
         "type": "bytes32",
         "internalType": "bytes32"
       }
-    ]
+    ],
+    "stateMutability": "pure"
   },
   {
     "type": "function",
     "name": "setEpochLength",
-    "stateMutability": "nonpayable",
     "inputs": [
       {
         "name": "seconds_",
@@ -736,12 +832,12 @@ export const GPU_ORACLE_ABI = [
         "internalType": "uint64"
       }
     ],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "setMaxObservationAge",
-    "stateMutability": "nonpayable",
     "inputs": [
       {
         "name": "seconds_",
@@ -749,12 +845,12 @@ export const GPU_ORACLE_ABI = [
         "internalType": "uint64"
       }
     ],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "signer",
-    "stateMutability": "view",
     "inputs": [],
     "outputs": [
       {
@@ -762,12 +858,12 @@ export const GPU_ORACLE_ABI = [
         "type": "address",
         "internalType": "address"
       }
-    ]
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "transferOwnership",
-    "stateMutability": "nonpayable",
     "inputs": [
       {
         "name": "newOwner",
@@ -775,12 +871,12 @@ export const GPU_ORACLE_ABI = [
         "internalType": "address"
       }
     ],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "transferSigner",
-    "stateMutability": "nonpayable",
     "inputs": [
       {
         "name": "next",
@@ -788,12 +884,12 @@ export const GPU_ORACLE_ABI = [
         "internalType": "address"
       }
     ],
-    "outputs": []
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "verify",
-    "stateMutability": "view",
     "inputs": [
       {
         "name": "gpuId",
@@ -859,6 +955,7 @@ export const GPU_ORACLE_ABI = [
         "type": "uint256",
         "internalType": "uint256"
       }
-    ]
+    ],
+    "stateMutability": "view"
   }
 ] as const;

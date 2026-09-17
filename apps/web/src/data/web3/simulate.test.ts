@@ -31,7 +31,8 @@ describe("simulateWrite", () => {
   it("normalizes a reverting call into product voice", async () => {
     mockClient(() => {
       const reverted = new Error("execution reverted");
-      (reverted as unknown as { data: unknown }).data = { errorName: "OracleStale", args: [] };
+      // pull-oracle posture: staleness surfaces as the oracle's own error
+      (reverted as unknown as { data: unknown }).data = { errorName: "StaleObservation", args: [] };
       return Promise.reject(new Error("simulation failed", { cause: reverted }));
     });
     const result = await simulateWrite({
@@ -42,6 +43,6 @@ describe("simulateWrite", () => {
       account: ACCOUNT,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.voice).toMatch(/stale/i);
+    if (!result.ok) expect(result.error.voice).toMatch(/too old/i);
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
@@ -383,7 +384,11 @@ abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
     function test_polState_revertsOnBadReport() public {
         // stale observation: polState applies the FULL acceptance set
         IGpuOracle.Report memory stale = _reportAt(GPU_ID, price, uint64(block.timestamp - MAX_AGE - 1));
-        vm.expectRevert(IGpuOracle.StaleObservation.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector, stale.observedAt, uint64(block.timestamp - MAX_AGE)
+            )
+        );
         hook.polState(GPU_ID, stale, _sign(stale));
         // an old-epoch report is equally rejected
         IGpuOracle.Report memory old = _report(GPU_ID, price);
@@ -633,6 +638,7 @@ abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
     /// stale-price trading. Empty hookData (direct PoolManager swaps without
     /// updateData) reverts ReportRequired.
     function test_missingReport_revertsFailClosed() public {
+        uint256 gpuBefore = gpu.balanceOf(address(this));
         vm.expectRevert(_wrapRequired());
         swapRouter.swap(
             _canonicalKey(),
@@ -644,13 +650,14 @@ abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             "" // empty hookData: no report submitted
         );
-        assertEq(gpu.balanceOf(address(this)), 0, "nothing delivered");
+        assertEq(gpu.balanceOf(address(this)), gpuBefore, "nothing delivered");
     }
 
     /// A stale observation (inside the epoch window but older than the
     /// 300s floor) reverts StaleObservation — cached-$2.50-at-$2.65 is
     /// impossible by construction.
     function test_staleObservation_revertsFailClosed() public {
+        uint256 gpuBefore = gpu.balanceOf(address(this));
         vm.expectRevert(_wrapStale());
         swapRouter.swap(
             _canonicalKey(),
@@ -662,7 +669,7 @@ abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             _updateDataFor(_reportAt(GPU_ID, price, uint64(block.timestamp - MAX_AGE - 1)))
         );
-        assertEq(gpu.balanceOf(address(this)), 0, "nothing delivered");
+        assertEq(gpu.balanceOf(address(this)), gpuBefore, "nothing delivered");
     }
 
     /// A previous-epoch report reverts UnknownGpuEpoch — strict
@@ -711,6 +718,7 @@ abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
     /// the hook is the enforcement point, not the router.
     function test_directPoolManagerSwap_requiresReport() public {
         PayThenSwapBuyer buyer = new PayThenSwapBuyer(IPoolManager(address(manager)));
+        gusd.transfer(address(buyer), 1e6); // pre-settle capacity: the buyer pays before swapping
         vm.expectRevert(_wrapRequired());
         buyer.buy(_canonicalKey(), _buyZeroForOne(), -1e5, 1e6, gIsC0, "");
     }
@@ -958,7 +966,7 @@ contract NestedSwapper is IUnlockCallback {
         _oracle = oracle_;
     }
 
-    function run(PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes calldata updateData)
+    function run(PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes memory updateData)
         external
         returns (int256 gusdDelta, int256 gpuDelta)
     {
@@ -970,7 +978,7 @@ contract NestedSwapper is IUnlockCallback {
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        (PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes calldata updateData) =
+        (PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes memory updateData) =
             abi.decode(data, (PoolKey, bool, int256, int256, bytes));
         (Currency gCur, Currency gpuCur) = (Currency.wrap(address(_gusd)), Currency.wrap(address(_gpu)));
         // swap 1: buy exactIn, pre-settled
@@ -1020,12 +1028,12 @@ contract PayThenSwapBuyer is IUnlockCallback {
         _pm = pm;
     }
 
-    function buy(PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes calldata updateData) external {
+    function buy(PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes memory updateData) external {
         _pm.unlock(abi.encode(key, zeroForOne, gpuOut, gusdIn, gIsC0, updateData));
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        (PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes calldata updateData) =
+        (PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes memory updateData) =
             abi.decode(data, (PoolKey, bool, int256, uint256, bool, bytes));
         (Currency gCur, Currency gpuCur) =
             gIsC0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);

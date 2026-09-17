@@ -27,6 +27,49 @@ abstract contract OracleReports is Test {
         oracle = new GpuOracle(address(this), signer, EPOCH_LENGTH, MAX_AGE);
     }
 
+    // EIP-712 domain/typehash duplicated from GpuOracle (OZ EIP712, name
+    // "gUSD GPU Oracle", version "1") so `_sign` never makes an external
+    // call: a `reportDigest` staticcall while building call arguments would
+    // consume `vm.prank`/`vm.expectRevert` armed for the call under test
+    // (e.g. `vm.prank(alice); issuance.issue(..., _updateData(...))` would
+    // execute `issue` as the test contract). Keep in sync with GpuOracle.
+    bytes32 private constant _REPORT_TYPEHASH = keccak256(
+        "Report(uint16 version,bytes32 gpuId,uint256 price,uint64 observedAt,uint64 epoch,uint64 validFrom,uint64 validUntil,bytes32 calcHash)"
+    );
+    bytes32 private constant _DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    function _digest(IGpuOracle.Report memory r) internal view returns (bytes32) {
+        bytes32 domain = keccak256(
+            abi.encode(
+                _DOMAIN_TYPEHASH,
+                keccak256(bytes("gUSD GPU Oracle")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(oracle)
+            )
+        );
+        return keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domain,
+                keccak256(
+                    abi.encode(
+                        _REPORT_TYPEHASH,
+                        r.version,
+                        r.gpuId,
+                        r.price,
+                        r.observedAt,
+                        r.epoch,
+                        r.validFrom,
+                        r.validUntil,
+                        r.calcHash
+                    )
+                )
+            )
+        );
+    }
+
     /// @dev A report for the CURRENT epoch, observed 5s ago — the healthy
     ///      default every happy-path test signs.
     function _report(bytes32 gpuId, uint256 price) internal view returns (IGpuOracle.Report memory r) {
@@ -54,7 +97,7 @@ abstract contract OracleReports is Test {
     }
 
     function _sign(IGpuOracle.Report memory r) internal view returns (bytes memory) {
-        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(SIGNER_PK, oracle.reportDigest(r));
+        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(SIGNER_PK, _digest(r));
         return abi.encodePacked(r32, s, v);
     }
 

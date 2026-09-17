@@ -370,9 +370,10 @@ describe("the pinned report lifecycle", () => {
   it("pins ONE attestation across re-quote, simulate, and signature", async () => {
     const { port, actions } = makePort();
     await port.execute(BUY_REQUEST);
-    // The report was fetched once, at submit, before any quote.
+    // The report was fetched once, at submit, before any quote — named by
+    // the market's canonical bytes32 gpuId, not the UI's asset label.
     expect(h.attCalls).toBe(1);
-    expect(h.attGpu).toBe("H100");
+    expect(h.attGpu).toBe(GPU_ID);
     // The pinned quote ran against deps whose attestation seam hands back
     // the SAME object — not a fresh fetch.
     const pinnedDeps = h.quoteDeps as { attestation: () => Promise<unknown> };

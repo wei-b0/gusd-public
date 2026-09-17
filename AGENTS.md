@@ -58,7 +58,7 @@ oracle engine/replay/server, the attestor's watched list, and the web app's
 - Onchain, `Deploy.s.sol` registers exactly the four launch SKUs (canonical
   posture). `Deploy.full.s.sol` runs `Deploy` unchanged, then adds genesis
   inventory, quoter floats, demo activity, and a deterministic mock USDT
-  (`stables[1]`, `0xAd8F…8AFE`, pinned in the web's `stables.ts`). The chain
+  (`stables[1]`, `0x0Ad4…0C64`, pinned in the web's `stables.ts`). The chain
   it produces is non-virgin — `Demo.s.sol` requires virgin state.
 - Protocol-side canon: `apps/contracts/PROTOCOL.md` §3. Offchain canon:
   `docs/oracle/METHODOLOGY.md` and `docs/oracle/PROVIDERS.md`.
@@ -171,6 +171,12 @@ only):
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 \
   --broadcast --sig "runFull()"
+# the reprice proof is a second invocation, after the oracle epoch rolls
+# past the seed binding (a broadcast's simulation is one frozen block —
+# the script header explains; a failed attempt prints the wait):
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script script/Deploy.full.s.sol --fork-url http://127.0.0.1:8545 \
+  --broadcast --sig "runReprice()"
 ```
 
 Minimal flow-testing (`Deploy` + `Demo`) needs a virgin chain — it will not

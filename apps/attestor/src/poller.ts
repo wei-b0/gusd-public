@@ -1,6 +1,6 @@
 import type { Logger } from "@gusd/types";
 import type { MethodologyConfig } from "@gusd/pricing-engine";
-import type { GpuOracleDomain, ReportV1, SignerLike } from "@gusd/attestor-client";
+import type { GpuOracleDomain, SignerLike } from "@gusd/attestor-client";
 import {
   buildReport,
   encodeUpdateData,
@@ -9,8 +9,6 @@ import {
   reportHash,
   signReport,
 } from "@gusd/attestor-client";
-
-import type { GpuOracleDomain, SignerLike } from "@gusd/attestor-client";
 import type { AttestorConfig, BreakerMap } from "./types.js";
 import { assessCandidate } from "./validate.js";
 import { resolvePanelThresholds } from "./thresholds.js";

@@ -891,7 +891,7 @@ export const GPU_HOOK_ABI = [
         "internalType": "BalanceDelta"
       },
       {
-        "name": "",
+        "name": "hookData",
         "type": "bytes",
         "internalType": "bytes"
       }
@@ -1262,7 +1262,7 @@ export const GPU_HOOK_ABI = [
         ]
       },
       {
-        "name": "",
+        "name": "hookData",
         "type": "bytes",
         "internalType": "bytes"
       }
