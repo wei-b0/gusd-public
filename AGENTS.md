@@ -167,10 +167,24 @@ Deploy recipes (Anvil account #0 key is a public dev key, local posture
 only):
 
 ```sh
-# Full-app posture: production Deploy + genesis inventory + demo activity
+# Full-app posture: production Deploy + genesis inventory + demo activity.
+# Fresh anvil needs a raised block limit (the default 30M is below the
+# largest Deploy tx), and the deploy runs on the 86,400s day grid: an idle
+# anvil's head clock only advances with txs, so reports signed at head time
+# in the sim land in a later wall-clock epoch on a 60s grid and revert
+# UnknownGpuEpoch — the day grid makes any idle gap invisible. The script
+# reads ORACLE_EPOCH_LENGTH / ORACLE_MAX_OBSERVATION_AGE.
+anvil --port 8545 --gas-limit 1000000000
+ORACLE_EPOCH_LENGTH=86400 ORACLE_MAX_OBSERVATION_AGE=86400 \
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 \
-  --broadcast --sig "runFull()"
+  --broadcast --sig "runFull()" --gas-limit 600000000
+# --gas-limit on the forge run both bounds the WHOLE sim frame (the hook's
+# CREATE2 salt-mining loop burns ~500M before it finds a salt) and skips
+# the per-tx re-estimation phase — unused gas is unspent on-chain. Then
+# owner-switch the live grid back: setEpochLength(60) first, then
+# setMaxObservationAge(300) — each setter's floor check reads the other
+# knob, so the order matters.
 # the reprice proof is a second invocation, after the oracle epoch rolls
 # past the seed binding (a broadcast's simulation is one frozen block —
 # the script header explains; a failed attempt prints the wait):
@@ -194,7 +208,10 @@ Default `pnpm test` is network-free and skips the gated suites. Turbo's
   integration tests, oracle e2e (replay → API → WS/SSE), and the web
   route-handler/identity integration tests.
 - `RUN_ANVIL_TESTS=1` (needs a local anvil on :8545) runs the web
-  tx-lifecycle tests and the indexer anvil e2e.
+  tx-lifecycle tests and the indexer anvil e2e. The indexer e2e is
+  self-contained — it boots its own anvil on :18545 and deploys on the
+  day grid itself — so it only needs foundry (`~/.foundry/bin`) on PATH
+  and the `gusd-postgres` container.
 - Both vars are declared in `turbo.json` `globalEnv`.
 
 CI (`.github/workflows/ci.yml`) mirrors this: a network-free `core` job
