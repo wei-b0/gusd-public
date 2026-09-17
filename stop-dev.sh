@@ -85,6 +85,22 @@ kill_shadows() { # kill_shadows PORT LABEL — kill NON-Docker listeners on PORT
 }
 kill_shadows 8545 "anvil"
 
+# Head-clock keeper (start-dev's evm_mine loop): pid-file, guarded against pid
+# reuse by matching the loop's distinctive RPC method in its args.
+if [ -f "$LOG_DIR/clockkeeper.pid" ]; then
+  ck_pid=$(cat "$LOG_DIR/clockkeeper.pid" 2>/dev/null || true)
+  ck_cmd=$(ps -o args= -p "$ck_pid" 2>/dev/null || true)
+  case "$ck_cmd" in
+    *evm_mine*)
+      log "stopping the head-clock keeper (pid $ck_pid)"
+      kill "$ck_pid" 2>/dev/null || true
+      ;;
+    "") ;;
+    *) log "clockkeeper pid $ck_pid runs something else now — leaving it (pid reuse)" ;;
+  esac
+  rm -f "$LOG_DIR/clockkeeper.pid"
+fi
+
 # Leftover host-run dev:oracle on 8080: docker's proxy is gone after down, so
 # anything still listening is foreign. Warn only — it's the user's call.
 for pid in $(lsof -t -iTCP:8080 -sTCP:LISTEN 2>/dev/null || true); do

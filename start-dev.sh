@@ -141,7 +141,7 @@ command -v forge >/dev/null 2>&1 || die "forge not on PATH — install Foundry" 
 command -v anvil >/dev/null 2>&1 || die "anvil not on PATH — install Foundry" 1
 
 missing=""
-for img in gusd-indexer:local gusd-oracle:local gusd-publisher:local; do
+for img in gusd-indexer:local gusd-oracle:local gusd-attestor:local; do
   docker image inspect "$img" >/dev/null 2>&1 || missing="$missing $img"
 done
 if [ -n "$missing" ] && [ "$BUILD" = 0 ]; then
@@ -161,10 +161,13 @@ if [ -n "$residual" ]; then
 fi
 
 # --- 3. fresh anvil ---------------------------------------------------------------
-# 127.0.0.1 bind is right on macOS (Docker's host.docker.internal reaches host
-# loopback); Linux hosts need --host 0.0.0.0 for host-gateway reachability.
+# 0.0.0.0 so the containers' host-gateway route reaches the chain (Docker
+# Desktop's host.docker.internal reaches host loopback; plain Linux does not);
+# --gas-limit 1e9 because the default 30M block limit is below the largest
+# Deploy tx, which would otherwise OutOfGas on broadcast.
 log "starting fresh anvil on :$ANVIL_PORT ..."
-nohup anvil --port "$ANVIL_PORT" --chain-id "$CHAIN_ID" >"$LOG_DIR/anvil.log" 2>&1 &
+nohup anvil --port "$ANVIL_PORT" --chain-id "$CHAIN_ID" --host 0.0.0.0 \
+  --gas-limit 1000000000 >"$LOG_DIR/anvil.log" 2>&1 &
 ANVIL_PID=$!
 echo "$ANVIL_PID" >"$PID_FILE"
 
@@ -187,8 +190,15 @@ fi
 log "wiping stale Deploy.full broadcast + cache..."
 rm -rf "$CONTRACTS/broadcast/Deploy.full.s.sol" "$CONTRACTS/cache/Deploy.full.s.sol"
 log "deploying full catalogue (~140 txs, a couple of minutes)..."
-if ! ( cd "$CONTRACTS" && PRIVATE_KEY="$ANVIL_KEY" forge script script/Deploy.full.s.sol \
-      --rpc-url "$RPC_URL" --broadcast --sig "$DEPLOY_SIG" ) >"$LOG_DIR/deploy.log" 2>&1; then
+# Day-grid envs + --gas-limit: the recipe that survives an idle anvil's frozen
+# head clock (see AGENTS.md). The sim signs reports at head time, broadcast
+# blocks stamp wall time, and on a 60s epoch that gap reverts UnknownGpuEpoch
+# mid-deploy — the 86,400s day grid makes any gap invisible. --gas-limit also
+# skips forge's per-tx re-estimation phase and bounds the WHOLE sim frame
+# (the hook's CREATE2 salt-mining loop burns ~500M before it finds a salt).
+if ! ( cd "$CONTRACTS" && ORACLE_EPOCH_LENGTH=86400 ORACLE_MAX_OBSERVATION_AGE=86400 \
+      PRIVATE_KEY="$ANVIL_KEY" forge script script/Deploy.full.s.sol \
+      --rpc-url "$RPC_URL" --broadcast --sig "$DEPLOY_SIG" --gas-limit 600000000 ) >"$LOG_DIR/deploy.log" 2>&1; then
   echo "[start-dev] deploy failed — last 40 lines of $LOG_DIR/deploy.log:" >&2
   tail -n 40 "$LOG_DIR/deploy.log" >&2 || true
   exit 4
@@ -204,6 +214,19 @@ ORACLE_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.arg
 USDT_ADDR=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.stables[1])' "$RECORD")
 log "deployed — oracle $ORACLE_ADDR"
 
+# --- 5.25 back onto the production grid ------------------------------------------
+# The day grid only absorbs the deploy's sim→broadcast clock gap; the running
+# stack attests at wall clock on 60s epochs. Order matters — each setter's
+# floor check reads the other knob — and the record's epoch keys follow, since
+# the attestor client's report-validity math reads them.
+log "switching the oracle grid to 60s epochs / 300s observation age..."
+cast send "$ORACLE_ADDR" "setEpochLength(uint64)" 60 \
+  --private-key "$ANVIL_KEY" --rpc-url "$RPC_URL" >/dev/null
+cast send "$ORACLE_ADDR" "setMaxObservationAge(uint64)" 300 \
+  --private-key "$ANVIL_KEY" --rpc-url "$RPC_URL" >/dev/null
+jq '.oracleEpochLength = 60 | .oracleMaxObservationAge = 300' "$RECORD" > "$RECORD.tmp" \
+  && mv "$RECORD.tmp" "$RECORD"
+
 # --- 5.5 the reprice proof (phase 2) --------------------------------------------------
 # runReprice() is a separate fork invocation — see Deploy.full.s.sol's header (a
 # script simulation is one frozen block, so runFull can never sign a report for
@@ -218,7 +241,7 @@ for attempt in 1 2 3 4 5 6 7 8; do
     --data '{"jsonrpc":"2.0","id":1,"method":"anvil_mine","params":["3","1"]}' \
     "$RPC_URL" >/dev/null 2>&1 || true
   if ( cd "$CONTRACTS" && PRIVATE_KEY="$ANVIL_KEY" forge script script/Deploy.full.s.sol \
-        --fork-url "$RPC_URL" --broadcast --sig "runReprice()" ) >"$LOG_DIR/reprice.log" 2>&1; then
+        --fork-url "$RPC_URL" --broadcast --sig "runReprice()" --gas-limit 600000000 ) >"$LOG_DIR/reprice.log" 2>&1; then
     reprice_ok=1
     break
   fi
@@ -233,6 +256,19 @@ done
 if [ -z "$reprice_ok" ]; then
   die "reprice epoch never rolled past the seed binding — see $LOG_DIR/reprice.log" 4
 fi
+
+# --- 5.75 head-clock keeper ---------------------------------------------------------
+# An idle auto-mine anvil never advances its head timestamp — but the attestor
+# signs at wall clock, and every quote's eth_call re-verifies the report
+# against the HEAD block's epoch. Without this loop the head falls behind the
+# wall and quotes revert UnknownGpuEpoch after the first idle minute.
+# Test-infra harness, not protocol.
+log "starting the head-clock keeper (evm_mine every 2s)..."
+nohup bash -c 'while :; do curl -fsS --max-time 2 -X POST -H "content-type: application/json" \
+  --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"evm_mine\",\"params\":[]}" \
+  '"$RPC_URL"' >/dev/null 2>&1 || true; sleep 2; done' \
+  >"$LOG_DIR/clockkeeper.log" 2>&1 &
+echo $! >"$LOG_DIR/clockkeeper.pid"
 
 # --- 6. postgres first, then reset the selected indexer schemas --------------------------
 log "starting postgres..."
@@ -263,8 +299,8 @@ fi
 
 # --- 7. optional image build, then the stack ----------------------------------------------
 if [ "$BUILD" = 1 ]; then
-  log "building images indexer/oracle/publisher (db-migrate rides the oracle image)..."
-  if ! docker compose -f "$COMPOSE" build indexer oracle publisher >"$LOG_DIR/build.log" 2>&1; then
+  log "building images indexer/oracle/attestor (db-migrate rides the oracle image)..."
+  if ! docker compose -f "$COMPOSE" build indexer oracle attestor >"$LOG_DIR/build.log" 2>&1; then
     echo "[start-dev] image build failed — last 40 lines of $LOG_DIR/build.log:" >&2
     tail -n 40 "$LOG_DIR/build.log" >&2 || true
     exit 6
@@ -298,14 +334,14 @@ if ! wait_until "pool backfill" 120 pools_ready; then
   exit 7
 fi
 
-# --- 10. publisher sanity -----------------------------------------------------------------------------
-pub_state=$(docker inspect -f '{{.State.Status}}' gusd-publisher 2>/dev/null || echo missing)
-if [ "$pub_state" != "running" ]; then
-  docker logs --tail 20 gusd-publisher >&2 || true
-  die "publisher not running (state: $pub_state) — crash-looping on a bad oracle address?" 7
+# --- 10. attestor sanity -----------------------------------------------------------------------------
+att_state=$(docker inspect -f '{{.State.Status}}' gusd-attestor 2>/dev/null || echo missing)
+if [ "$att_state" != "running" ]; then
+  docker logs --tail 20 gusd-attestor >&2 || true
+  die "attestor not running (state: $att_state) — crash-looping on a bad oracle address?" 7
 fi
-log "publisher tail:"
-docker logs --tail 3 gusd-publisher 2>&1 | sed 's/^/  | /' || true
+log "attestor tail:"
+docker logs --tail 3 gusd-attestor 2>&1 | sed 's/^/  | /' || true
 
 # --- 11. summary -----------------------------------------------------------------------------------------
 echo
@@ -314,6 +350,7 @@ docker ps --filter "name=gusd-" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/
 echo "  oracle API  : http://127.0.0.1:$ORACLE_PORT  (/v1/health, /v1/protocol/*)"
 if [ "$ORACLE_PORT" != "8080" ]; then echo "  (non-default ORACLE_PORT=$ORACLE_PORT from $ENV_FILE)"; fi
 echo "  chain       : anvil $RPC_URL (chain-id $CHAIN_ID, pid $(cat "$PID_FILE"))"
+echo "  clockkeeper : pid $(cat "$LOG_DIR/clockkeeper.pid" 2>/dev/null || echo '-') keeps the head timestamp at wall clock"
 echo "  record      : $RECORD"
 echo "  mock USDT   : $USDT_ADDR (record stables[1]; pinned in web stables.ts)"
 echo "  logs        : $LOG_DIR"
