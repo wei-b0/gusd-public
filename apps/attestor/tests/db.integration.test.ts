@@ -13,6 +13,7 @@ import { canonicalJson, type Logger } from "@gusd/types";
 import type { GpuOracleDomain } from "@gusd/attestor-client";
 import { DrizzleAttestorStore } from "../src/store.js";
 import { AttestorPoller } from "../src/poller.js";
+import { reportSigner } from "../src/signer.js";
 import type { AttestorConfig } from "../src/types.js";
 
 /**
@@ -168,7 +169,7 @@ d("attestor over the real schema (RUN_DB_TESTS=1)", () => {
     const store = new DrizzleAttestorStore(handle.db, ["H100_SXM_80GB"]);
     const poller = new AttestorPoller({
       store,
-      signer: privateKeyToAccount(ATTESTOR_PK),
+      signer: reportSigner(privateKeyToAccount(ATTESTOR_PK)),
       domain: DOMAIN,
       config: CONFIG,
       epochLength: EPOCH_LENGTH,
@@ -194,7 +195,7 @@ d("attestor over the real schema (RUN_DB_TESTS=1)", () => {
     const store = new DrizzleAttestorStore(handle.db, ["L40S_48GB"]);
     const poller = new AttestorPoller({
       store,
-      signer: privateKeyToAccount(ATTESTOR_PK),
+      signer: reportSigner(privateKeyToAccount(ATTESTOR_PK)),
       domain: DOMAIN,
       config: CONFIG,
       epochLength: EPOCH_LENGTH,
@@ -231,7 +232,7 @@ d("attestor over the real schema (RUN_DB_TESTS=1)", () => {
     const store = new DrizzleAttestorStore(handle.db, ["H200_141GB"]);
     const poller = new AttestorPoller({
       store,
-      signer: privateKeyToAccount(ATTESTOR_PK),
+      signer: reportSigner(privateKeyToAccount(ATTESTOR_PK)),
       domain: DOMAIN,
       config: CONFIG,
       epochLength: EPOCH_LENGTH,

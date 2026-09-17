@@ -2,11 +2,11 @@ import pino from "pino";
 import { privateKeyToAccount } from "viem/accounts";
 import { createDb } from "@gusd/db";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
-import type { SignerLike } from "@gusd/attestor-client";
 import { parseAttestorEnv } from "./env.js";
 import { DrizzleAttestorStore } from "./store.js";
 import { AttestorPoller } from "./poller.js";
 import { fetchBreakerMap } from "./health.js";
+import { reportSigner } from "./signer.js";
 import type { Logger } from "@gusd/types";
 
 /**
@@ -28,18 +28,6 @@ function asLogger(pinoLogger: pino.Logger): Logger {
     info: (msg, obj) => pinoLogger.info(fields(obj), msg),
     warn: (msg, obj) => pinoLogger.warn(fields(obj), msg),
     error: (msg, obj) => pinoLogger.error(fields(obj), msg),
-  };
-}
-
-/**
- * viem's account satisfies the codec's SignerLike at runtime; the argument
- * type is narrower than the interface's structural shape, so bridge it
- * explicitly — the attestor never signs anything but reports.
- */
-function reportSigner(account: ReturnType<typeof privateKeyToAccount>): SignerLike {
-  return {
-    signTypedData: (args) =>
-      account.signTypedData(args as unknown as Parameters<typeof account.signTypedData>[0]),
   };
 }
 

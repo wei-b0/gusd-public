@@ -10,6 +10,7 @@ import {
 import { DEFAULT_METHODOLOGY_CONFIG } from "@gusd/pricing-engine";
 import type { Logger } from "@gusd/types";
 import { AttestorPoller } from "../src/poller.js";
+import { reportSigner } from "../src/signer.js";
 import type { AttestorStore } from "../src/store.js";
 import type { AttestorConfig, CandidateLike, PublishViolation } from "../src/types.js";
 
@@ -129,7 +130,7 @@ function memoryStore(candidates: CandidateLike[]): AttestorStore & {
 function poller(store: AttestorStore, now: Date = NOW) {
   return new AttestorPoller({
     store,
-    signer,
+    signer: reportSigner(signer),
     domain: DOMAIN,
     config: CONFIG,
     epochLength: EPOCH_LENGTH,
@@ -258,7 +259,7 @@ describe("AttestorPoller", () => {
     const store = memoryStore([candidate()]);
     const p = new AttestorPoller({
       store,
-      signer,
+      signer: reportSigner(signer),
       domain: DOMAIN,
       config: CONFIG,
       epochLength: EPOCH_LENGTH,
