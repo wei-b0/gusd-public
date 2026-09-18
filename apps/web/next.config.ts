@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // The dev-tools badge photobombs review rasters; the terminal ships clean.
   devIndicators: false,
+  // The stack is reviewed from phones on the LAN (192.168.0.103:3000); Next 16
+  // blocks cross-origin dev requests unless the host is allow-listed here.
+  allowedDevOrigins: ["192.168.0.103"],
   // Earn and Vaults folded into the gUSD section; Index and Data folded into
   // the Oracle section's tabs; per-GPU oracle pages folded into the
   // Benchmarks tab's inline panel receipt; the market detail page folded
