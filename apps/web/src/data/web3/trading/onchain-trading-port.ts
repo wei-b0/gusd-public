@@ -306,7 +306,7 @@ export class OnChainTradingPort implements TradingPort {
       const { router } = getContracts();
       const simulateFn = exactPullBuy ? "buyExactIn" : request.side === "buy" ? "buy" : "sell";
       const simulateArgs = exactPullBuy
-        ? [gpuId, spendRaw, parseGpuUnits(quote.minSize), deadline, 0n, updateData, owner]
+        ? [gpuId, spendRaw, parseGpuUnits(quote.minSize), deadline, 0n, owner, updateData]
         : request.side === "buy"
           ? [buyStruct()]
           : [sellStruct()];

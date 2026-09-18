@@ -133,7 +133,10 @@ export function buyExactInSpec(
         address: getContracts().addresses.router,
         abi: GPU_ROUTER_ABI,
         functionName: "buyExactIn",
-        args: [params.gpuId, params.gusdMaxIn, params.minGpuOut, params.deadline, params.sqrtLimitX96, params.updateData, recipient],
+        // ABI order: (gpuId, gusdMaxIn, minGpuOut, deadline, sqrtLimitX96,
+        // recipient, updateData) — updateData is LAST; anything else puts
+        // the report bytes on the recipient slot and encoding refuses.
+        args: [params.gpuId, params.gusdMaxIn, params.minGpuOut, params.deadline, params.sqrtLimitX96, recipient, params.updateData],
         account: wallet.account ?? null,
         chain: null,
       });

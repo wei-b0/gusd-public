@@ -593,9 +593,10 @@ describe("spend-first buy plans", () => {
       issuanceLeg: 0.5,
     });
 
-    // The exact-in calldata: updateData sits before the recipient — the
-    // router's own arg order. Approval path — the runner simulates
-    // post-approval.
+    // The exact-in calldata: updateData sits LAST, after the recipient —
+    // GpuRouter.buyExactIn's own arg order (the swapped packing put the
+    // report bytes on the address slot and viem refused to encode).
+    // Approval path — the runner simulates post-approval.
     await plan.simulate?.();
     expect(h.simReq?.functionName).toBe("buyExactIn");
     expect(h.simReq?.args).toEqual([
@@ -604,8 +605,8 @@ describe("spend-first buy plans", () => {
       parseGpuUnits(7.9202),
       expect.any(BigInt),
       0n,
-      UPDATE_DATA,
       OWNER,
+      UPDATE_DATA,
     ]);
 
     const spec = plan.buildSpec();
