@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "dev:https": "next dev --turbopack --experimental-https --experimental-https-cert ../../infra/dev-cert.pem --experimental-https-key ../../infra/dev-cert-key.pem",
     "prebuild": "node scripts/abi-sync.mjs",
     "build": "next build",
     "start": "next start",
