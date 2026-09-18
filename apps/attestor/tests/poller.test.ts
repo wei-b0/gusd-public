@@ -127,7 +127,7 @@ function memoryStore(candidates: CandidateLike[]): AttestorStore & {
   };
 }
 
-function poller(store: AttestorStore, now: Date = NOW) {
+function poller(store: AttestorStore, now: Date = NOW, tickTimeoutMs?: number) {
   return new AttestorPoller({
     store,
     signer: reportSigner(signer),
@@ -137,6 +137,7 @@ function poller(store: AttestorStore, now: Date = NOW) {
     maxObservationAge: MAX_OBSERVATION_AGE,
     logger: silence(),
     now: () => now,
+    ...(tickTimeoutMs !== undefined ? { tickTimeoutMs } : {}),
   });
 }
 
@@ -147,6 +148,52 @@ function rowFor(store: { rows: ReportRow[] }, gpuId: string): ReportRow {
 }
 
 describe("AttestorPoller", () => {
+  /**
+   * The production incident this suite guards against: one store call hung
+   * (no timeout), inFlight stayed set forever, and every later tick exited
+   * through the busy path without logging — the attestation feed starved
+   * silently for an hour while every trade fail-closed. These tests turn
+   * both halves of that failure into red tests.
+   */
+  it("a hung store call cannot pin the loop — the budget frees it and the next tick attests", async () => {
+    const store = memoryStore([candidate()]);
+    let hangs = true;
+    const healthy = store.latestCandidates.bind(store);
+    store.latestCandidates = () => (hangs ? new Promise<CandidateLike[]>(() => {}) : healthy());
+    const p = poller(store, NOW, 50);
+
+    const wedged = await p.tick();
+    expect(wedged).toEqual({ attested: 0, flagged: 0, skipped: 0 });
+
+    hangs = false; // the DB "recovers"
+    const recovered = await p.tick();
+    expect(recovered.attested).toBe(1);
+    const epoch = Math.floor(Math.floor(NOW.getTime() / 1000) / EPOCH_LENGTH);
+    expect(rowFor(store, "H100_SXM_80GB").epoch).toBe(epoch);
+  });
+
+  it("a pile-up of busy ticks is loud, not silent", async () => {
+    const store = memoryStore([candidate()]);
+    const warns: string[] = [];
+    const hanging = new Promise<CandidateLike[]>(() => {});
+    store.latestCandidates = () => hanging;
+    const p = new AttestorPoller({
+      store,
+      signer: reportSigner(signer),
+      domain: DOMAIN,
+      config: CONFIG,
+      epochLength: EPOCH_LENGTH,
+      maxObservationAge: MAX_OBSERVATION_AGE,
+      logger: { ...silence(), warn: (msg) => void warns.push(String(msg)) },
+      now: () => NOW,
+      tickTimeoutMs: 10_000, // long enough that the first cycle stays pinned
+    });
+    void p.tick(); // pin inFlight — its budget has not fired yet
+    const busy = await p.tick();
+    expect(busy).toEqual({ attested: 0, flagged: 0, skipped: 0 });
+    expect(warns.some((m) => m.includes("still in flight"))).toBe(true);
+  });
+
   it("attests the healthy candidate into the current epoch", async () => {
     const store = memoryStore([candidate()]);
     const result = await poller(store).tick();

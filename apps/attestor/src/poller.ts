@@ -33,9 +33,23 @@ import type { AttestorStore } from "./store.js";
  * (gpu_id, epoch) unique key means a crash after signing resolves by the
  * retry being a no-op insert.
  */
+/** The shape of one evaluation pass. */
+export interface TickResult {
+  attested: number;
+  flagged: number;
+  skipped: number;
+}
+
+/**
+ * The identity sentinel the tick budget resolves with — compared by
+ * reference, so a natural all-zero result can never be mistaken for it.
+ */
+const TIMED_OUT: TickResult = { attested: 0, flagged: 0, skipped: 0 };
+
 export class AttestorPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private inFlight: Promise<unknown> | null = null;
+  private busyStreak = 0;
 
   constructor(
     private readonly opts: {
@@ -50,8 +64,21 @@ export class AttestorPoller {
       /** When absent, contributor source health is not re-checked. */
       fetchBreakers?: () => Promise<BreakerMap>;
       now?: () => Date;
+      /**
+       * The per-cycle time budget. A store call that hangs past it abandons
+       * the cycle and frees the loop — without this, one wedged DB read once
+       * pinned the poller for an hour while every later tick exited through
+       * the busy path without a single log line (the attestation feed starved
+       * silently and every trade fail-closed). The abandoned work still
+       * resolves harmlessly: attestation is idempotent end to end.
+       */
+      tickTimeoutMs?: number;
     },
-  ) {}
+  ) {
+    this.tickTimeoutMs = opts.tickTimeoutMs ?? 30_000;
+  }
+
+  private readonly tickTimeoutMs: number;
 
   start(pollMs: number): void {
     if (this.timer !== null) return;
@@ -67,22 +94,68 @@ export class AttestorPoller {
   async stop(): Promise<void> {
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
-    await this.inFlight;
+    const work = this.inFlight;
+    if (!work) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const beat = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), this.tickTimeoutMs);
+    });
+    try {
+      const settled = await Promise.race([work.then(() => "done" as const), beat]);
+      if (settled === null) {
+        this.opts.logger.warn(
+          "attestor stop abandoned an in-flight cycle past its budget — shutdown proceeds",
+          { tickTimeoutMs: this.tickTimeoutMs },
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** One evaluation pass over every watched gpu. */
-  async tick(): Promise<{ attested: number; flagged: number; skipped: number }> {
-    if (this.inFlight !== null) return { attested: 0, flagged: 0, skipped: 0 };
+  async tick(): Promise<TickResult> {
+    if (this.inFlight !== null) {
+      // The budget keeps this window short (a few busy ticks at most), but a
+      // pile-up must still be loud — silence here is how the last wedge went
+      // unnoticed while trades fail-closed for an hour.
+      this.busyStreak += 1;
+      if (this.busyStreak === 1 || this.busyStreak % 12 === 0) {
+        this.opts.logger.warn("attestor tick still in flight — cycles piling up", {
+          busyCycles: this.busyStreak,
+          tickTimeoutMs: this.tickTimeoutMs,
+        });
+      }
+      return { attested: 0, flagged: 0, skipped: 0 };
+    }
     const work = this.tickInner();
     this.inFlight = work;
+    // If the budget abandons this work and it later rejects, that rejection
+    // must not surface as an unhandled error — its outcome is already handled
+    // inside tickInner's own catches (logged failure or idempotent no-op).
+    void work.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const beat = new Promise<TickResult>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), this.tickTimeoutMs);
+    });
     try {
-      return await work;
+      const result = await Promise.race([work, beat]);
+      this.busyStreak = 0;
+      if (result === TIMED_OUT) {
+        this.opts.logger.warn(
+          "attestor tick exceeded its time budget — cycle abandoned, the next tick retries",
+          { tickTimeoutMs: this.tickTimeoutMs },
+        );
+        return { attested: 0, flagged: 0, skipped: 0 };
+      }
+      return result;
     } finally {
+      clearTimeout(timer);
       this.inFlight = null;
     }
   }
 
-  private async tickInner(): Promise<{ attested: number; flagged: number; skipped: number }> {
+  private async tickInner(): Promise<TickResult> {
     const { store, config, logger } = this.opts;
     const now = this.opts.now?.() ?? new Date();
     const counters = { attested: 0, flagged: 0, skipped: 0 };
