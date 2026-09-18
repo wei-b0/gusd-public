@@ -56,6 +56,12 @@ const h = vi.hoisted(() => ({
   oraclePrice: 12500n,
   /** The attestation seam: the kind the fake fetch answers with. */
   attKind: "current" as "current" | "degraded" | "unknown-gpu" | "unreachable",
+  /** A scripted fetch sequence — each entry answers one call (a kind or a
+   *  full attestation), falling back to attKind when exhausted. The
+   *  boundary-bridge and heal tests script a lapse → renewal sequence. */
+  attQueue: [] as
+    | []
+    | Array<"current" | "degraded" | "unknown-gpu" | "unreachable" | ReturnType<typeof fakeCurrentAttestation>>,
   attCalls: 0,
   attGpu: null as string | null,
   issueCalls: 0,
@@ -76,6 +82,9 @@ const h = vi.hoisted(() => ({
   /** The hook-state seam the deterministic mirror reads; null = no seam —
    *  every quote takes the float-seeded lens exactly as before. */
   hookState: null as HookMarketState | null,
+  /** How many hookMarketState calls reject before succeeding — the
+   *  report-lapsed shape (polState reverts bare until the next report). */
+  hookStateFailures: 0,
   /** The pool's native CL liquidity as the stateView fake answers: > 0
    *  forces the lens; 0 with a hook state present routes to the mirror. */
   nativeLiquidity: 1n,
@@ -83,8 +92,14 @@ const h = vi.hoisted(() => ({
 
 /** A current attestation priced at h.oraclePrice — the fake's whole report
  *  surface: gpuId matches the fake's H100 market, the clock fields are
- *  epoch 0 (long gone but the fakes never clock-check; the chain does). */
-function fakeCurrentAttestation(): {
+ *  epoch 0 (long gone but the fakes never clock-check; the chain does).
+ *  validUntil and reportHash are parameterizable so the heal tests can
+ *  script a lapsed report succeeded by a genuinely fresh one (a distinct
+ *  reportHash is what the heal keys on). */
+function fakeCurrentAttestation(
+  validUntil = 60,
+  reportHash: `0x${string}` = REPORT_HASH,
+): {
   kind: "current";
   signed: {
     report: {
@@ -100,7 +115,7 @@ function fakeCurrentAttestation(): {
     signature: `0x${string}`;
   };
   updateData: typeof UPDATE_DATA;
-  reportHash: typeof REPORT_HASH;
+  reportHash: `0x${string}`;
 } {
   return {
     kind: "current",
@@ -112,13 +127,13 @@ function fakeCurrentAttestation(): {
         observedAt: 0,
         epoch: 0,
         validFrom: 0,
-        validUntil: 60,
+        validUntil,
         calcHash: `0x${"ab".repeat(32)}`,
       },
       signature: `0x${"11".repeat(65)}`,
     },
     updateData: UPDATE_DATA,
-    reportHash: REPORT_HASH,
+    reportHash,
   };
 }
 
@@ -209,6 +224,10 @@ function makeDeps(): QuoteDeps {
         };
       },
       hookMarketState: async () => {
+        if (h.hookStateFailures > 0) {
+          h.hookStateFailures -= 1;
+          throw new Error("polState reverted — report no longer executable");
+        }
         if (h.hookState === null) throw new Error("no hook-state seam in this fake");
         return h.hookState;
       },
@@ -219,12 +238,18 @@ function makeDeps(): QuoteDeps {
     // The pull-oracle seam: one fetch per quote, classified. Non-current
     // kinds stand in for every "attestor can't serve this gpu right now"
     // shape — the quote maps them all to the typed staleness refusal.
+    // The scripted queue (h.attQueue) serves entries first, for the
+    // boundary-bridge and heal tests.
     attestation: async (gpuParam: string) => {
       h.attCalls += 1;
       h.attGpu = gpuParam;
+      const next = h.attQueue.shift();
+      if (next !== undefined && next !== "current") return typeof next === "string" ? { kind: next } : next;
+      if (next !== undefined) return fakeCurrentAttestation();
       if (h.attKind !== "current") return { kind: h.attKind };
       return fakeCurrentAttestation();
     },
+    sleep: async () => {}, // the boundary bridge paced instantly in tests
   } as unknown as QuoteDeps;
 }
 
@@ -365,6 +390,7 @@ beforeEach(() => {
   };
   h.oraclePrice = 12500n;
   h.attKind = "current";
+  h.attQueue = [];
   h.attCalls = 0;
   h.attGpu = null;
   h.issueCalls = 0;
@@ -380,6 +406,7 @@ beforeEach(() => {
   h.block = 7;
   h.registrationCalls = 0;
   h.hookState = null;
+  h.hookStateFailures = 0;
   h.nativeLiquidity = 1n;
   disposeAvailabilityCache();
 });
@@ -440,11 +467,31 @@ describe("quoteBuy", () => {
     expect(q.maxPaid).toBeCloseTo(expectedMax, 12);
   });
 
-  it("maps a reverted quote to the typed no-ask-capacity failure", async () => {
-    h.buyResult = null; // quoter reverts (capacity exceeded)
+  it("maps a bare dual revert to a transient voice, never capacity", async () => {
+    // No hook-state seam (the state batch died) + a reverted quoter —
+    // neither throw names a reason, and NEITHER is a depth fact: a real
+    // capacity answer always arrives from the mirror with a figure. With
+    // the pinned report still live the shape is infrastructure (one flaky
+    // read took the simulation with it) — the retry voice, not depth.
+    h.buyResult = null; // quoter reverts
     const f = await quoteBuy("H100", 2, 50, makeDeps());
     if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
-    expect(f.reason).toBe("no-ask-capacity");
+    expect(f.reason).toBe("quote-timeout");
+  });
+
+  it("maps a dual revert under a lapsed report to the staleness voice", async () => {
+    // The report expired between fetch and reads (the epoch boundary
+    // crossed mid-quote): polState reverts bare, the simulation reverts
+    // with it. The heal re-polled for a fresher report and found the
+    // attestor still on the same one — the honest staleness refusal
+    // stands (never the depth voice); the slip's silent retry or the
+    // next input change picks up the next report.
+    h.buyResult = null;
+    h.attQueue = [fakeCurrentAttestation(1)]; // lapses at the fake's nowSec=1
+    const f = await quoteBuy("H100", 2, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("oracle-stale");
+    expect(h.attCalls).toBe(2); // the initial fetch + the heal's re-poll
   });
 
   it("refuses a result that does not cover the size", async () => {
@@ -543,11 +590,11 @@ describe("quoteSell", () => {
     expect(h.sellArgs!.updateData).toBe(UPDATE_DATA);
   });
 
-  it("maps a reverted quote to the typed no-bid-capacity failure", async () => {
-    h.sellResult = null; // no bid depth — the honest can't-fill
+  it("maps a bare dual revert to a transient voice, never capacity", async () => {
+    h.sellResult = null; // quoter reverts; the state batch died with it
     const f = await quoteSell("H100", 1, 50, makeDeps());
     if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
-    expect(f.reason).toBe("no-bid-capacity");
+    expect(f.reason).toBe("quote-timeout");
   });
 
   it("refuses a result that does not cover the size or pays nothing", async () => {
@@ -664,11 +711,11 @@ describe("quoteBuyBySpend", () => {
     expect(await quoteBuyBySpend("H100", 10, 50, makeDeps())).toBeNull();
   });
 
-  it("maps a reverted quote to the typed no-ask-capacity failure", async () => {
+  it("maps a bare dual revert to a transient voice, never capacity", async () => {
     h.spendBuyResult = null;
     const f = await quoteBuyBySpend("H100", 10, 50, makeDeps());
     if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
-    expect(f.reason).toBe("no-ask-capacity");
+    expect(f.reason).toBe("quote-timeout");
   });
 
   it("returns null for an unregistered asset or non-positive spend", async () => {
@@ -761,11 +808,11 @@ describe("quoteSellByProceeds", () => {
     expect(await quoteSellByProceeds("H100", 0.001, 50, makeDeps())).toBeNull(); // sub-grain units
   });
 
-  it("maps a reverted quote to the typed no-bid-capacity failure", async () => {
+  it("maps a bare dual revert to a transient voice, never capacity", async () => {
     h.proceedsSellResult = null;
     const f = await quoteSellByProceeds("H100", 3.8, 50, makeDeps());
     if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
-    expect(f.reason).toBe("no-bid-capacity");
+    expect(f.reason).toBe("quote-timeout");
   });
 
   it("refuses sells without secondary depth or registration", async () => {
@@ -896,6 +943,67 @@ describe("the deterministic mirror path (LP-less pool)", () => {
     expect(h.sellArgs).not.toBeNull(); // the lens served it
     if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
     expect(quote.notional).toBeCloseTo(1.9, 12);
+  });
+});
+
+describe("the epoch-boundary heal — trading never halts on a perishable report", () => {
+  /** The distinct report hashes the heal keys on: a lapse is healed only
+   *  when the re-poll returns a DIFFERENT (genuinely fresher) report. */
+  const STALE_HASH = `0x${"aa".repeat(32)}` as const;
+  const FRESH_HASH = `0x${"bb".repeat(32)}` as const;
+
+  it("heals a report that lapses mid-quote — refetch and re-quote on the fresh one", async () => {
+    // The mirror route with polState reverting exactly once (the lapsed
+    // report's bare revert), and the attestor already holding the next
+    // epoch's report: the quote recovers on its own and returns a real
+    // quote — no failure voice at all, no user-visible halt.
+    h.hookState = makeHookState();
+    h.nativeLiquidity = 0n;
+    h.hookStateFailures = 1; // the first mirrorBatch hits the lapsed report
+    h.attQueue = [
+      fakeCurrentAttestation(1, STALE_HASH), // lapses at the fake's nowSec=1
+      fakeCurrentAttestation(60, FRESH_HASH), // the next epoch, already served
+    ];
+    const quote = await quoteBuy("H100", 2, 50, makeDeps());
+    if (quote === null || "unavailable" in quote) throw new Error("expected a healed quote");
+    expect(quote.size).toBe(2);
+    expect(h.attCalls).toBe(2); // lapsed fetch + the heal's fresh fetch
+  });
+
+  it("a refusal with a LIVE report is a fact — the heal never fires", async () => {
+    // A genuine capacity fact from the mirror (bid book too small) passes
+    // through with its capacity figure — one fetch, no re-poll, no
+    // reframing of a real capacity answer.
+    h.hookState = makeHookState({ bidInventoryGusd: 2_000_000n });
+    h.nativeLiquidity = 0n;
+    const f = await quoteSell("H100", 5, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("no-bid-capacity");
+    expect(f.capacityRaw).toBeDefined();
+    expect(h.attCalls).toBe(1);
+  });
+
+  it("a non-current fetch inside the renewal gap re-polls across the boundary", async () => {
+    // The desk quotes just as the epoch rolls: the API answers 503 for the
+    // first fetches (the attestor's next report is seconds away), then the
+    // fresh report lands and the quote proceeds — trading does not even
+    // see the boundary.
+    h.attKind = "degraded";
+    h.attQueue = ["degraded", "current"];
+    h.buyResult = makeBuy({ poolGpu: parseGpuUnits(2), poolGusd: 2_500_000n });
+    const quote = await quoteBuy("H100", 2, 50, makeDeps());
+    if (quote === null || "unavailable" in quote) throw new Error("expected a quote");
+    expect(h.attCalls).toBe(2); // 503 + the bridge's re-poll
+  });
+
+  it("the bridge keeps its budget — a stalled attestor refuses as oracle-stale", async () => {
+    h.attKind = "degraded";
+    h.attQueue = [];
+    h.buyResult = makeBuy({ poolGpu: parseGpuUnits(2), poolGusd: 2_500_000n });
+    const f = await quoteBuy("H100", 2, 50, makeDeps());
+    if (f === null || !("unavailable" in f)) throw new Error("expected a typed failure");
+    expect(f.reason).toBe("oracle-stale");
+    expect(h.attCalls).toBe(3); // initial + 2 bridge re-polls, then it stands
   });
 });
 

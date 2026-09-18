@@ -36,8 +36,10 @@
  * `minOut` / `minSize`), not the quote. A mirror rejection carries the
  * market's capacity in the quote's own units (QuoteFailure.capacityRaw)
  * so the slip can say "this market fills at most X" instead of a bare
- * error; a simulation revert degrades to the direction's generic
- * no-capacity (the walk leg has no public decomposition).
+ * error. A lapsed report — the one perishable input — never speaks that
+ * voice at all: the quote refetches and re-quotes (withLiveReport), and
+ * a revert with no mirror available maps to the honest transient voices
+ * (oracle-stale / quote-timeout), never to capacity.
  *
  * Honesty rules the math keeps: the quoter already runs the hook, so its
  * number IS all-in — protocol fees are split out for display only, and LP
@@ -70,6 +72,10 @@ import { canonicalPoolKey, poolIdOf } from "../pool";
 import { getContracts } from "../contracts";
 import { getPublicClient } from "../public-client";
 import { contractReads, type ContractReads } from "../reads";
+
+/** The registration row the desk's report-independent prelude fetches —
+ *  the OnReport bodies take it as a plain argument. */
+type Registration = NonNullable<Awaited<ReturnType<ContractReads["registration"]>>>;
 import { fetchAttestation, type Attestation } from "@/data/oracle/attestation";
 import type { SignedReport } from "@gusd/attestor-client";
 import {
@@ -95,6 +101,9 @@ export interface QuoteDeps {
    *  for tests; execution pins ONE report across re-quote → simulate →
    *  sign by handing this quote stack a deps whose fetch returns it. */
   attestation(gpuParam: string): Promise<Attestation>;
+  /** Pacing between attestation re-fetches in the boundary bridge.
+   *  Injectable for tests (no-op); production paces with setTimeout. */
+  sleep?(ms: number): Promise<void>;
 }
 
 export function defaultQuoteDeps(): QuoteDeps {
@@ -244,6 +253,7 @@ async function runGpuQuote(
   method: "quoteBuyExactOut" | "quoteBuy" | "quoteSell" | "quoteSellExactOut",
   amountRaw: bigint,
   updateData: `0x${string}`,
+  reportValidUntilSec: number,
 ): Promise<QuoteFailure | GpuQuoteResult> {
   const nowSec = Math.floor(deps.now() / 1000);
   const mirror =
@@ -263,13 +273,15 @@ async function runGpuQuote(
     return await gpuQuoterRead(deps)[method]([poolKey, amountRaw, updateData]);
   } catch {
     if (batch === null) {
-      return {
-        unavailable: true,
-        reason:
-          method === "quoteBuyExactOut" || method === "quoteBuy"
-            ? "no-ask-capacity"
-            : "no-bid-capacity",
-      };
+      // The state batch died before the mirror could run AND the quoter
+      // reverted with it. Neither throw names a reason — polState and the
+      // simulation revert bare. With a lapsed report this is the epoch
+      // boundary crossing (the heal above refetches and re-quotes); with
+      // a live report it is infrastructure (one RPC read failed and the
+      // simulation with it). NEITHER is depth: a real capacity fact
+      // always arrives from the mirror, with a figure attached.
+      if (reportValidUntilSec <= nowSec) return { unavailable: true, reason: "oracle-stale" };
+      return { unavailable: true, reason: "quote-timeout" };
     }
     if (!oracleGuardOk(batch.state, nowSec)) {
       return { unavailable: true, reason: "oracle-stale" };
@@ -296,6 +308,72 @@ async function currentAttestation(deps: QuoteDeps, gpuId: `0x${string}`): Promis
   const att = await deps.attestation(gpuId);
   if (att.kind !== "current") return { unavailable: true, reason: "oracle-stale" };
   return { att };
+}
+
+/** The boundary bridge. The attestor renews the report at every epoch
+ *  boundary (the 60s grid; its first tick lands within seconds of it), so
+ *  a fetch that answers non-current is most often a quote that arrived
+ *  inside that renewal gap. A short in-call re-poll crosses it; past the
+ *  budget the typed refusal stands — the fail-closed gate is untouched,
+ *  the quote just refuses patiently instead of refusing instantly. */
+const REPORT_BRIDGE_MS = 600;
+const REPORT_BRIDGE_ATTEMPTS = 2;
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function currentAttestationLive(
+  deps: QuoteDeps,
+  gpuId: `0x${string}`,
+): Promise<{ att: Attestation & { kind: "current" } } | QuoteFailure> {
+  const sleep = deps.sleep ?? defaultSleep;
+  let attested = await currentAttestation(deps, gpuId);
+  for (let i = 0; i < REPORT_BRIDGE_ATTEMPTS && "unavailable" in attested; ++i) {
+    await sleep(REPORT_BRIDGE_MS);
+    attested = await currentAttestation(deps, gpuId);
+  }
+  return attested;
+}
+
+/** True when the report's validity window has closed by nowMs — a report
+ *  that lapses mid-quote reverts every report-bearing read (polState, the
+ *  quoter simulation) with a bare revert that carries no reason to map. */
+function reportLapsed(att: Extract<Attestation, { kind: "current" }>, nowMs: number): boolean {
+  return att.signed.report.validUntil <= Math.floor(nowMs / 1000);
+}
+
+/**
+ * The epoch-boundary heal — the seam that keeps trading from halting on a
+ * perishable input it can simply refetch. A quote is pinned to exactly one
+ * report; when that report lapses before the quote's reads complete, the
+ * reverts it causes once surfaced as "no depth" — indistinguishable from a
+ * dead market, and false. So: if the pinned report has lapsed by the time
+ * the quote answered, refetch and quote again on the fresh report. Every
+ * other outcome — a genuine capacity fact, a null, a refusal with a live
+ * report — passes through untouched.
+ */
+async function withLiveReport(
+  deps: QuoteDeps,
+  gpuId: `0x${string}`,
+  work: (att: Extract<Attestation, { kind: "current" }>) => Promise<TradeQuote | QuoteFailure | null>,
+): Promise<TradeQuote | QuoteFailure | null> {
+  let attested = await currentAttestationLive(deps, gpuId);
+  for (let attempts = 0; ; ++attempts) {
+    if ("unavailable" in attested) return attested;
+    const result = await work(attested.att);
+    if (result === null || !("unavailable" in result)) return result;
+    // One heal per quote: past it the refusal is a fact, not a race.
+    if (attempts >= 1 || !reportLapsed(attested.att, deps.now())) return result;
+    const fresh = await currentAttestationLive(deps, gpuId);
+    if ("unavailable" in fresh || fresh.att.reportHash === attested.att.reportHash) {
+      // Nothing fresher exists (the attestor is still on the old epoch) —
+      // the honest staleness refusal stands and the desk's own retry
+      // cadence carries it from here.
+      return result;
+    }
+    attested = fresh;
+  }
 }
 
 /** Availability read for the slip's gate — null when unregistered. Short
@@ -368,12 +446,24 @@ export async function quoteBuy(
   if (!reg) return null;
   const sizeRaw = parseGpuUnits(size);
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
+  return withLiveReport(deps, gpuId, (att) =>
+    quoteBuyOnReport(gpuId, asset, size, toleranceBps, deps, reg, sizeRaw, att),
+  );
+}
 
-  // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, gpuId);
-  if ("unavailable" in attested) return attested;
-  const att = attested.att;
-
+/** quoteBuy's report-bearing body, run under withLiveReport's heal: the
+ *  attestation is pinned by the wrapper, so a report that lapses
+ *  mid-quote is refetched and the whole body re-run on the fresh one. */
+async function quoteBuyOnReport(
+  gpuId: `0x${string}`,
+  asset: AssetId,
+  size: number,
+  toleranceBps: number,
+  deps: QuoteDeps,
+  reg: Registration,
+  sizeRaw: bigint,
+  att: Extract<Attestation, { kind: "current" }>,
+): Promise<TradeQuote | QuoteFailure | null> {
   const blockNumber = await deps.getBlockNumber();
 
   if (!reg.poolRegistered) {
@@ -427,7 +517,9 @@ export async function quoteBuy(
   );
 
   const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuyExactOut", sizeRaw, att.updateData);
+  const outcome = await runGpuQuote(
+    deps, batch, poolKey, "quoteBuyExactOut", sizeRaw, att.updateData, att.signed.report.validUntil,
+  );
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   if (r.gpuOut !== sizeRaw || r.gusdIn === 0n) return null;
@@ -495,12 +587,22 @@ export async function quoteSell(
   if (!reg || !reg.poolRegistered) return null; // sells need secondary depth
   const sizeRaw = parseGpuUnits(size);
   if (sizeRaw === 0n || sizeRaw > UINT128_MAX) return null;
+  return withLiveReport(deps, gpuId, (att) =>
+    quoteSellOnReport(gpuId, asset, size, toleranceBps, deps, reg, sizeRaw, att),
+  );
+}
 
-  // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, gpuId);
-  if ("unavailable" in attested) return attested;
-  const att = attested.att;
-
+/** quoteSell's report-bearing body, run under withLiveReport's heal. */
+async function quoteSellOnReport(
+  gpuId: `0x${string}`,
+  asset: AssetId,
+  size: number,
+  toleranceBps: number,
+  deps: QuoteDeps,
+  reg: Registration,
+  sizeRaw: bigint,
+  att: Extract<Attestation, { kind: "current" }>,
+): Promise<TradeQuote | QuoteFailure | null> {
   const { addresses } = deps.contracts;
   const poolKey = canonicalPoolKey(
     addresses.gusd as Address,
@@ -511,7 +613,9 @@ export async function quoteSell(
 
   const blockNumber = await deps.getBlockNumber();
   const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSell", sizeRaw, att.updateData);
+  const outcome = await runGpuQuote(
+    deps, batch, poolKey, "quoteSell", sizeRaw, att.updateData, att.signed.report.validUntil,
+  );
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   if (r.gusdOut === 0n || r.gpuIn !== sizeRaw) return null;
@@ -566,12 +670,22 @@ export async function quoteBuyBySpend(
   if (!reg) return null;
   const spendRaw = parseGusd(gusd);
   if (spendRaw === 0n || spendRaw > UINT128_MAX) return null;
+  return withLiveReport(deps, gpuId, (att) =>
+    quoteBuyBySpendOnReport(gpuId, asset, gusd, toleranceBps, deps, reg, spendRaw, att),
+  );
+}
 
-  // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, gpuId);
-  if ("unavailable" in attested) return attested;
-  const att = attested.att;
-
+/** quoteBuyBySpend's report-bearing body, run under withLiveReport's heal. */
+async function quoteBuyBySpendOnReport(
+  gpuId: `0x${string}`,
+  asset: AssetId,
+  gusd: number,
+  toleranceBps: number,
+  deps: QuoteDeps,
+  reg: Registration,
+  spendRaw: bigint,
+  att: Extract<Attestation, { kind: "current" }>,
+): Promise<TradeQuote | QuoteFailure | null> {
   const blockNumber = await deps.getBlockNumber();
 
   if (!reg.poolRegistered) {
@@ -625,7 +739,9 @@ export async function quoteBuyBySpend(
   );
 
   const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteBuy", spendRaw, att.updateData);
+  const outcome = await runGpuQuote(
+    deps, batch, poolKey, "quoteBuy", spendRaw, att.updateData, att.signed.report.validUntil,
+  );
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   // The exact-in quoter must spend exactly what was typed and deliver a
@@ -700,12 +816,22 @@ export async function quoteSellByProceeds(
   if (!reg || !reg.poolRegistered) return null; // sells need secondary depth
   const proceedsRaw = parseGusd(gusd);
   if (proceedsRaw === 0n || proceedsRaw > UINT128_MAX) return null;
+  return withLiveReport(deps, gpuId, (att) =>
+    quoteSellByProceedsOnReport(gpuId, asset, gusd, toleranceBps, deps, reg, proceedsRaw, att),
+  );
+}
 
-  // No current report, no quote — the contract itself refuses to fill.
-  const attested = await currentAttestation(deps, gpuId);
-  if ("unavailable" in attested) return attested;
-  const att = attested.att;
-
+/** quoteSellByProceeds's report-bearing body, run under withLiveReport. */
+async function quoteSellByProceedsOnReport(
+  gpuId: `0x${string}`,
+  asset: AssetId,
+  gusd: number,
+  toleranceBps: number,
+  deps: QuoteDeps,
+  reg: Registration,
+  proceedsRaw: bigint,
+  att: Extract<Attestation, { kind: "current" }>,
+): Promise<TradeQuote | QuoteFailure | null> {
   const { addresses } = deps.contracts;
   const poolKey = canonicalPoolKey(
     addresses.gusd as Address,
@@ -716,7 +842,9 @@ export async function quoteSellByProceeds(
 
   const blockNumber = await deps.getBlockNumber();
   const batch = await mirrorBatch(deps, gpuId, poolKey, att.signed);
-  const outcome = await runGpuQuote(deps, batch, poolKey, "quoteSellExactOut", proceedsRaw, att.updateData);
+  const outcome = await runGpuQuote(
+    deps, batch, poolKey, "quoteSellExactOut", proceedsRaw, att.updateData, att.signed.report.validUntil,
+  );
   if ("unavailable" in outcome) return outcome;
   const r = outcome;
   // The exact-out sell must deliver exactly the typed demand and cost a

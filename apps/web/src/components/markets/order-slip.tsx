@@ -136,17 +136,25 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         mode === "gusd"
           ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
           : { asset, side, basis: "units", size: activeValue, toleranceBps };
-      // A quote-timeout speaks its retry voice and gets exactly one silent
-      // re-attempt — a hung RPC read shouldn't leave a dead end the user
+      // A quote-timeout or oracle-stale speaks its retry voice and gets
+      // exactly one silent re-attempt — a hung RPC read, or a quote that
+      // landed inside the attestor's renewal gap (the 60s boundary; the
+      // next report is seconds away), shouldn't leave a dead end the user
       // can't clear (re-clicking a preset is a no-op; the effect only
-      // refires on a settled-input change). A second timeout keeps the
-      // voice and waits for real input.
+      // refires on a settled-input change). A second failure keeps the
+      // voice and waits for real input — the fail-closed gate itself is
+      // never retried away, only given one patient beat.
       const attempt = (retry: boolean) => {
         trading
           .quoteDetailed(request)
           .then((q) => {
             if (!alive) return;
-            if (q !== null && "unavailable" in q && q.reason === "quote-timeout" && retry) {
+            if (
+              q !== null &&
+              "unavailable" in q &&
+              (q.reason === "quote-timeout" || q.reason === "oracle-stale") &&
+              retry
+            ) {
               retryTimer = setTimeout(() => attempt(false), QUOTE_RETRY_MS);
               return;
             }
