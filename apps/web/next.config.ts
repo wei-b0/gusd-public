@@ -29,7 +29,7 @@ const nextConfig: NextConfig = {
         { source: "/v1/:path*", destination: `${UP_ORACLE}/v1/:path*` },
         { source: "/v1", destination: `${UP_ORACLE}/v1` },
       ]
-    : [],
+    : async () => [],
   // Earn and Vaults folded into the gUSD section; Index and Data folded into
   // the Oracle section's tabs; per-GPU oracle pages folded into the
   // Benchmarks tab's inline panel receipt; the market detail page folded
