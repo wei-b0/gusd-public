@@ -35,6 +35,12 @@ export interface ProtocolAddresses {
   /** Indexer backfill anchor (block.number - 1 at deploy time) — carried
    *  verbatim from the record so the module mirrors it faithfully. */
   startBlock: number;
+  /** The oracle's acceptance grid, carried verbatim from the record when
+   *  the deploy persisted it (records predating the pull-oracle epoch
+   *  keys keep the fields absent). The attestor client's report-validity
+   *  math reads these, not the chain. */
+  oracleEpochLength?: number;
+  oracleMaxObservationAge?: number;
 }
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
   "31337": {
@@ -60,7 +66,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
       "0x5FbDB2315678afecb367f032d93F642f64180aa3",
       "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64"
     ],
-    "startBlock": 1,
+    "startBlock": 0,
     "stateView": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     "underlying": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     "weth": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"
