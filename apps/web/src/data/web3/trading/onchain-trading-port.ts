@@ -44,6 +44,7 @@ import { legUnits } from "@/domain/types";
 import { formatGpuUnits, formatGusdRaw, parseGpuUnits, parseGusd } from "@/domain/units";
 import { GPU_ROUTER_ABI } from "../abis/gpu_router";
 import { getContracts } from "../contracts";
+import type { NormalizedError } from "../errors";
 import { simulateWrite } from "../simulate";
 import { planApproval } from "../approvals";
 import { gpuIdForAsset } from "../gpu-id";
@@ -82,6 +83,21 @@ const NO_ATTESTATION =
  *  fresh attestation legitimately fixes; retried once, everything else
  *  surfaces as its own voice. */
 const EXPIRY_ERRORS = new Set(["UnknownGpuEpoch", "StaleObservation", "FutureObservation"]);
+
+/** The GpuOracle's epoch gate — `UnknownGpuEpoch(uint64,uint64)` is
+ *  0x3670b76d. The router and hook bubble it wrapped in their own revert
+ *  carriers, so no ABI in this bundle can name it; the classification
+ *  reads the raw revert bytes instead of the (null) name. */
+const ORACLE_EPOCH_SELECTOR = "3670b76d";
+
+/** "The pinned report expired" in either voice: a decoded epoch error name,
+ *  or the raw bytes of the epoch gate riding a bubble chain. */
+function isReportExpiry(error: NormalizedError): boolean {
+  return (
+    (error.errorName !== null && EXPIRY_ERRORS.has(error.errorName)) ||
+    (error.revertData?.toLowerCase().includes(ORACLE_EPOCH_SELECTOR) ?? false)
+  );
+}
 
 /** The slip's quote is a preview: it must fail fast, not hang. One flaky
  *  RPC read stalls the whole mirror batch (a single Promise.all over a
@@ -273,7 +289,17 @@ export class OnChainTradingPort implements TradingPort {
         if (need) approvals.push(need);
       }
 
-      const updateData = attestation.updateData;
+      // The order's report and the floors derived over it live in ONE cell
+      // the post-approval heal can refresh: the approve step eats real
+      // time, and an epoch roll there re-ages the report — the simulation
+      // then refuses through the oracle's epoch gate. The guarantee limits
+      // the user typed (exact-out size, spend cap) stay pinned; the
+      // price-derived floors (minSize/minOut) and the report itself move
+      // with the heal, so the signature always rides exactly what simulated.
+      const pinned: { updateData: `0x${string}`; quote: TradeQuote } = {
+        updateData: attestation.updateData,
+        quote,
+      };
       const buyStruct = () => ({
         gpuId,
         gpuOut: sizeRaw,
@@ -282,17 +308,17 @@ export class OnChainTradingPort implements TradingPort {
         deadline,
         sqrtLimitX96: 0n,
         recipient: owner,
-        updateData,
+        updateData: pinned.updateData,
       });
       const sellStruct = () => ({
         gpuId,
         gpuIn: sizeRaw,
         payout: getContracts().addresses.gusd as Address,
-        minOut: parseGusd(quote.minOut),
+        minOut: parseGusd(pinned.quote.minOut),
         deadline,
         sqrtLimitX96: 0n,
         recipient: owner,
-        updateData,
+        updateData: pinned.updateData,
       });
 
       // 3. Simulate the EXACT calldata that will be signed — same report,
@@ -305,27 +331,24 @@ export class OnChainTradingPort implements TradingPort {
       //    after the approvals have landed, over the same pinned calldata.
       const { router } = getContracts();
       const simulateFn = exactPullBuy ? "buyExactIn" : request.side === "buy" ? "buy" : "sell";
-      const simulateArgs = exactPullBuy
-        ? [gpuId, spendRaw, parseGpuUnits(quote.minSize), deadline, 0n, owner, updateData]
-        : request.side === "buy"
-          ? [buyStruct()]
-          : [sellStruct()];
+      const simulateArgs = () =>
+        exactPullBuy
+          ? [gpuId, spendRaw, parseGpuUnits(pinned.quote.minSize), deadline, 0n, owner, pinned.updateData]
+          : request.side === "buy"
+            ? [buyStruct()]
+            : [sellStruct()];
       const simulateCall = async () =>
         simulateWrite({
           address: router.address,
           abi: GPU_ROUTER_ABI,
           functionName: simulateFn,
-          args: simulateArgs,
+          args: simulateArgs(),
           account: owner,
         });
       if (approvals.length === 0) {
         const result = await simulateCall();
         if (!result.ok) {
-          if (
-            result.error.errorName !== null &&
-            EXPIRY_ERRORS.has(result.error.errorName) &&
-            attempt === 0
-          ) {
+          if (isReportExpiry(result.error) && attempt === 0) {
             continue; // the report expired — one refetch, then surface
           }
           lastVoice = result.error.voice;
@@ -356,13 +379,30 @@ export class OnChainTradingPort implements TradingPort {
         // calldata. Either way, no signature is requested for a call that
         // reverts.
         simulate: async () => {
-          const result = await simulateCall();
+          let result = await simulateCall();
+          if (!result.ok && isReportExpiry(result.error)) {
+            // The approve step crossed the epoch boundary — one heal: a
+            // fresh report, a fresh quote over it, and the same calldata
+            // re-simulated. Nothing fresher → the refusal stands.
+            const fresh = await this.quoteDeps.attestation(gpuId);
+            if (fresh.kind === "current" && fresh.reportHash !== attestation.reportHash) {
+              const freshQuote = await quoteAssetDetailed(
+                { ...request, toleranceBps: tolerance },
+                this.pinnedDeps(fresh),
+              );
+              if (freshQuote && !("unavailable" in freshQuote)) {
+                pinned.updateData = fresh.updateData;
+                pinned.quote = freshQuote;
+                result = await simulateCall();
+              }
+            }
+          }
           return result.ok ? result : { ok: false, error: result.error.voice };
         },
         buildSpec: () =>
           exactPullBuy
             ? buyExactInSpec(
-                { gpuId, gusdMaxIn: spendRaw, minGpuOut: parseGpuUnits(quote.minSize), deadline, sqrtLimitX96: 0n, updateData },
+                { gpuId, gusdMaxIn: spendRaw, minGpuOut: parseGpuUnits(pinned.quote.minSize), deadline, sqrtLimitX96: 0n, updateData: pinned.updateData },
                 owner,
               )
             : request.side === "buy"

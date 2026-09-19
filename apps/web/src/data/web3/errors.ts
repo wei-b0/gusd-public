@@ -21,6 +21,10 @@ export interface NormalizedError {
   retryable: boolean;
   /** The contract custom error name, when one decoded. */
   errorName: string | null;
+  /** The raw revert bytes when viem surfaced them. Bubble chains carry the
+   *  inner error's selector inside this blob even when no ABI here can name
+   *  it — callers classify on the bytes, not the name. */
+  revertData?: `0x${string}`;
 }
 
 const GENERIC_RETRY = "The transaction didn't go through. Try again in a moment.";
@@ -165,8 +169,13 @@ export function normalizeActionError(err: unknown): NormalizedError {
 
   const revert = findRevertData(err);
   if (revert) {
-    const mapped = ERROR_VOICE[revert.errorName] ?? GENERIC;
-    return { voice: mapped.voice, retryable: mapped.retryable, errorName: revert.errorName };
+    const mapped = revert.errorName === null ? GENERIC : ERROR_VOICE[revert.errorName] ?? GENERIC;
+    return {
+      voice: mapped.voice,
+      retryable: mapped.retryable,
+      errorName: revert.errorName,
+      ...(revert.data !== undefined ? { revertData: revert.data } : {}),
+    };
   }
 
   // Provider-level failures surface as strings; keep the lightest heuristic.
@@ -185,19 +194,28 @@ export function normalizeActionError(err: unknown): NormalizedError {
 
 /**
  * Walk viem's cause chain for the ABI-decoded revert: a
- * ContractFunctionRevertedError carries `data.errorName` + `data.args`.
+ * ContractFunctionRevertedError carries `data.errorName` + `data.args`, and
+ * `data.data` holds the raw revert bytes — including bubble chains, where
+ * the router wraps the hook's revert and no ABI here names the wrapper.
+ * Undecodable selectors surface as `errorName: null` with the raw bytes;
+ * callers that must classify precisely read the bytes.
  */
-function findRevertData(err: unknown): { errorName: string; args?: unknown[] } | null {
+function findRevertData(err: unknown): {
+  errorName: string | null;
+  args?: unknown[];
+  data?: `0x${string}`;
+} | null {
   let cause: unknown = err;
   for (let depth = 0; cause instanceof Error && depth < 8; depth++) {
     const data = (cause as { data?: unknown }).data;
     if (
       data &&
       typeof data === "object" &&
-      typeof (data as { errorName?: unknown }).errorName === "string"
+      (typeof (data as { errorName?: unknown }).errorName === "string" ||
+        typeof (data as { data?: unknown }).data === "string")
     ) {
-      const d = data as { errorName: string; args?: unknown[] };
-      return { errorName: d.errorName, args: d.args };
+      const d = data as { errorName?: string; args?: unknown[]; data?: `0x${string}` };
+      return { errorName: d.errorName ?? null, args: d.args, data: d.data };
     }
     cause = (cause as { cause?: unknown }).cause;
   }

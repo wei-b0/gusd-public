@@ -48,6 +48,15 @@ const CURRENT_ATT = {
   reportHash: `0x${"cd".repeat(32)}`,
 } as const;
 
+/** A genuinely different report — what the heal's refetch returns. Fresh
+ *  hash and wire marker, so "nothing fresher" can't be faked by the stub. */
+const FRESH_UPDATE_DATA = "0xdeadbeef" as const;
+const FRESH_ATT = {
+  ...CURRENT_ATT,
+  updateData: FRESH_UPDATE_DATA,
+  reportHash: `0x${"ee".repeat(32)}`,
+} as const;
+
 const h = vi.hoisted(() => ({
   session: {
     status: "connected",
@@ -73,10 +82,13 @@ const h = vi.hoisted(() => ({
   } as unknown,
   /** Simulation answers, popped in order — one per simulateWrite call.
    *  (Execute simulates pre-signature; there is no plan.simulate.) */
-  simQueue: [] as ({ ok: true } | { ok: false; error: { voice: string; errorName: string | null } })[],
+  simQueue: [] as ({ ok: true } | { ok: false; error: { voice: string; errorName: string | null; revertData?: `0x${string}` } })[],
   simReq: null as
     | null
     | { address: Address; functionName: string; args: readonly unknown[] },
+  /** Attestation results served by pop — the heal's fetch lands here when
+   *  the test plants a fresh report. Empty → the attKind fallback. */
+  attQueue: [] as unknown[],
 }));
 
 vi.mock("./quotes", () => ({
@@ -254,6 +266,7 @@ function makePort() {
       attestation: async (gpuParam: string) => {
         h.attCalls += 1;
         h.attGpu = gpuParam;
+        if (h.attQueue.length) return h.attQueue.shift();
         if (h.attKind !== "current") return { kind: h.attKind };
         return CURRENT_ATT;
       },
@@ -278,6 +291,7 @@ beforeEach(() => {
   h.registration = { token: GPU_TOKEN };
   h.simQueue = [{ ok: true }];
   h.simReq = null;
+  h.attQueue = [];
 });
 
 describe("quote / describeAsset", () => {
@@ -611,6 +625,70 @@ describe("spend-first buy plans", () => {
 
     const spec = plan.buildSpec();
     expect(spec.kind).toBe("trade-buy");
+  });
+
+  it("heals an epoch roll after the approve — plan.simulate re-pins a fresh report", async () => {
+    h.quote = SPEND_QUOTE;
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    const plan = actions.plans[0]!;
+    expect(plan.approvals).toHaveLength(1); // allowance 0 → the runner approves first
+
+    // The approve step crossed the epoch boundary: the post-approval sim
+    // refuses through the oracle's epoch gate, bubbled by the router in
+    // revert carriers no ABI here names — the classification reads bytes.
+    h.simQueue = [
+      {
+        ok: false,
+        error: {
+          voice: "The transaction didn't go through. Try again in a moment.",
+          errorName: null,
+          revertData:
+            "0x90bfb8650000000000000000000000003f00af695e46f21c05f33bb6f8cba9a796f5d0cc00000000000000000000000000000000000000000000000000000000000000443670b76d0000000000000000000000000000000000000000000000000000000001c729370000000000000000000000000000000000000000000000000000000001c72936",
+        },
+      },
+      { ok: true },
+    ];
+    h.attQueue = [FRESH_ATT]; // the heal's fetch
+
+    const healed = await plan.simulate?.();
+    expect(healed?.ok).toBe(true);
+    expect(h.attCalls).toBe(2); // one at submit, one in the heal
+    // The re-simulated calldata carried the healed report...
+    expect((h.simReq?.args as readonly unknown[])[6]).toBe(FRESH_UPDATE_DATA);
+
+    // ...and so does the calldata that gets signed.
+    const spec = plan.buildSpec();
+    const seen = { updateData: "" };
+    await spec.execute({
+      writeContract: async (call: unknown) => {
+        seen.updateData = (call as { args: readonly unknown[] }).args[6] as string;
+        return "0x00";
+      },
+    } as never);
+    expect(seen.updateData).toBe(FRESH_UPDATE_DATA);
+  });
+
+  it("retries the inline sim on the bubbled epoch gate — no decoded name needed", async () => {
+    h.quote = SPEND_QUOTE;
+    h.allowance = 10n ** 12n; // covers the spend → no approvals → the sim runs pre-signature
+    h.simQueue = [
+      {
+        ok: false,
+        error: {
+          voice: "The price report expired (the epoch rolled) — retry the order; it quotes a fresh one.",
+          errorName: null,
+          revertData:
+            "0x3670b76d0000000000000000000000000000000000000000000000000000000001c72937000000000000000000000000000000000000000000000000000000000001c72936",
+        },
+      },
+      { ok: true },
+    ];
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    expect(actions.plans).toHaveLength(1); // attempt 1 reached a plan
+    expect(h.attCalls).toBe(2); // one refetch before surfacing
+    expect(h.simReq?.functionName).toBe("buyExactIn");
   });
 
   it("preflights the exact pull against the full spend, in its own voice", async () => {
