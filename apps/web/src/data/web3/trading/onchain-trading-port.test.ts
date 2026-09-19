@@ -760,9 +760,18 @@ describe("spend-first buy plans", () => {
     expect(actions.plans).toHaveLength(1);
   });
 
-  it("refuses a twice-slow quote with the chain's own voice, never the size one", async () => {
+  it("gives a raced-out null one re-price too — pool churn heals, not refuses", async () => {
+    h.quoteQueue = [null];
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    expect(h.quoteCalls).toBe(2);
+    expect(actions.plans).toHaveLength(1);
+  });
+
+  it("refuses a thrice-slow quote with the chain's own voice, never the size one", async () => {
     h.quote = null;
     h.quoteQueue = [
+      { unavailable: true, reason: "quote-timeout" },
       { unavailable: true, reason: "quote-timeout" },
       { unavailable: true, reason: "quote-timeout" },
     ];
@@ -770,6 +779,18 @@ describe("spend-first buy plans", () => {
     await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
       "The chain is slow to quote right now — nothing is wrong with the order, try again in a moment.",
     );
+    expect(h.quoteCalls).toBe(3); // two heals, then the honest voice
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("refuses a null that survives two re-prices — a pool race heals, a fact does not", async () => {
+    h.quote = null;
+    h.quoteQueue = [null, null];
+    const { port, actions } = makePort();
+    await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
+      "This order can't be quoted right now — check the size and try again.",
+    );
+    expect(h.quoteCalls).toBe(3);
     expect(actions.plans).toHaveLength(0);
   });
 

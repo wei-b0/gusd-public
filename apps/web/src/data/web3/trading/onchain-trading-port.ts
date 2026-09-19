@@ -222,10 +222,12 @@ export class OnChainTradingPort implements TradingPort {
     const tolerance = request.toleranceBps ?? DEFAULT_TOLERANCE_BPS;
     const gpuId = gpuIdForAsset(request.asset);
 
-    // Two attempts: the pinned report either holds through simulate, or it
-    // expired (epoch rolled) and ONE fresh fetch re-runs the whole span.
-    // Everything else fails with its own voice.
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Three beats: the pinned report either holds through simulate, or a
+    // transient (epoch roll, slow read, pool churn) gets re-priced. Every
+    // transient family heals at least once before any refusal; only
+    // persistent facts — capacity, deregistration, a null that survives
+    // two re-prices — ever refuse, and they speak their own voice.
+    for (let attempt = 0; attempt < 3; attempt++) {
       // 1. The report this order will embed — fetched fresh at submit, named
       //    by the market's canonical bytes32 gpuId (the key every layer
       //    agrees on — the asset label is the UI's vocabulary, not the
@@ -234,7 +236,7 @@ export class OnChainTradingPort implements TradingPort {
       //    refusing inside the gap.
       const attestation = await this.bridgedAttestation(gpuId);
       if (attestation.kind !== "current") {
-        if (attempt === 0) continue; // one more fetch before refusing
+        if (attempt === 0) continue; // one more bridged fetch before refusing
         throw new Error(NO_ATTESTATION);
       }
 
@@ -247,17 +249,18 @@ export class OnChainTradingPort implements TradingPort {
         attestation,
       );
       if (!quote || "unavailable" in quote) {
-        // Staleness and slow reads self-heal: one fresh fetch re-runs the
-        // whole span. A null (degenerate fill, pool churn between the
-        // batch snapshot and the read) gets the same one re-price before
-        // it's believed. Capacity is a fact — it refuses with the
-        // market's own figure instead of the generic voice.
-        if (
-          attempt === 0 &&
-          (!quote || quote.reason === "oracle-stale" || quote.reason === "quote-timeout")
-        ) {
-          continue; // refetch the report and re-price
-        }
+        // What heals: staleness, slow reads, and a null (degenerate fill,
+        // pool churn between the batch snapshot and the read) — every one
+        // gets a fresh fetch and re-price at every beat but the last;
+        // only a refusal that survives two re-prices is believed. What
+        // never heals: capacity — a fact, refused with the market's own
+        // figure the moment it answers.
+        const healable =
+          attempt < 2 &&
+          (!quote ||
+            ("unavailable" in quote &&
+              (quote.reason === "oracle-stale" || quote.reason === "quote-timeout")));
+        if (healable) continue; // refetch the report and re-price
         throw new Error(noQuoteVoice(request, quote));
       }
 
