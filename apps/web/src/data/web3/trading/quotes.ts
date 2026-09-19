@@ -316,10 +316,13 @@ async function currentAttestation(deps: QuoteDeps, gpuId: `0x${string}`): Promis
  *  inside that renewal gap. A short in-call re-poll crosses it; past the
  *  budget the typed refusal stands — the fail-closed gate is untouched,
  *  the quote just refuses patiently instead of refusing instantly. */
-const REPORT_BRIDGE_MS = 600;
+/** The quote layer's own bridge budget — snappy, it's a preview. The
+ *  trading port's submit carries its own longer patience (its signed
+ *  action may wait the whole gap out). */
 const REPORT_BRIDGE_ATTEMPTS = 2;
+export const REPORT_BRIDGE_MS = 600;
 
-function defaultSleep(ms: number): Promise<void> {
+export function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 

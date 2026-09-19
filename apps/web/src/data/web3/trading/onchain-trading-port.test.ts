@@ -89,11 +89,17 @@ const h = vi.hoisted(() => ({
   /** Attestation results served by pop — the heal's fetch lands here when
    *  the test plants a fresh report. Empty → the attKind fallback. */
   attQueue: [] as unknown[],
+  /** Quote results served by pop — the first call's refusal lands here
+   *  when the test plants a heal. Empty → the h.quote fallback. */
+  quoteQueue: [] as unknown[],
+  quoteCalls: 0,
 }));
 
 vi.mock("./quotes", () => ({
   DEFAULT_TOLERANCE_BPS: 50,
   TOLERANCE_PRESETS_BPS: [10, 50, 100],
+  REPORT_BRIDGE_MS: 600,
+  defaultSleep: async () => {},
   defaultQuoteDeps: () => ({}),
   describeAsset: async () => h.availability,
   quoteAsset: async (request: unknown) => {
@@ -103,6 +109,8 @@ vi.mock("./quotes", () => ({
   quoteAssetDetailed: async (request: unknown, deps: unknown) => {
     h.quoteRequest = request;
     h.quoteDeps = deps;
+    h.quoteCalls += 1;
+    if (h.quoteQueue.length) return h.quoteQueue.shift();
     return h.quote;
   },
 }));
@@ -270,6 +278,9 @@ function makePort() {
         if (h.attKind !== "current") return { kind: h.attKind };
         return CURRENT_ATT;
       },
+      // The submit-time renewal-gap bridge paces its polls on this — a
+      // no-op here keeps the patience test instant.
+      sleep: async () => {},
     },
   } as never);
   return { port, actions, store };
@@ -292,6 +303,8 @@ beforeEach(() => {
   h.simQueue = [{ ok: true }];
   h.simReq = null;
   h.attQueue = [];
+  h.quoteQueue = [];
+  h.quoteCalls = 0;
 });
 
 describe("quote / describeAsset", () => {
@@ -341,13 +354,15 @@ describe("execute gates", () => {
     expect(actions.plans).toHaveLength(0);
   });
 
-  it("refuses to act without a current attestation — after exactly one refetch", async () => {
+  it("refuses to act without a current attestation — after the submit bridge", async () => {
     h.attKind = "degraded";
     const { port, actions } = makePort();
     await expect(port.execute(BUY_REQUEST)).rejects.toThrow(
       "The oracle has no current price report right now — orders wait for the attestor's next attestation. Try again in a moment.",
     );
-    expect(h.attCalls).toBe(2); // one automatic refetch, then the refusal
+    // Both attempts bridged the renewal gap: each polls 1 + 8 times before
+    // the attempt loop's refetch hands the refusal over.
+    expect(h.attCalls).toBe(18);
     expect(actions.plans).toHaveLength(0);
   });
 
@@ -733,6 +748,42 @@ describe("spend-first buy plans", () => {
     await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
       "This wallet holds 9.0000 gUSD — this buy needs up to 10.0000 gUSD. Mint gUSD from the reserve asset first.",
     );
+  });
+
+  it("gives a slow re-quote one heal — the submit re-prices instead of refusing", async () => {
+    // The re-quote raced past the budget (or one RPC read died): the typed
+    // quote-timeout, then a healthy quote on the refetched report.
+    h.quoteQueue = [{ unavailable: true, reason: "quote-timeout" }];
+    const { port, actions } = makePort();
+    await port.execute(SPEND_REQUEST);
+    expect(h.quoteCalls).toBe(2); // the refusal was the first beat, not the last
+    expect(actions.plans).toHaveLength(1);
+  });
+
+  it("refuses a twice-slow quote with the chain's own voice, never the size one", async () => {
+    h.quote = null;
+    h.quoteQueue = [
+      { unavailable: true, reason: "quote-timeout" },
+      { unavailable: true, reason: "quote-timeout" },
+    ];
+    const { port, actions } = makePort();
+    await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
+      "The chain is slow to quote right now — nothing is wrong with the order, try again in a moment.",
+    );
+    expect(actions.plans).toHaveLength(0);
+  });
+
+  it("refuses a capacity refusal with the market's own figure", async () => {
+    // Capacity is a fact, not a race — it never gets a heal, but it speaks
+    // what the book actually fills, in the request's own basis.
+    h.quote = null;
+    h.quoteQueue = [{ unavailable: true, reason: "no-ask-capacity", capacityRaw: parseGusd(1.5) }];
+    const { port, actions } = makePort();
+    await expect(port.execute(SPEND_REQUEST)).rejects.toThrow(
+      "This market fills at most 1.5000 gUSD on this buy right now — size down to its capacity.",
+    );
+    expect(h.quoteCalls).toBe(1); // no heal on a fact
+    expect(actions.plans).toHaveLength(0);
   });
 });
 

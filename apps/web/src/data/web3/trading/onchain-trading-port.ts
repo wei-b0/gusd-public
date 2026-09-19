@@ -52,11 +52,13 @@ import type { OnChainAccountStore } from "@/data/onchain/account-store";
 import type { Attestation } from "@/data/oracle/attestation";
 import {
   DEFAULT_TOLERANCE_BPS,
+  REPORT_BRIDGE_MS,
   describeAsset,
   quoteAsset,
   quoteAssetDetailed,
   type QuoteDeps,
   defaultQuoteDeps,
+  defaultSleep,
 } from "./quotes";
 import { TRADE_DEADLINE_SECS, buyExactInSpec, buySpec, sellSpec } from "./specs";
 
@@ -78,6 +80,20 @@ const NO_QUOTE = "This order can't be quoted right now — check the size and tr
  *  the market's. One retry happens inside; past that the order refuses. */
 const NO_ATTESTATION =
   "The oracle has no current price report right now — orders wait for the attestor's next attestation. Try again in a moment.";
+/** A slow quote at the attempt-1 re-quote — the same voice the slip's
+ *  preview speaks for the timeout (infra, not a market verdict). */
+const QUOTE_SLOW =
+  "The chain is slow to quote right now — nothing is wrong with the order, try again in a moment.";
+/** The market genuinely has nothing to fill against — the slip's voice. */
+const NO_DEPTH =
+  "This market has nothing to fill against right now — orders wait for depth.";
+
+/** The submit-time patience: a signed action may wait out the attestor's
+ *  renewal gap (its first tick lands seconds after the 60s boundary)
+ *  where the preview's faster budget would refuse. Eight × 600ms ≈ 4.8s
+ *  of polling per fetch — one bridge covers the observed gap; the attempt
+ *  loop can spend it twice. */
+const SUBMIT_BRIDGE_ATTEMPTS = 8;
 
 /** Revert names that mean "the pinned report expired" — the one failure a
  *  fresh attestation legitimately fixes; retried once, everything else
@@ -97,6 +113,28 @@ function isReportExpiry(error: NormalizedError): boolean {
     (error.errorName !== null && EXPIRY_ERRORS.has(error.errorName)) ||
     (error.revertData?.toLowerCase().includes(ORACLE_EPOCH_SELECTOR) ?? false)
   );
+}
+
+/** The execute-time quote refusal in the market's own figures — the same
+ *  voices the slip's preview speaks, so a submit that refuses never says
+ *  something vaguer than the slip would have. Capacity prints what the
+ *  book actually fills (capacityRaw is in the request's own basis: GPU
+ *  raw on size-first, gUSD raw on money-first); staleness and slow reads
+ *  name themselves; the degenerate leftovers keep the generic voice. */
+function noQuoteVoice(request: TradeRequest, quote: TradeQuote | QuoteFailure | null): string {
+  if (quote && "unavailable" in quote) {
+    if (quote.reason === "quote-timeout") return QUOTE_SLOW;
+    if (quote.reason === "oracle-stale") return NO_ATTESTATION;
+    if (quote.reason === "no-ask-capacity" || quote.reason === "no-bid-capacity") {
+      if (quote.capacityRaw !== undefined && quote.capacityRaw > 0n) {
+        return request.basis === "units"
+          ? `This market fills at most ${fmtUnitsLedger(formatGpuUnits(quote.capacityRaw))} ${request.asset} on this ${request.side} right now — size down to its capacity.`
+          : `This market fills at most ${fmtGusdLedger(formatGusdRaw(quote.capacityRaw))} gUSD on this ${request.side} right now — size down to its capacity.`;
+      }
+      return NO_DEPTH;
+    }
+  }
+  return NO_QUOTE;
 }
 
 /** The slip's quote is a preview: it must fail fast, not hang. One flaky
@@ -187,29 +225,40 @@ export class OnChainTradingPort implements TradingPort {
     // Two attempts: the pinned report either holds through simulate, or it
     // expired (epoch rolled) and ONE fresh fetch re-runs the whole span.
     // Everything else fails with its own voice.
-    let lastVoice: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       // 1. The report this order will embed — fetched fresh at submit, named
       //    by the market's canonical bytes32 gpuId (the key every layer
-      //    agrees on — the asset label is the UI's vocabulary, not the API's).
-      const attestation = await this.quoteDeps.attestation(gpuId);
+      //    agrees on — the asset label is the UI's vocabulary, not the
+      //    API's). The fetch bridges the attestor's renewal gap: a submit
+      //    landing on the 60s boundary polls for the next report instead of
+      //    refusing inside the gap.
+      const attestation = await this.bridgedAttestation(gpuId);
       if (attestation.kind !== "current") {
-        if (attempt === 0) continue; // one refetch before refusing
+        if (attempt === 0) continue; // one more fetch before refusing
         throw new Error(NO_ATTESTATION);
       }
 
       // 2. Re-quote against EXACTLY this report — the signed limits derive
       //    from the same price the trade embeds, never from the desk's
-      //    (older) preview.
-      const quote = await quoteAssetDetailed(
+      //    (older) preview. The budget keeps a hung RPC read from hanging
+      //    the submit; past it the typed timeout voice stands.
+      const quote = await this.pinnedQuote(
         { ...request, toleranceBps: tolerance },
-        this.pinnedDeps(attestation),
+        attestation,
       );
       if (!quote || "unavailable" in quote) {
-        if (quote && "unavailable" in quote && quote.reason === "oracle-stale" && attempt === 0) {
-          continue; // the report expired between fetch and quote — refetch
+        // Staleness and slow reads self-heal: one fresh fetch re-runs the
+        // whole span. A null (degenerate fill, pool churn between the
+        // batch snapshot and the read) gets the same one re-price before
+        // it's believed. Capacity is a fact — it refuses with the
+        // market's own figure instead of the generic voice.
+        if (
+          attempt === 0 &&
+          (!quote || quote.reason === "oracle-stale" || quote.reason === "quote-timeout")
+        ) {
+          continue; // refetch the report and re-price
         }
-        throw new Error(NO_QUOTE);
+        throw new Error(noQuoteVoice(request, quote));
       }
 
       const approvals: ApprovalNeed[] = [];
@@ -351,7 +400,6 @@ export class OnChainTradingPort implements TradingPort {
           if (isReportExpiry(result.error) && attempt === 0) {
             continue; // the report expired — one refetch, then surface
           }
-          lastVoice = result.error.voice;
           throw new Error(result.error.voice);
         }
       }
@@ -415,7 +463,43 @@ export class OnChainTradingPort implements TradingPort {
     }
     // Unreachable: each loop iteration either returns or throws; the
     // compiler wants the exhaustiveness guard anyway.
-    throw new Error(lastVoice ?? NO_ATTESTATION);
+    throw new Error(NO_ATTESTATION);
+  }
+
+  /** The submit-time report fetch with the renewal-gap bridge: a submit
+   *  landing inside the attestor's 60s boundary gap polls for the next
+   *  report (the attestor's first tick lands seconds after the boundary)
+   *  instead of refusing inside the gap. Past the bridge the answer
+   *  stands — the attestor's liveness is a fact, not retried away. */
+  private async bridgedAttestation(gpuId: `0x${string}`): Promise<Attestation> {
+    const sleep = this.quoteDeps.sleep ?? defaultSleep;
+    let att = await this.quoteDeps.attestation(gpuId);
+    for (let i = 0; i < SUBMIT_BRIDGE_ATTEMPTS && att.kind !== "current"; ++i) {
+      await sleep(REPORT_BRIDGE_MS);
+      att = await this.quoteDeps.attestation(gpuId);
+    }
+    return att;
+  }
+
+  /** The re-quote with the slip's fail-fast budget: a hung RPC read
+   *  surfaces as the typed quote-timeout failure after QUOTE_TIMEOUT_MS
+   *  (where the attempt loop gives it one heal) instead of hanging the
+   *  submit indefinitely. */
+  private async pinnedQuote(
+    request: TradeRequest,
+    attestation: Attestation,
+  ): Promise<TradeQuote | QuoteFailure | null> {
+    try {
+      return await Promise.race([
+        quoteAssetDetailed(request, this.pinnedDeps(attestation)),
+        quoteTimeout(QUOTE_TIMEOUT_MS),
+      ]);
+    } catch (err) {
+      if (err instanceof Error && err.message === "quote-timeout") {
+        return { unavailable: true, reason: "quote-timeout" };
+      }
+      throw err;
+    }
   }
 
   /** A quote stack whose attestation always answers the pinned report —
