@@ -8,7 +8,7 @@
  * reconcile actions when indexed reads are unavailable (see src/domain/indexer.ts).
  *
  * Transport is plain http with modest batching/timeouts, matching the
- * publisher's house style. Never imported unless a wallet session exists.
+ * oracle's house style. Never imported unless a wallet session exists.
  */
 
 import { createPublicClient, http, type PublicClient } from "viem";

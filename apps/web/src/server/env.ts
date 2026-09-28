@@ -1,6 +1,6 @@
 /**
- * Server-side environment, parsed once, fail-closed in the publisher's house
- * style: a half-configured auth boundary must not boot. PRIVY_APP_ID without
+ * Server-side environment, parsed once, fail-closed house style: a
+ * half-configured auth boundary must not boot. PRIVY_APP_ID without
  * PRIVY_APP_SECRET is a boot error, not a silent fallback.
  *
  * Note: this module is server-only (Node runtime route handlers). It reads

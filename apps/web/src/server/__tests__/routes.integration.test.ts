@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { importPKCS8, SignJWT } from "jose";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createDb, findUserWalletByAddress, type Db } from "@gusd/db";
 import { POST as sessionPost } from "@/app/api/auth/session/route";
 import { GET as meGet } from "@/app/api/me/route";
@@ -39,8 +39,14 @@ d("auth boundary routes (RUN_DB_TESTS=1)", () => {
   let close: () => Promise<void>;
 
   beforeAll(async () => {
-    // The smoke keypair is minted next to this suite by the run harness; the
-    // env points the server at it so both verify paths run fully offline.
+    // The suite mints its own ES256 smoke keypair (idempotent): the SPKI
+    // becomes the server's verification key and the PKCS8 signs the
+    // Privy-shaped tokens, so both verify paths run fully offline.
+    mkdirSync("/tmp/gusd-smoke", { recursive: true });
+    const { generateKeyPairSync } = await import("node:crypto");
+    const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    writeFileSync("/tmp/gusd-smoke/spki.pem", publicKey.export({ type: "spki", format: "pem" }));
+    writeFileSync("/tmp/gusd-smoke/priv.pem", privateKey.export({ type: "pkcs8", format: "pem" }));
     process.env.PRIVY_APP_ID = APP_ID;
     process.env.PRIVY_APP_SECRET = "smoke-secret";
     process.env.PRIVY_VERIFICATION_KEY = readFileSync("/tmp/gusd-smoke/spki.pem", "utf8");

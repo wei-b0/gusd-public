@@ -4,8 +4,8 @@
  * (gUSD 6-dec, GPU 18-dec), the product speaks JS numbers via domain/units.
  *
  * Doctrine, enforced by what these functions choose NOT to produce:
- *   - the published oracle value is never mapped to a display number
- *     (oraclePublicationRow exposes health fields only — never `price`);
+ *   - the consumed oracle price is never mapped to a display number
+ *     (oracleReportRow exposes health fields only — never `price`);
  *   - `ammPriceGusd` (AMM execution state) is never consumed — depth comes
  *     from `liquidity` directly and stays a depth figure, not a price;
  *   - the executed trade price exists only in tape rows.
@@ -14,7 +14,7 @@
 import type { AssetId, MarketTrade } from "@/domain/types";
 import { formatGpuUnits, formatGusdRaw } from "@/domain/units";
 import { assetForGpuId } from "@/data/web3/gpu-id";
-import type { ExecutionDto, OracleStateDto, PoolDto, PoolStatsBucketDto, SgusdVaultDto, SwapTapeDto, WalletPositionDto, WalletVaultPositionDto } from "./dto";
+import type { ExecutionDto, GpuOracleStateDto, PoolDto, PoolStatsBucketDto, SgusdVaultDto, SwapTapeDto, WalletPositionDto, WalletVaultPositionDto } from "./dto";
 import type { IndexedEvent } from "@/domain/indexer";
 
 // --- swap tape → MarketTrade --------------------------------------------------
@@ -268,40 +268,40 @@ function row(
   };
 }
 
-// --- oracle publication transparency row -------------------------------------------------
+// --- oracle report transparency row ------------------------------------------------------
 
-/** Health fields of the indexed oracle publication, for the terminal Index
- *  feed's transparency row. The published `price` itself is deliberately
+/** Health fields of the last consumed oracle report, for the terminal Index
+ *  feed's transparency row. The consumed `price` itself is deliberately
  *  NOT here — it must never render next to (or instead of) a market price. */
-export interface OraclePublicationRow {
-  staleness: "fresh" | "stale" | "unknown";
-  /** Age at read time, recomputed from updatedAtSec — the API's ageSec is a
+export interface OracleReportRow {
+  freshness: "current" | "expired" | "unknown";
+  /** Age at read time, recomputed from observedAtSec — the API's ageSec is a
    *  serving-time snapshot that goes stale in the browser. */
   ageSec: number | null;
-  updatedAtSec: number | null;
-  lastPublishedBlockNumber: number | null;
-  overridden: boolean;
+  observedAtSec: number | null;
+  epoch: string | null;
+  lastConsumedBlockNumber: number | null;
 }
 
-export function oraclePublicationRow(
-  state: OracleStateDto | null | undefined,
+export function oracleReportRow(
+  state: GpuOracleStateDto | null | undefined,
   nowSec: number | null,
-): OraclePublicationRow {
+): OracleReportRow {
   if (state === null || state === undefined) {
-    return { staleness: "unknown", ageSec: null, updatedAtSec: null, lastPublishedBlockNumber: null, overridden: false };
+    return { freshness: "unknown", ageSec: null, observedAtSec: null, epoch: null, lastConsumedBlockNumber: null };
   }
   // A null nowSec (the pre-mount clock) leaves the age null — the row
   // prints "—" for it, never a stale guess.
   const ageSec =
-    state.updatedAtSec === null || nowSec === null
+    state.observedAtSec === null || nowSec === null
       ? null
-      : Math.max(0, nowSec - state.updatedAtSec);
+      : Math.max(0, nowSec - state.observedAtSec);
   return {
-    staleness: state.staleness,
+    freshness: state.freshness,
     ageSec,
-    updatedAtSec: state.updatedAtSec,
-    lastPublishedBlockNumber: state.lastPublishedBlockNumber,
-    overridden: state.overriddenPrice !== null,
+    observedAtSec: state.observedAtSec,
+    epoch: state.epoch,
+    lastConsumedBlockNumber: state.lastConsumedBlockNumber,
   };
 }
 

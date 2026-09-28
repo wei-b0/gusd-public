@@ -21,7 +21,7 @@ import { GPU_ROUTER_ABI } from "./abis/gpu_router";
 import { GPU_HOOK_ABI } from "./abis/gpu_hook";
 import { SGUSD_ABI } from "./abis/sgusd";
 import { STABLE_ROUTER_ABI } from "./abis/stable_router";
-import { GPU_PRICE_ORACLE_ABI } from "./abis/gpu_price_oracle";
+import { GPU_ORACLE_ABI } from "./abis/gpu_oracle";
 import { V4_QUOTER_ABI } from "./abis/v4_quoter";
 import { STATE_VIEW_ABI } from "./abis/state_view";
 import { GPU_MARKET_LIQUIDITY_ABI } from "./abis/gpu_market_liquidity";
@@ -92,9 +92,9 @@ function stableRouterContract(client?: PublicClient): StableRouterContract {
   return contract(contractAddresses().stableRouter, STABLE_ROUTER_ABI, client);
 }
 
-export type OracleContract = ContractFor<typeof GPU_PRICE_ORACLE_ABI>;
+export type OracleContract = ContractFor<typeof GPU_ORACLE_ABI>;
 function oracleContract(client?: PublicClient): OracleContract {
-  return contract(contractAddresses().oracle, GPU_PRICE_ORACLE_ABI, client);
+  return contract(contractAddresses().oracle, GPU_ORACLE_ABI, client);
 }
 
 export type GpuQuoterContract = ContractFor<typeof GPU_QUOTER_ABI>;

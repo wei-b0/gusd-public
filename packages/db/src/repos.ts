@@ -22,6 +22,7 @@ import {
   publishViolations,
   publishedIndexValues,
 } from "./schema/pricing.js";
+import { reports } from "./schema/reports.js";
 import { normalizedObservations, unmappedLabels } from "./schema/observations.js";
 import { userWallets } from "./schema/identity.js";
 import type { Executor } from "./client.js";
@@ -795,6 +796,95 @@ export async function recordPublishViolations(
     })
     .returning({ id: publishViolations.id });
   return { inserted: rows.length > 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Oracle reports (pull oracle)
+// ---------------------------------------------------------------------------
+
+export interface OracleReportRowInput {
+  version: number;
+  gpuId: string;
+  candidateId?: string | null;
+  price: number;
+  observedAt: number;
+  epoch: number;
+  validFrom: number;
+  validUntil: number;
+  calcHash: string;
+  signature: string;
+  reportHash: string;
+  attestedAt: Date;
+}
+
+/**
+ * Persist a signed report. Idempotent by (gpu_id, epoch) — the same
+ * first-consumer-wins binding the GpuOracle enforces on-chain: a re-attest of
+ * an epoch that already has a row (process restart, duplicate tick) inserts
+ * nothing and is not an equivocation, because the schema guarantees the row
+ * that wins is the one that was there first.
+ */
+export async function insertOracleReport(
+  ex: Executor,
+  row: OracleReportRowInput,
+): Promise<{ inserted: boolean }> {
+  const rows = await ex
+    .insert(reports)
+    .values({
+      version: row.version,
+      gpuId: row.gpuId,
+      candidateId: row.candidateId ?? null,
+      price: row.price,
+      observedAt: row.observedAt,
+      epoch: row.epoch,
+      validFrom: row.validFrom,
+      validUntil: row.validUntil,
+      calcHash: row.calcHash,
+      signature: row.signature,
+      reportHash: row.reportHash,
+      attestedAt: row.attestedAt,
+    })
+    .onConflictDoNothing({ target: [reports.gpuId, reports.epoch] })
+    .returning({ id: reports.id });
+  return { inserted: rows.length > 0 };
+}
+
+/** The report attested into `epoch`, if the attestor produced one. */
+export async function getOracleReport(
+  ex: Executor,
+  gpuId: string,
+  epoch: number,
+) {
+  const rows = await ex
+    .select()
+    .from(reports)
+    .where(and(eq(reports.gpuId, gpuId), eq(reports.epoch, epoch)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Newest report for a gpu — the attestor's last signed word. */
+export async function getLatestOracleReport(ex: Executor, gpuId: string) {
+  const rows = await ex
+    .select()
+    .from(reports)
+    .where(eq(reports.gpuId, gpuId))
+    .orderBy(desc(reports.epoch))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Reports for the given gpu in the given epoch window, oldest first. */
+export async function getOracleReportsSince(
+  ex: Executor,
+  gpuId: string,
+  sinceEpoch: number,
+) {
+  return ex
+    .select()
+    .from(reports)
+    .where(and(eq(reports.gpuId, gpuId), gte(reports.epoch, sinceEpoch)))
+    .orderBy(reports.epoch);
 }
 
 // ---------------------------------------------------------------------------

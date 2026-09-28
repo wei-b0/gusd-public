@@ -14,9 +14,10 @@ export interface ProtocolAddresses {
   ledger: Address;
   marketLiquidity: Address;
   oracle: Address;
-  /** The oracle publication identity — present only when this deployment
-   *  also deployed the oracle (an external ORACLE keeps the field absent). */
-  oraclePublisher?: Address;
+  /** The oracle attestor signer (GpuOracle.signer) — present only when this
+   *  deployment also deployed the oracle (an external ORACLE keeps the field
+   *  absent). Its EIP-712 signatures are the only consumable oracle input. */
+  oracleAttestor?: Address;
   permit2: Address;
   poolManager: Address;
   positionManager: Address;
@@ -34,43 +35,26 @@ export interface ProtocolAddresses {
   /** Indexer backfill anchor (block.number - 1 at deploy time) — carried
    *  verbatim from the record so the module mirrors it faithfully. */
   startBlock: number;
+  /** The oracle's acceptance grid, carried verbatim from the record when
+   *  the deploy persisted it (records predating the pull-oracle epoch
+   *  keys keep the fields absent). The attestor client's report-validity
+   *  math reads these, not the chain. */
+  oracleEpochLength?: number;
+  oracleMaxObservationAge?: number;
 }
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
-  "4663": {
-    "chainId": 4663,
-    "gpuQuoter": "0x9207F55b00b16B6dA00aC977CFB4039f482F9158",
-    "gusd": "0xAE52d24C85d0261A161B3bE0b444055BD80471F7",
-    "hook": "0xf60Aa9Cf9720236E51C1D02FF9Cd685FC2b510cC",
-    "issuance": "0x7506b03E9A4aD1C6FBBd3E1c355bb76d0462aA6e",
-    "ledger": "0x64e3FeE2AB83E0b1E3F6a14eC872e8a7a8253C1a",
-    "marketLiquidity": "0xB42045b03a6b5EDBbBA335A01fCb7cA93c2DA4f7",
-    "oracle": "0x8CC5b5d1f7334B56e948e12bA7A759F24eA0681c",
-    "oraclePublisher": "0xfEed079814cB1fFd2E7aECd3A991A78309e0b5e8",
-    "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
-    "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
-    "positionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
-    "quoter": "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
-    "router": "0x9a7348d8Fb6C628889B2e9c2B5BD8fB1FF6F474a",
-    "sgusd": "0x091a94DBc3E90df51364163047E6A81724dCc4a9",
-    "stableRouter": "0xc5fe369D2C313B10B2a1971bCA32D3204283dBEc",
-    "stables": [
-      "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
-    ],
-    "startBlock": 61390610,
-    "stateView": "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
-    "underlying": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
-    "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
-  },
   "31337": {
     "chainId": 31337,
     "gpuQuoter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
     "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0x2B720ace6F9368416cA6B1A1aE73FCE2847490Cc",
+    "hook": "0x3F00aF695E46F21C05f33bb6f8cba9A796f5D0cc",
     "issuance": "0x9A676e781A523b5d0C0e43731313A708CB607508",
     "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
     "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
     "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-    "oraclePublisher": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "oracleAttestor": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "oracleEpochLength": 60,
+    "oracleMaxObservationAge": 300,
     "permit2": "0x61c36a8d610163660E21a8b7359e1Cac0C9133e1",
     "poolManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
     "positionManager": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
@@ -80,7 +64,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "stableRouter": "0x3Aa5ebB10DC797CAC828524e59A333d0A371443c",
     "stables": [
       "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-      "0xAd8F7921738819152FFA371c984D736842ed8AFE"
+      "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64"
     ],
     "startBlock": 0,
     "stateView": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",

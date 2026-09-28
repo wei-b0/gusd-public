@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseGpuUnits } from "@/domain/units";
 import {
-  issuanceGuardOk,
   oracleGuardOk,
   quoteBuyExactOutMirror,
   quoteBuyMirror,
@@ -17,10 +16,11 @@ import {
  * POL-then-backstop order and its 2-wei headroom, the fee rounding (ceil
  * where Solidity rounds up), the R2 property that the backstop closes the
  * residual at exactly the primary's ask, the R10 cap stacking, the dust
- * thresholds (GUSD_DUST 5, GPU_DUST 1), and the guards at their boundary.
- * All figures are hand-derived from the contract's formulas at rawPrice
- * 12500 (1.25 gUSD/unit) over compositionDivisor 1e16 — if the mirror and
- * the hook ever disagree, a number here moves first.
+ * thresholds (GUSD_DUST 5, GPU_DUST 1), and the pull-oracle guard at its
+ * boundary (the report IS the executable price — current epoch, live
+ * observation). All figures are hand-derived from the contract's formulas
+ * at rawPrice 12500 (1.25 gUSD/unit) over compositionDivisor 1e16 — if the
+ * mirror and the hook ever disagree, a number here moves first.
  */
 
 const CD = 10n ** 16n; // compositionDivisor at the fake's scales
@@ -29,9 +29,12 @@ const DENOM_BID = 12_500n * 9_950n; // rawPrice × (1e4 − bidBps)
 function makeState(opts?: Partial<HookMarketState>): HookMarketState {
   return {
     rawPrice: 12_500n,
-    oracleUpdatedAtSec: 0,
-    hookMaxOracleStalenessSec: 10_000,
-    issuanceMaxOracleStalenessSec: 10_000,
+    // A report born for the current epoch: observed now-ish, valid for a
+    // long window — every clock check passes by default.
+    observedAtSec: 0,
+    maxObservationAgeSec: 10_000,
+    validFromSec: 0,
+    validUntilSec: 10_000,
     askBps: 50,
     bidBps: 50,
     polFeeBps: 10,
@@ -51,22 +54,36 @@ function makeState(opts?: Partial<HookMarketState>): HookMarketState {
 
 const NOW = 1_000;
 
-describe("oracle + issuance guards", () => {
-  it("fails a zero price, a future stamp, and an age past the limit", () => {
+describe("pull-oracle guard (one acceptance set)", () => {
+  it("fails a zero price, a future stamp, an old observation, and a closed window", () => {
     const s = makeState();
     expect(oracleGuardOk(s, NOW)).toBe(true);
     expect(oracleGuardOk(makeState({ rawPrice: 0n }), NOW)).toBe(false);
-    expect(oracleGuardOk(makeState({ oracleUpdatedAtSec: NOW + 1 }), NOW)).toBe(false);
-    expect(oracleGuardOk(makeState({ hookMaxOracleStalenessSec: 999 }), NOW)).toBe(false);
-    // The boundary itself passes: age == limit.
-    expect(oracleGuardOk(makeState({ hookMaxOracleStalenessSec: 1_000 }), NOW)).toBe(true);
+    // Future observation — the report claims to be newer than now.
+    expect(oracleGuardOk(makeState({ observedAtSec: NOW + 1 }), NOW)).toBe(false);
+    // Age past the oracle's floor (maxObservationAge 1_000): 1_001 fails,
+    // the boundary itself passes.
+    expect(oracleGuardOk(makeState({ maxObservationAgeSec: 1_000 }), NOW)).toBe(true);
+    expect(
+      oracleGuardOk(makeState({ maxObservationAgeSec: 1_000, observedAtSec: NOW - 1_001 }), NOW),
+    ).toBe(false);
+    // The validity window must cover now: [validFrom, validUntil) — the
+    // epoch the contract accepts right now.
+    expect(oracleGuardOk(makeState({ validFromSec: NOW + 1 }), NOW)).toBe(false);
+    expect(oracleGuardOk(makeState({ validUntilSec: NOW }), NOW)).toBe(false); // exclusive
+    expect(oracleGuardOk(makeState({ validFromSec: NOW, validUntilSec: NOW + 1 }), NOW)).toBe(true);
   });
 
-  it("keeps the issuance guard independent of the hook's", () => {
-    const s = makeState({ issuanceMaxOracleStalenessSec: 0 });
-    expect(oracleGuardOk(s, NOW)).toBe(true); // the hook's fill path lives
-    expect(issuanceGuardOk(s, NOW)).toBe(false); // the backstop leg is dead
-    expect(issuanceGuardOk(makeState({ rawPrice: 0n }), NOW)).toBe(false);
+  it("has no separate issuance knob — the backstop consumes the same report", () => {
+    // A report the guard rejects at the top gates every shape outright —
+    // the mirrors never reach the ladder to degrade a leg.
+    const s = makeState({ validUntilSec: NOW });
+    expect(quoteBuyExactOutMirror(s, parseGpuUnits(1), NOW)).toEqual({
+      ok: false,
+      reason: "oracle-stale",
+    });
+    expect(quoteBuyMirror(s, 5_000_000n, NOW)).toEqual({ ok: false, reason: "oracle-stale" });
+    expect(quoteSellMirror(s, parseGpuUnits(1), NOW)).toEqual({ ok: false, reason: "oracle-stale" });
   });
 });
 
@@ -104,21 +121,6 @@ describe("quoteBuyExactOutMirror", () => {
   it("rejects a demand past the ask when the backstop is closed", () => {
     const r = quoteBuyExactOutMirror(
       makeState({ askInventoryGpu: parseGpuUnits(1), issuanceEnabled: false }),
-      parseGpuUnits(2),
-      NOW,
-    );
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.reason).toBe("no-ask-capacity");
-    expect(r.capacityRaw).toBe(parseGpuUnits(1));
-  });
-
-  it("degrades to a rejection when only the issuance oracle is stale", () => {
-    // The hook's own guard passes, issuance's doesn't: the backstop leg
-    // dies (the hook's try/catch degrades it to zero) and the residual
-    // exceeds dust — InsufficientMarketCapacity on-chain.
-    const r = quoteBuyExactOutMirror(
-      makeState({ askInventoryGpu: parseGpuUnits(1), issuanceMaxOracleStalenessSec: 0 }),
       parseGpuUnits(2),
       NOW,
     );
@@ -316,8 +318,8 @@ describe("supplyForGrossBudget + sellCapacityMirror", () => {
     expect(cap.maxUnitsRaw).toBe(parseGpuUnits(1));
     // The proceeds side: the float nets 1_236_331 after both fees.
     expect(cap.maxProceedsRaw).toBe(1_236_331n);
-    // A stale oracle is no market at all.
-    const stale = sellCapacityMirror(makeState({ hookMaxOracleStalenessSec: 0 }), NOW);
+    // A report past its validity window is no market at all.
+    const stale = sellCapacityMirror(makeState({ validUntilSec: NOW }), NOW);
     expect(stale.maxUnitsRaw).toBe(0n);
     expect(stale.maxProceedsRaw).toBe(0n);
   });

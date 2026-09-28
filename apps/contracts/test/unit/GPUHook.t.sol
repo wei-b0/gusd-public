@@ -24,32 +24,38 @@ import {GPUIssuance} from "../../src/GPUIssuance.sol";
 import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
-import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
-import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
+import {GpuOracle} from "../../src/oracle/GpuOracle.sol";
+import {IGpuOracle} from "../../src/oracle/IGpuOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
+import {OracleReports} from "../utils/OracleReports.sol";
 
-/// @notice Fee-matrix + degradation rig for the C-max GPUHook. The same suite
-///         runs under both currency orderings: `_wantGusdIsCurrency0`
-///         brute-forces a GPU id whose CREATE2 token address lands on the
-///         requested side of gUSD, so every test executes with gUSD = currency0
-///         and again with gUSD = currency1.
-/// @dev    The pool initializes at the oracle-derived tick for $2.50/GPU with a
+/// @notice Fee-matrix + fail-closed rig for the C-max GPUHook under the pull
+///         oracle. The same suite runs under both currency orderings:
+///         `_wantGusdIsCurrency0` brute-forces a GPU id whose CREATE2 token
+///         address lands on the requested side of gUSD, so every test executes
+///         with gUSD = currency0 and again with gUSD = currency1.
+/// @dev    Every swap submits a signed current-epoch report as hookData
+///         (`updateData = abi.encode(Report, signature)`); the hook consumes
+///         it in beforeSwap and re-verifies the same report in afterSwap (the
+///         oracle's transient dedupe makes that a TLOAD). Epoch-binding note:
+///         the first consumer binds the epoch's reportHash per GPU, so tests
+///         that reprice move to a fresh epoch first (_nextEpoch).
+///         The pool initializes at the report-derived tick for $2.50/GPU with a
 ///         ±120-tick LP band: native spot sits at the hook's edges' centre, so
 ///         small swaps are 100% native and ~0.4 gUSD of native depth separates
 ///         spot from each edge (band depth ≈ 19 gUSD / 7.6 GPU per side).
 ///         hookFeeBps defaults to 0 (retired mechanism); fee-shape tests opt in
 ///         with setHookFeeBps(50).
-abstract contract GPUHookTestBase is Test, Deployers {
+abstract contract GPUHookTestBase is Test, Deployers, OracleReports {
     using PoolIdLibrary for PoolKey;
 
     MockERC20 internal underlying;
     GUSD internal gusd;
-    MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
     GPUMarketLiquidity internal pol;
     GPUHook internal hook;
@@ -59,7 +65,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
     bytes32 internal GPU_ID;
     bool internal gIsC0;
     int24 internal initTick;
-    uint256 internal price; // oracle convention: 4 decimals (25_000 = 2.5)
+    uint256 internal price; // report convention: 4 decimals (25_000 = 2.5)
 
     uint16 internal constant HOOK_FEE_BPS = 50; // opt-in for fee-shape tests
     uint16 internal constant POL_FEE_BPS = 10;
@@ -84,21 +90,18 @@ abstract contract GPUHookTestBase is Test, Deployers {
     function _wantGusdIsCurrency0() internal view virtual returns (bool);
 
     function setUp() public virtual {
-        vm.warp(1_000_000);
+        _deployOracle();
         deployFreshManagerAndRouters();
         underlying = new MockERC20("USD Coin", "USDC", 6);
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
-        oracle = new MockGPUPriceOracle(address(this));
         pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
-        issuance = new GPUIssuance(
-            IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this)
-        );
+        issuance = new GPUIssuance(IERC20(address(gusd)), oracle, ledger, address(pol), address(this));
         GPU_ID = _pickGpuId(_wantGusdIsCurrency0());
 
         // mine a salt so the low 14 bits equal the v2 flag set (0x10CC)
         bytes memory ctorArgs =
-            abi.encode(IPoolManager(address(manager)), address(gusd), IGPUPriceOracle(address(oracle)), issuance, ledger, address(this));
+            abi.encode(IPoolManager(address(manager)), address(gusd), oracle, issuance, ledger, address(this));
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
                 | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
@@ -106,7 +109,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         (address hookAddr, bytes32 salt) = HookMiner.find(address(this), flags, type(GPUHook).creationCode, ctorArgs);
         hook = GPUHook(hookAddr);
         new GPUHook{salt: salt}(
-            IPoolManager(address(manager)), address(gusd), IGPUPriceOracle(address(oracle)), issuance, ledger, address(this)
+            IPoolManager(address(manager)), address(gusd), oracle, issuance, ledger, address(this)
         );
         pol.setRefs(address(issuance), address(hook));
 
@@ -117,7 +120,6 @@ abstract contract GPUHookTestBase is Test, Deployers {
         issuance.setIssuanceEnabled(GPU_ID, true);
         gpu = GPUToken(issuance.tokenOf(GPU_ID));
         price = 25_000; // 2.5000 gUSD/GPU
-        oracle.setPrice(GPU_ID, price, block.timestamp);
         gIsC0 = address(gusd) < address(gpu);
         // raw price = 2.5e-12 gUSD-wei per GPU-wei -> raw tick ~267_161; init aligned to spacing
         initTick = gIsC0 ? int24(267_120) : int24(-267_120); // spacing-aligned (raw ref ~267_161)
@@ -129,7 +131,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         IERC20(address(gusd)).approve(address(swapRouter), type(uint256).max);
         IERC20(address(gpu)).approve(address(swapRouter), type(uint256).max);
 
-        // LP the pool: ±120 band around the oracle tick (~19 gUSD / 7.6 GPU
+        // LP the pool: ±120 band around the report tick (~19 gUSD / 7.6 GPU
         // of total depth per side; ~0.4 gUSD from spot to each hook edge)
         _dealBoth(address(this), 1_000_000e6, 0);
         _issueGpu(address(this), 1_000_000e18);
@@ -182,12 +184,13 @@ abstract contract GPUHookTestBase is Test, Deployers {
         if (gpuAmt > 0) _issueGpu(to, gpuAmt);
     }
 
-    /// @dev Mints GPU tokens to `to` by paying issuance from gUSD.
+    /// @dev Mints GPU tokens to `to` by paying issuance from gUSD at the
+    ///      fresh epoch report (the binding resets every epoch).
     function _issueGpu(address to, uint256 amount) internal {
         deal(address(gusd), to, amount + 100e6);
         vm.startPrank(to);
         gusd.approve(address(issuance), type(uint256).max);
-        issuance.issue(GPU_ID, amount, to);
+        issuance.issue(GPU_ID, amount, to, _updateData(GPU_ID, price));
         vm.stopPrank();
     }
 
@@ -199,7 +202,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         return Math.mulDiv(base, 50, 10_000, Math.Rounding.Ceil);
     }
 
-    /// @dev gUSD-wei price denominators at the current oracle price. A GPU
+    /// @dev gUSD-wei price denominators at the current report price. A GPU
     ///      amount times the denominator over 1e20 (ceil for asks) gives the
     ///      gUSD-wei cost, matching the hook's own rounding.
     function _askDenom() internal view returns (uint256) {
@@ -210,19 +213,11 @@ abstract contract GPUHookTestBase is Test, Deployers {
         return price * (10_000 - SPREAD_BPS);
     }
 
-    /// @dev Swaps from the test contract; returns the swapper's gUSD balance delta.
+    /// @dev Swaps from the test contract with a fresh signed report as
+    ///      hookData; returns the swapper's gUSD balance delta.
     function _swap(bool zeroForOne, int256 amountSpecified) internal returns (int256 gusdDelta) {
         uint256 gBefore = gusd.balanceOf(address(this));
-        swapRouter.swap(
-            _canonicalKey(),
-            SwapParams({
-                zeroForOne: zeroForOne,
-                amountSpecified: amountSpecified,
-                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
-            }),
-            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            ""
-        );
+        _swapRaw(zeroForOne, amountSpecified);
         gusdDelta = int256(gusd.balanceOf(address(this))) - int256(gBefore);
     }
 
@@ -237,7 +232,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
                 sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            ""
+            _updateData(GPU_ID, price) // hookData: the signed report pricing THIS swap
         );
     }
 
@@ -300,12 +295,12 @@ abstract contract GPUHookTestBase is Test, Deployers {
 
     function test_hookAddressFlagsV2() public view {
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x10CC);
-        // rig default: hook fee off (tests opt in via HOOK_FEE_BPS); staleness gate is 25h
+        // rig default: hook fee off (tests opt in via HOOK_FEE_BPS)
         assertEq(hook.hookFeeBps(), 0);
-        assertEq(hook.maxOracleStaleness(), 25 hours);
         assertEq(hook.maxWalkTicks(), 48);
+        // the wired oracle is the real GpuOracle
+        assertEq(address(hook.oracle()), address(oracle));
     }
-
 
     // ------------------------------------------------------- registration
 
@@ -352,21 +347,24 @@ abstract contract GPUHookTestBase is Test, Deployers {
 
     // ---------------------------------------------------- polState + params
 
-    function test_polParamsDefaults() public view {
+    function test_polParamsDefaults() public {
+        // polState now takes the report; sign the CURRENT-epoch fixture
+        IGpuOracle.Report memory r = _report(GPU_ID, price);
         (uint16 askBps, uint16 bidBps, uint16 polFeeBps, bool live, uint256 askPrice, uint256 bidPrice) =
-            hook.polState(GPU_ID);
+            hook.polState(GPU_ID, r, _sign(r));
         assertEq(askBps, SPREAD_BPS);
         assertEq(bidBps, SPREAD_BPS);
         assertEq(polFeeBps, POL_FEE_BPS);
-        assertTrue(live, "hook live at fresh oracle");
+        assertTrue(live, "hook live at a verified current-epoch report");
         assertEq(askPrice, 25_125); // 2.5 * 1.005
         assertEq(bidPrice, 24_875); // 2.5 * 0.995
     }
 
     function test_setPolParamsBoundsAndSolvency() public {
         hook.setPolParams(GPU_ID, 100, 100, 100);
+        IGpuOracle.Report memory r = _report(GPU_ID, price);
         (uint16 askBps, uint16 bidBps, uint16 polFeeBps, bool live, uint256 askPrice, uint256 bidPrice) =
-            hook.polState(GPU_ID);
+            hook.polState(GPU_ID, r, _sign(r));
         assertEq(askBps, 100);
         assertEq(bidBps, 100);
         assertEq(polFeeBps, 100);
@@ -379,8 +377,26 @@ abstract contract GPUHookTestBase is Test, Deployers {
         hook.setPolParams(GPU_ID, 5_001, 50, 10);
         // restore shipped defaults
         hook.setPolParams(GPU_ID, SPREAD_BPS, SPREAD_BPS, POL_FEE_BPS);
-        (askBps, bidBps, polFeeBps,, askPrice, bidPrice) = hook.polState(GPU_ID);
+        (askBps, bidBps, polFeeBps,, askPrice, bidPrice) = hook.polState(GPU_ID, r, _sign(r));
         assertEq(askPrice, 25_125);
+    }
+
+    function test_polState_revertsOnBadReport() public {
+        // stale observation: polState applies the FULL acceptance set
+        IGpuOracle.Report memory stale = _reportAt(GPU_ID, price, uint64(block.timestamp - MAX_AGE - 1));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGpuOracle.StaleObservation.selector, stale.observedAt, uint64(block.timestamp - MAX_AGE)
+            )
+        );
+        hook.polState(GPU_ID, stale, _sign(stale));
+        // an old-epoch report is equally rejected
+        IGpuOracle.Report memory old = _report(GPU_ID, price);
+        _nextEpoch();
+        vm.expectRevert(
+            abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), old.epoch)
+        );
+        hook.polState(GPU_ID, old, _sign(old));
     }
 
     // --------------------------------------------------------- fee matrix
@@ -414,8 +430,6 @@ abstract contract GPUHookTestBase is Test, Deployers {
         else assertGt(g1After, g1, "LP fee accrued on the gUSD input side");
     }
 
-
-
     /// Partial: buy exactOut 1 GPU -> ~0.16 GPU native + backstop tail.
     function test_buyExactOut_feeOnCharge() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
@@ -423,7 +437,6 @@ abstract contract GPUHookTestBase is Test, Deployers {
         uint256 polFees0 = hook.totalPolFeesGusd();
         uint256 principal0 = pol.principalContributed(GPU_ID);
         uint256 ledgerG0 = gusd.balanceOf(ledger);
-        PoolId id = _canonicalKey().toId();
         vm.recordLogs();
         int256 d = _swap(_buyZeroForOne(), int256(1e18)); // demand 1 GPU
         // native ~0.16 GPU at 2.5, backstop tail at ask*1.005: 2.47..2.60 gUSD
@@ -434,9 +447,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         uint256 expectedFee = _hookFeeFor(issueBase + issueFee); // polSpend = 0 (empty vault)
         assertEq(hook.totalHookFeesGusd() - fees0, expectedFee, "hookFee = ceil(charge*50bps)");
         assertEq(hook.totalPolFeesGusd() - polFees0, 0, "backstop books no POL fee");
-        assertEq(
-            gusd.balanceOf(ledger) - ledgerG0, issueFee + expectedFee, "ledger got issueFee + hookFee"
-        );
+        assertEq(gusd.balanceOf(ledger) - ledgerG0, issueFee + expectedFee, "ledger got issueFee + hookFee");
         (Fill[] memory fills, uint256 hookSwaps) = _records();
         assertEq(hookSwaps, 1, "URC-2: one HookSwap");
         assertGe(fills.length, 1, "backstop fill recorded");
@@ -500,16 +511,17 @@ abstract contract GPUHookTestBase is Test, Deployers {
     }
 
     /// 100% POL: seed ask inventory (buy -> bid, sell -> vault GPU), then
-    /// reprice the oracle BELOW native spot — spot is beyond the ask edge, so
-    /// the whole demand fills from vault inventory at the fresh ask.
+    /// reprice in a FRESH EPOCH below native spot — spot is beyond the ask
+    /// edge, so the whole demand fills from vault inventory at the fresh ask.
     function test_buyExactOut_allPol() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
         _swap(_buyZeroForOne(), -5e6); // seed bid inventory via the backstop
+        _nextEpoch(); // reprice => the new report must be a new epoch
         _swap(!_buyZeroForOne(), -4e18); // seller -> vault acquires ~0.8 GPU
         uint256 askInv0 = pol.askInventoryGpu(GPU_ID);
         assertTrue(askInv0 > 2e17, "vault holds GPU");
+        _nextEpoch();
         price = 24_000; // $2.40: ask edge (2.4120) below native spot
-        oracle.setPrice(GPU_ID, price, block.timestamp);
         uint256 fees0 = hook.totalHookFeesGusd();
         uint256 polNot0 = hook.totalPolNotionalGusd();
         vm.recordLogs();
@@ -549,11 +561,11 @@ abstract contract GPUHookTestBase is Test, Deployers {
     function test_sellExactIn_feeOnNetPolSpend() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
         _swap(_buyZeroForOne(), -5e6); // seed bid inventory via the backstop
+        _nextEpoch();
         uint256 fees0 = hook.totalHookFeesGusd();
         uint256 polNot0 = hook.totalPolNotionalGusd();
         uint256 polFees0 = hook.totalPolFeesGusd();
         uint256 ledgerG0 = gusd.balanceOf(ledger);
-        PoolId id = _canonicalKey().toId();
         vm.recordLogs();
         int256 d = _swap(!_buyZeroForOne(), -4e18); // sell 4 GPU: crosses the bid edge
         assertGt(d, 0);
@@ -571,6 +583,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
     function test_sellExactOut_feeOnNet() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
         _swap(_buyZeroForOne(), -10e6); // seed bid inventory (~9.5 gUSD)
+        _nextEpoch();
         uint256 fees0 = hook.totalHookFeesGusd();
         uint256 polNot0 = hook.totalPolNotionalGusd();
         uint256 polFees0 = hook.totalPolFeesGusd();
@@ -592,9 +605,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         );
         assertEq(polFee, Math.mulDiv(supply, POL_FEE_BPS, 1e4, Math.Rounding.Ceil), "POL fee on the hook supply");
         assertEq(hook.totalHookFeesGusd() - fees0, _hookFeeFor(supply), "hook fee on the hook supply");
-        assertEq(
-            gusd.balanceOf(ledger) - ledgerG0, polFee + _hookFeeFor(supply), "ledger got polFee + hookFee"
-        );
+        assertEq(gusd.balanceOf(ledger) - ledgerG0, polFee + _hookFeeFor(supply), "ledger got polFee + hookFee");
         uint256 bidDenom = price * (10_000 - SPREAD_BPS);
         assertEq(
             pol.askInventoryGpu(GPU_ID) - askInv0,
@@ -617,89 +628,102 @@ abstract contract GPUHookTestBase is Test, Deployers {
         assertEq(gpu.balanceOf(ledger) - ledgerGpu0, 0, "no GPU fee to ledger");
         uint256 issueBase = pol.principalContributed(GPU_ID) - principal0;
         assertGt(issueBase, 0);
-        assertEq(
-            gusd.balanceOf(ledger) - ledgerG0, _issueFeeFor(issueBase), "ledger got only the issuance fee"
-        );
+        assertEq(gusd.balanceOf(ledger) - ledgerG0, _issueFeeFor(issueBase), "ledger got only the issuance fee");
     }
 
-    // ---------------------------------------------------------- degradation
+    // -------------------------------------------------------- fail-closed
 
-    /// Stale oracle: the hook is inert — no POL, no backstop, no fees, no
-    /// fills. Small swaps run purely native; oversized demand partial-fills
-    /// (never reverts, never fabricates).
-    function test_staleOracle_hookInert() public {
-        vm.warp(block.timestamp + 26 hours);
-        (, , , bool live, , ) = hook.polState(GPU_ID);
-        assertFalse(live, "stale oracle => not live");
-        uint256 fees0 = hook.totalHookFeesGusd();
-        uint256 polNot0 = hook.totalPolNotionalGusd();
-        uint256 principal0 = pol.principalContributed(GPU_ID);
-        uint256 issued0 = issuance.gpuConfig(GPU_ID).totalIssued;
-        vm.recordLogs();
-        int256 d = _swap(_buyZeroForOne(), -1e5); // small: purely native
-        assertGt(gpu.balanceOf(address(this)), 0);
-        (Fill[] memory fills,) = _records();
-        assertEq(fills.length, 0, "no fills");        assertEq(hook.totalHookFeesGusd() - fees0, 0);
-        assertEq(hook.totalPolNotionalGusd() - polNot0, 0);
-        assertEq(pol.principalContributed(GPU_ID) - principal0, 0);
-        assertEq(issuance.gpuConfig(GPU_ID).totalIssued - issued0, 0, "no in-swap mint");
-        // oversized demand: walk exhausts the band, partial fill, no revert
+    /// The pull oracle's core guarantee: without a valid current-epoch
+    /// report the swap REVERTS — there is no native-only degradation, no
+    /// stale-price trading. Empty hookData (direct PoolManager swaps without
+    /// updateData) reverts ReportRequired.
+    function test_missingReport_revertsFailClosed() public {
         uint256 gpuBefore = gpu.balanceOf(address(this));
-        _swap(_buyZeroForOne(), -30e6); // 30 gUSD > ~19 gUSD of native depth
-        uint256 got = gpu.balanceOf(address(this)) - gpuBefore;
-        assertGt(got, 0);
-        assertLt(got, Math.mulDiv(30e6, 1e20, price * 10_000, Math.Rounding.Ceil), "partial, not fabricated");
-        assertEq(hook.totalHookFeesGusd() - fees0, 0, "still fee-free");
-        assertEq(pol.principalContributed(GPU_ID) - principal0, 0, "still no backstop");
+        vm.expectRevert(_wrapRequired());
+        swapRouter.swap(
+            _canonicalKey(),
+            SwapParams({
+                zeroForOne: _buyZeroForOne(),
+                amountSpecified: -1e5,
+                sqrtPriceLimitX96: _buyZeroForOne() ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            "" // empty hookData: no report submitted
+        );
+        assertEq(gpu.balanceOf(address(this)), gpuBefore, "nothing delivered");
     }
 
-    /// polPaused: the ask edge collapses to the oracle price (0 spread) —
-    /// emergency fair-value mode. polState.live flips false; bid + backstop
-    /// pricing are untouched.
-    function test_polPaused_askAtOraclePrice() public {
-        _swap(_buyZeroForOne(), -5e6); // seed bid inventory
-        _swap(!_buyZeroForOne(), -4e18); // vault acquires GPU
-        uint256 askInv0 = pol.askInventoryGpu(GPU_ID);
-        assertTrue(askInv0 > 1e17);
-        hook.setPolPaused(true);
-        (uint16 askBps, uint16 bidBps, uint16 polFeeBps, bool live, uint256 askPrice, uint256 bidPrice) =
-            hook.polState(GPU_ID);
-        assertFalse(live, "paused => not live");
-        assertEq(askBps, SPREAD_BPS); // stored params unchanged...
-        assertEq(bidBps, SPREAD_BPS);
-        assertEq(polFeeBps, POL_FEE_BPS);
-        assertEq(askPrice, price, "ask edge = oracle price (0 spread)");
-        assertEq(bidPrice, Math.mulDiv(price, 1e4 - SPREAD_BPS, 1e4), "bid edge unchanged");
-        uint256 polNot0 = hook.totalPolNotionalGusd();
-        vm.recordLogs();
-        _swap(_buyZeroForOne(), int256(2e18)); // demand 2 GPU: crosses the 0-spread edge
-        (Fill[] memory fills,) = _records();
-        assertGe(fills.length, 1, "fills continue while paused");
-        uint256 polGpu = 0;
-        for (uint256 i; i < fills.length; ++i) {
-            if (fills[i].src == 0) polGpu += fills[i].gpuAmt;
-        }
-        assertGt(polGpu, 0, "POL participates");
-        uint256 expectedSpend = Math.mulDiv(polGpu, price * 10_000, 1e20, Math.Rounding.Ceil);
-        assertEq(hook.totalPolNotionalGusd() - polNot0, expectedSpend, "charged at ORACLE price, no spread");
+    /// A stale observation (inside the epoch window but older than the
+    /// 300s floor) reverts StaleObservation — cached-$2.50-at-$2.65 is
+    /// impossible by construction.
+    function test_staleObservation_revertsFailClosed() public {
+        uint256 gpuBefore = gpu.balanceOf(address(this));
+        vm.expectRevert(_wrapStale());
+        swapRouter.swap(
+            _canonicalKey(),
+            SwapParams({
+                zeroForOne: _buyZeroForOne(),
+                amountSpecified: -1e5,
+                sqrtPriceLimitX96: _buyZeroForOne() ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            _updateDataFor(_reportAt(GPU_ID, price, uint64(block.timestamp - MAX_AGE - 1)))
+        );
+        assertEq(gpu.balanceOf(address(this)), gpuBefore, "nothing delivered");
     }
 
-    /// @dev v4-core wraps hook-callback reverts in ERC-7751 WrappedError
-    ///      (CustomRevert.bubbleUpAndRevertWith) — the bare inner error never
-    ///      reaches the caller, so expectRevert must match the wrap itself.
-    function _expectHookRevert(bytes4 innerSelector) internal {
-        // The inner error data is 4 bytes for a no-arg custom error: the
-        // wrap's `reason` bytes field carries exactly those 4 bytes.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                CustomRevert.WrappedError.selector,
-                address(hook),
-                IHooks.beforeSwap.selector,
-                abi.encodePacked(innerSelector),
-                abi.encodePacked(Hooks.HookCallFailed.selector)
-            )
+    /// A previous-epoch report reverts UnknownGpuEpoch — strict
+    /// current-epoch acceptance.
+    function test_oldEpochReport_revertsFailClosed() public {
+        IGpuOracle.Report memory r = _report(GPU_ID, price);
+        bytes memory updateData = _updateDataFor(r);
+        _nextEpoch();
+        vm.expectRevert(_wrap(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch)));
+        swapRouter.swap(
+            _canonicalKey(),
+            SwapParams({
+                zeroForOne: _buyZeroForOne(),
+                amountSpecified: -1e5,
+                sqrtPriceLimitX96: _buyZeroForOne() ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            updateData
         );
     }
+
+    /// A wrong-signer report reverts InvalidSigner — anyone can mint
+    /// updateData bytes; only the attestor's signature authenticates.
+    function test_forgedReport_revertsFailClosed() public {
+        IGpuOracle.Report memory r = _report(GPU_ID, 1); // $0.0001/GPU
+        bytes memory sig = _forgedSig(r);
+        vm.expectRevert(_wrap(abi.encodeWithSelector(IGpuOracle.InvalidSigner.selector, vm.addr(0xB0B), signer)));
+        swapRouter.swap(
+            _canonicalKey(),
+            SwapParams({
+                zeroForOne: _buyZeroForOne(),
+                amountSpecified: -1e5,
+                sqrtPriceLimitX96: _buyZeroForOne() ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            abi.encode(r, sig)
+        );
+    }
+
+    function _forgedSig(IGpuOracle.Report memory r) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(0xB0B, oracle.reportDigest(r));
+        return abi.encodePacked(r32, s, v);
+    }
+
+    /// Direct PoolManager swaps (no router) get the same fail-closed gate —
+    /// the hook is the enforcement point, not the router.
+    function test_directPoolManagerSwap_requiresReport() public {
+        PayThenSwapBuyer buyer = new PayThenSwapBuyer(IPoolManager(address(manager)));
+        gusd.transfer(address(buyer), 1e6); // pre-settle capacity: the buyer pays before swapping
+        vm.expectRevert(_wrapRequired());
+        buyer.buy(_canonicalKey(), _buyZeroForOne(), -1e5, 1e6, gIsC0, "");
+    }
+
+    // ---------------------------------------------------------- capacity
 
     /// No capacity: no LPs (band removed), no POL (empty vault), no backstop
     /// (issuance disabled) => InsufficientMarketCapacity, honestly, for both
@@ -707,8 +731,9 @@ abstract contract GPUHookTestBase is Test, Deployers {
     function test_insufficientCapacity_reverts() public {
         _clearLp();
         issuance.setIssuanceEnabled(GPU_ID, false);
-        (, , , bool live, , ) = hook.polState(GPU_ID);
-        assertTrue(live, "oracle fresh; capacity, not liveness, is the limit");
+        IGpuOracle.Report memory r = _report(GPU_ID, price);
+        (, , , bool live, , ) = hook.polState(GPU_ID, r, _sign(r));
+        assertTrue(live, "report fresh; capacity, not liveness, is the limit");
         _expectHookRevert(GPUHook.InsufficientMarketCapacity.selector);
         _swapRaw(_buyZeroForOne(), -2e6);
         _expectHookRevert(GPUHook.InsufficientMarketCapacity.selector);
@@ -767,7 +792,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         _clearLp(); // the band's float would pad pmPhys past the all-in
         uint256 dust0 = gusd.balanceOf(address(manager));
         assertTrue(dust0 <= 1, "cleared book strands at most one wei");
-        (uint256 base, uint256 fee, uint256 total) = issuance.quoteIssue(GPU_ID, 2e17);
+        (uint256 base, uint256 fee, uint256 total) = issuance.quoteIssue(GPU_ID, 2e17, _updateData(GPU_ID, price));
         assertTrue(total > 0 && total == base + fee, "issuance quote live");
         uint256 allIn = total + _hookFeeFor(total); // the GpuQuoter's gusdIn
         PayThenSwapBuyer buyer = new PayThenSwapBuyer(IPoolManager(address(manager)));
@@ -776,7 +801,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
         uint256 principal0 = pol.principalContributed(GPU_ID);
         uint256 ledgerG0 = gusd.balanceOf(ledger);
         vm.recordLogs();
-        buyer.buy(_canonicalKey(), _buyZeroForOne(), int256(2e17), allIn, gIsC0);
+        buyer.buy(_canonicalKey(), _buyZeroForOne(), int256(2e17), allIn, gIsC0, _updateData(GPU_ID, price));
         assertEq(IERC20(address(gpu)).balanceOf(address(buyer)), 2e17, "full demand delivered");
         assertEq(gusd.balanceOf(address(buyer)), 0, "pre-settled to the wei, no residue");
         (Fill[] memory fills,) = _records();
@@ -790,18 +815,19 @@ abstract contract GPUHookTestBase is Test, Deployers {
         assertEq(gusd.balanceOf(address(manager)), dust0, "all-in consumed, only the strand remains");
     }
 
-    /// R6: two swaps into the same pool within one lock. The hook plans each
-    /// swap statelessly from live state (no transient plan storage), so the
-    /// second swap sees the first's price movement and both fill correctly;
-    /// the unlock must close with NonzeroDeltaCount == 0.
+    /// R6: two swaps into the same pool within one lock. Each swap carries
+    /// its own report in hookData; the oracle's transient dedupe makes the
+    /// second verification of the same report cheap, and different
+    /// directions just consume the same epoch report. The unlock closes
+    /// with NonzeroDeltaCount == 0.
     function test_r6_doubleSwapInOneLock() public {
-        NestedSwapper ns = new NestedSwapper(IPoolManager(address(manager)), gusd, IERC20(address(gpu)), address(ledger));
+        NestedSwapper ns = new NestedSwapper(IPoolManager(address(manager)), gusd, IERC20(address(gpu)), address(ledger), oracle);
         _dealBoth(address(ns), 100e6, 0);
         _issueGpu(address(ns), 6e18);
         uint256 fees0 = hook.totalHookFeesGusd();
         uint256 principal0 = pol.principalContributed(GPU_ID);
         vm.recordLogs();
-        ns.run(_canonicalKey(), _buyZeroForOne(), -5e6, -5e18);
+        ns.run(_canonicalKey(), _buyZeroForOne(), -5e6, -5e18, _updateData(GPU_ID, price));
         (Fill[] memory fills,) = _records();
         assertGe(fills.length, 2, "buy fill + sell fill in one lock");
         assertTrue(fills[0].isBuy, "first fill is the buy");
@@ -818,7 +844,6 @@ abstract contract GPUHookTestBase is Test, Deployers {
     /// asserted in test_buyNativeOnly_noHookFeeNoFill.)
     function test_urc2_hookSwapSemantics() public {
         hook.setHookFeeBps(HOOK_FEE_BPS);
-        PoolId id = _canonicalKey().toId();
         vm.recordLogs();
         _swap(_buyZeroForOne(), -5e6);
         Vm.Log[] memory logs = vm.getRecordedLogs(); // single read: count + decode
@@ -844,6 +869,7 @@ abstract contract GPUHookTestBase is Test, Deployers {
     /// liquidity mirror, self address, ERC165 conformance.
     function test_urc3_iHookStats() public {
         _swap(_buyZeroForOne(), -5e6); // -> bid inventory
+        _nextEpoch();
         _swap(!_buyZeroForOne(), -4e18); // crosses the bid edge -> ask inventory
         uint256 bidInv = pol.bidInventoryGusd(GPU_ID);
         uint256 askInv = pol.askInventoryGpu(GPU_ID);
@@ -867,11 +893,62 @@ abstract contract GPUHookTestBase is Test, Deployers {
         assertTrue(hook.supportsInterface(type(IERC165).interfaceId));
         assertFalse(hook.supportsInterface(bytes4(0xdeadbeef)));
     }
+
+    /// Observability: oracleLastConsumed mirrors the oracle's last-executed
+    /// report for the GPU — observability only, never a price input.
+    function test_oracleLastConsumed_mirrorsExecution() public {
+        IGpuOracle.Report memory r = _report(GPU_ID, price);
+        _swap(_buyZeroForOne(), -5e6);
+        (uint256 p, uint64 at, uint64 ep, bytes32 h) = hook.oracleLastConsumed(GPU_ID);
+        assertEq(p, price);
+        assertEq(at, r.observedAt);
+        assertEq(ep, r.epoch);
+        assertEq(h, oracle.reportHash(r, _sign(r)));
+    }
+
+    /// @dev v4-core wraps hook-callback reverts in ERC-7751 WrappedError
+    ///      (CustomRevert.bubbleUpAndRevertWith) — the bare inner error never
+    ///      reaches the caller, so expectRevert must match the wrap itself.
+    function _expectHookRevert(bytes4 innerSelector) internal {
+        // The inner error data is 4 bytes for a no-arg custom error: the
+        // wrap's `reason` bytes field carries exactly those 4 bytes.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CustomRevert.WrappedError.selector,
+                address(hook),
+                IHooks.beforeSwap.selector,
+                abi.encodePacked(innerSelector),
+                abi.encodePacked(Hooks.HookCallFailed.selector)
+            )
+        );
+    }
+
+    /// @dev Wrap an inner revert payload (raw bytes) in the ERC-7751 envelope
+    ///      for expectRevert.
+    function _wrap(bytes memory inner) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.beforeSwap.selector,
+            inner,
+            abi.encodePacked(Hooks.HookCallFailed.selector)
+        );
+    }
+
+    function _wrapRequired() internal view returns (bytes memory) {
+        return _wrap(abi.encodePacked(GPUHook.ReportRequired.selector));
+    }
+
+    function _wrapStale() internal view returns (bytes memory) {
+        return _wrap(abi.encodeWithSelector(IGpuOracle.StaleObservation.selector, uint64(block.timestamp - MAX_AGE - 1), uint64(block.timestamp - MAX_AGE)));
+    }
 }
 
 /// @dev R6 harness: two pre-settled swaps into the same pool inside ONE
-///      PoolManager lock. Deltas are taken at the end; the unlock closes
-///      clean, which asserts NonzeroDeltaCount returned to zero.
+///      PoolManager lock. Each swap submits the same signed report; the
+///      oracle's transient dedupe skips the second ecrecover. Deltas are
+///      taken at the end; the unlock closes clean, which asserts
+///      NonzeroDeltaCount returned to zero.
 contract NestedSwapper is IUnlockCallback {
     using TransientStateLibrary for IPoolManager;
 
@@ -879,28 +956,30 @@ contract NestedSwapper is IUnlockCallback {
     GUSD internal immutable _gusd;
     IERC20 internal immutable _gpu;
     address internal immutable _ledger; // takes hook fees here (in-kind GPU)
+    IGpuOracle internal immutable _oracle;
 
-    constructor(IPoolManager pm, GUSD gusd_, IERC20 gpu_, address ledger_) {
+    constructor(IPoolManager pm, GUSD gusd_, IERC20 gpu_, address ledger_, IGpuOracle oracle_) {
         _pm = pm;
         _gusd = gusd_;
         _gpu = gpu_;
         _ledger = ledger_;
+        _oracle = oracle_;
     }
 
-    function run(PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt)
+    function run(PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes memory updateData)
         external
         returns (int256 gusdDelta, int256 gpuDelta)
     {
         uint256 g0 = _gusd.balanceOf(address(this));
         uint256 p0 = _gpu.balanceOf(address(this));
-        _pm.unlock(abi.encode(key, buyZeroForOne, buyAmt, sellAmt));
+        _pm.unlock(abi.encode(key, buyZeroForOne, buyAmt, sellAmt, updateData));
         gusdDelta = int256(_gusd.balanceOf(address(this))) - int256(g0);
         gpuDelta = int256(_gpu.balanceOf(address(this))) - int256(p0);
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        (PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt) =
-            abi.decode(data, (PoolKey, bool, int256, int256));
+        (PoolKey memory key, bool buyZeroForOne, int256 buyAmt, int256 sellAmt, bytes memory updateData) =
+            abi.decode(data, (PoolKey, bool, int256, int256, bytes));
         (Currency gCur, Currency gpuCur) = (Currency.wrap(address(_gusd)), Currency.wrap(address(_gpu)));
         // swap 1: buy exactIn, pre-settled
         _pm.sync(gCur);
@@ -913,7 +992,7 @@ contract NestedSwapper is IUnlockCallback {
                 amountSpecified: buyAmt,
                 sqrtPriceLimitX96: buyZeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
-            ""
+            updateData
         );
         // swap 2: sell exactIn, pre-settled
         _pm.sync(gpuCur);
@@ -926,7 +1005,7 @@ contract NestedSwapper is IUnlockCallback {
                 amountSpecified: sellAmt,
                 sqrtPriceLimitX96: buyZeroForOne ? TickMath.MAX_SQRT_PRICE - 1 : TickMath.MIN_SQRT_PRICE + 1
             }),
-            ""
+            updateData
         );
         // take everything the swaps credited
         int256 gDelta = _pm.currencyDelta(address(this), gCur);
@@ -940,7 +1019,8 @@ contract NestedSwapper is IUnlockCallback {
 /// @dev Pay-then-swap direct buyer — the supported direct path (R3) and the
 ///      router's exact shape: the input is settled into the PM before the
 ///      swap (here the quoted all-in total), the output credit is taken
-///      in-lock, and the unlock closes with a zero ledger.
+///      in-lock, and the unlock closes with a zero ledger. hookData carries
+///      the signed report (empty => the hook reverts ReportRequired).
 contract PayThenSwapBuyer is IUnlockCallback {
     IPoolManager internal immutable _pm;
 
@@ -948,13 +1028,13 @@ contract PayThenSwapBuyer is IUnlockCallback {
         _pm = pm;
     }
 
-    function buy(PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0) external {
-        _pm.unlock(abi.encode(key, zeroForOne, gpuOut, gusdIn, gIsC0));
+    function buy(PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes memory updateData) external {
+        _pm.unlock(abi.encode(key, zeroForOne, gpuOut, gusdIn, gIsC0, updateData));
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        (PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0) =
-            abi.decode(data, (PoolKey, bool, int256, uint256, bool));
+        (PoolKey memory key, bool zeroForOne, int256 gpuOut, uint256 gusdIn, bool gIsC0, bytes memory updateData) =
+            abi.decode(data, (PoolKey, bool, int256, uint256, bool, bytes));
         (Currency gCur, Currency gpuCur) =
             gIsC0 ? (key.currency0, key.currency1) : (key.currency1, key.currency0);
         _pm.sync(gCur);
@@ -967,7 +1047,7 @@ contract PayThenSwapBuyer is IUnlockCallback {
                 amountSpecified: gpuOut,
                 sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
             }),
-            ""
+            updateData
         );
         uint256 gpuOutAmt = uint256(uint128(gIsC0 ? delta.amount1() : delta.amount0()));
         if (gpuOutAmt > 0) _pm.take(gpuCur, address(this), gpuOutAmt);

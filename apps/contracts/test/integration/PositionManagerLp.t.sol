@@ -161,7 +161,7 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 100e18, payment: address(gusd), maxPaid: 2_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: bob
+                deadline: 0, sqrtLimitX96: 0, recipient: bob, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         vm.stopPrank();
@@ -186,7 +186,8 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
         // 100 GPU crosses the native bid edge: the native leg accrues the LP
         // fee in GPU, the POL bid tail pays the hook fee (on net POL spend)
         GpuRouter.SellParams memory p = GpuRouter.SellParams({
-            gpuId: GPU_ID, gpuIn: 100e18, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0, recipient: bob
+            gpuId: GPU_ID, gpuIn: 100e18, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
+            recipient: bob, updateData: _updateData(GPU_ID, 25_000)
         });
         vm.prank(bob);
         router.sell(p);
@@ -216,13 +217,13 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
 
     function test_quoter_buyExactIn_matchesExecutedSwap() public {
         _setUpLpAlice(1e15);
-        GpuQuoter.QuoteResult memory q = gq.quoteBuy(_canonicalKey(), 1_000e6);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuy(_canonicalKey(), 1_000e6, _updateData(GPU_ID, 25_000));
         assertGt(q.gpuOut, 0);
 
         _dealGusd(bob, 1_000_000e6);
         vm.startPrank(bob);
         IERC20(address(gusd)).approve(address(router), type(uint256).max);
-        uint256 gpuOut = router.buyExactIn(GPU_ID, 1_000e6, q.gpuOut, 0, 0, bob);
+        uint256 gpuOut = router.buyExactIn(GPU_ID, 1_000e6, q.gpuOut, 0, 0, bob, _updateData(GPU_ID, 25_000));
         vm.stopPrank();
 
         // the quoter runs the REAL hook, so LP fee + hook fee are inside
@@ -232,7 +233,7 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
     function test_quoter_buyExactOut_paidMatchesQuote() public {
         _setUpLpAlice(1e15);
         uint256 gpuWanted = 2e12; // raw gpu-wei
-        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuWanted);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuWanted, _updateData(GPU_ID, 25_000));
         assertGt(q.gusdIn, 0);
 
         _dealGusd(bob, 10_000_000e6);
@@ -245,7 +246,8 @@ abstract contract PositionManagerLpTestBase is GpuRouterTestBase, DeployPermit2 
             maxPaid: q.gusdIn,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(GPU_ID, 25_000)
         });
         uint256 paid = router.buy(p);
         vm.stopPrank();

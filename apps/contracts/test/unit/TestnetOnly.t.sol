@@ -7,7 +7,6 @@ import {Deploy} from "../../script/Deploy.s.sol";
 import {DeployFull} from "../../script/Deploy.full.s.sol";
 import {Demo} from "../../script/Demo.s.sol";
 import {IndexerDemo} from "../../script/IndexerDemo.s.sol";
-import {DeployMockOracle} from "../../script/DeployMockOracle.s.sol";
 
 /// @notice The deploy tooling's mainnet posture, enforced at the source:
 ///         every mock/demo recipe reverts on a production chain before its
@@ -33,7 +32,6 @@ contract TestnetOnlyTest is Test {
     DeployFull internal deployFull;
     Demo internal demo;
     IndexerDemo internal indexerDemo;
-    DeployMockOracle internal mockOracle;
 
     constructor() {
         refuser = new Refuser();
@@ -41,7 +39,6 @@ contract TestnetOnlyTest is Test {
         deployFull = new DeployFull();
         demo = new Demo();
         indexerDemo = new IndexerDemo();
-        mockOracle = new DeployMockOracle();
     }
 
     function _revertErr(string memory message) private pure returns (bytes memory) {
@@ -73,8 +70,6 @@ contract TestnetOnlyTest is Test {
         demo.run();
         vm.expectRevert(err);
         indexerDemo.run();
-        vm.expectRevert(err);
-        mockOracle.run();
     }
 
     // One test, one thread: forge tests run in parallel threads sharing the
@@ -96,6 +91,17 @@ contract TestnetOnlyTest is Test {
         vm.setEnv("SEED_PRICE_H100", "25000");
         vm.expectRevert(_revertErr("mainnet requires SEED_PRICE_H200"));
         deploy.run();
+        vm.setEnv("SEED_PRICE_H200", "32000");
+        vm.expectRevert(_revertErr("mainnet requires SEED_PRICE_L40S"));
+        deploy.run();
+        vm.setEnv("SEED_PRICE_L40S", "6000");
+        vm.expectRevert(_revertErr("mainnet requires SEED_PRICE_RTX4090"));
+        deploy.run();
+        vm.setEnv("SEED_PRICE_RTX4090", "3000");
+        // Pull-oracle posture: the attestor identity is required — the
+        // GpuOracle is constructed with it as the report signer.
+        vm.expectRevert(_revertErr("mainnet requires ORACLE_ATTESTOR"));
+        deploy.run();
     }
 
     function _setKey() private {
@@ -113,5 +119,6 @@ contract TestnetOnlyTest is Test {
         vm.setEnv("SEED_PRICE_H200", "");
         vm.setEnv("SEED_PRICE_L40S", "");
         vm.setEnv("SEED_PRICE_RTX4090", "");
+        vm.setEnv("ORACLE_ATTESTOR", "");
     }
 }

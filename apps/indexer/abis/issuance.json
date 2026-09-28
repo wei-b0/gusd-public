@@ -88,15 +88,5 @@
         "name": "feeBps"
       }
     ]
-  },
-  {
-    "name": "MaxOracleStalenessSet",
-    "type": "event",
-    "inputs": [
-      {
-        "type": "uint256",
-        "name": "seconds_"
-      }
-    ]
   }
 ]

@@ -14,9 +14,10 @@ export function OverviewTab() {
         The oracle turns fragmented GPU rental-market observations into auditable USD-per-GPU-hour
         benchmarks — one per supported GPU class. Computation is offchain: every candidate carries
         the methodology, provenance, and receipt that produced it, and the public API serves the
-        benchmark as data. A separate publisher process independently audits each candidate and
-        writes eligible values to the onchain GPUPriceOracle — the external reference price the
-        gUSD protocol executes against: hook fills, POL pricing, and primary issuance all read it.
+        benchmark as data. A separate attestor process independently audits each candidate and
+        signs eligible values into EIP-712 reports — the attested reference price the gUSD
+        protocol executes against: trades embed a report and the contracts verify and consume it
+        in the same transaction (pull oracle — zero oracle gas when markets are idle).
         This tab shows how the number is made; the other tabs let you audit it — the benchmarks it
         publishes, the rules it runs, the health of every layer, and the interfaces it serves.
       </p>
@@ -64,12 +65,13 @@ CANDIDATE      oracle verdict · calcHash receipt
   benchmark API + receipt — REST · SSE · WS · this app
       │
       ▼
-PUBLISHER      independent audit of every candidate
-  violations recorded · publishes on deviation / heartbeat policy
-  (~0.5% move or ~24h) · no price ⇒ never published
+ATTESTOR       independent audit of every candidate
+  violations recorded · signs a report per epoch · no price ⇒
+  never signed · 2-step signer rotation
       │
       ▼
-GPUPriceOracle onchain reference price, USD/GPU-hour × 10⁴
+GpuOracle      attested reference price, USD/GPU-hour × 10⁴
+  trades embed report + signature; contract verifies on consume
       │
       ▼
 PROTOCOL       hook fill edges · POL pricing · issuance backstop`}
@@ -96,12 +98,12 @@ PROTOCOL       hook fill edges · POL pricing · issuance backstop`}
               carries the last figure forward for at most 24 hours, flagged stale.
             </p>
             <p>
-              Computation and publication are deliberately separate layers. The candidate — its
-              verdict, band, and receipt — exists whether or not anything goes onchain. The
-              publisher re-derives each candidate against the stored methodology, records what it
-              finds, and publishes when the benchmark has moved ~0.5% from the last published
-              value — or a heartbeat (~24 h) refreshes it. Onchain writes are driven by that
-              policy, not by every computation.
+              Computation and attestation are deliberately separate layers. The candidate — its
+              verdict, band, and receipt — exists whether or not anything gets signed. The
+              attestor re-derives each candidate against the stored methodology, records what it
+              finds, and signs a fresh report every epoch while the benchmark stands. Trading
+              pulls what it needs: each trade embeds the report and signature it was quoted
+              against, and the contract rejects anything unsigned, stale, or reused.
             </p>
             <p className="text-dim">
               The thresholds on this diagram are the shipped engine defaults, catalogued on the
@@ -170,11 +172,11 @@ const TRUST_ROWS = [
   },
   {
     label: "Independent audit layer",
-    body: "A separate publisher process re-derives each candidate against the stored methodology — freshness, contributors, dispersion, band, source health — and records every violation in its own audit ledger. Publication itself is policy-driven (deviation trigger, heartbeat). The gate is not the calculator grading its own work.",
+    body: "A separate attestor process re-derives each candidate against the stored methodology — freshness, contributors, dispersion, band, source health — and records every violation in its own audit ledger. What it signs is an EIP-712 report bound to a specific price, epoch, and validity window. The gate is not the calculator grading its own work.",
   },
   {
     label: "Separate layers, on the record",
-    body: "Benchmark computation, publisher audit, and onchain publication are separate processes with separate state. The Health tab reports each layer for what it is — a candidate's status is not the publisher's verdict, and neither is the onchain state.",
+    body: "Benchmark computation, attestor audit, and onchain consumption are separate processes with separate state. The Health tab reports each layer for what it is — a candidate's status is not the attestor's verdict, and neither is the chain's state.",
   },
   {
     label: "Provenance on every figure",

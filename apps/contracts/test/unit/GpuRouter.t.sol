@@ -21,21 +21,23 @@ import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../../src/GpuRouter.sol";
 import {GpuQuoter} from "../../src/lens/GpuQuoter.sol";
-import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
-import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
+import {IGpuOracle} from "../../src/oracle/IGpuOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {OracleReports} from "../utils/OracleReports.sol";
 
 /// @notice Product-surface rig for GpuRouter: genesis / pool / mixed BUY, SELL,
-///         slippage and refund behavior. Runs under both currency orderings.
-abstract contract GpuRouterTestBase is Test, Deployers {
+///         slippage, refund and fail-closed report behavior. Runs under both
+///         currency orderings. Every trade submits the signed current-epoch
+///         report (`updateData`); the same report bytes are reused within an
+///         epoch (byte-identical updateData dedupes on the oracle).
+abstract contract GpuRouterTestBase is Test, Deployers, OracleReports {
     using PoolIdLibrary for PoolKey;
 
     MockERC20 internal underlying;
     GUSD internal gusd;
-    MockGPUPriceOracle internal oracle;
     GPUIssuance internal issuance;
     GPUHook internal hook;
     GpuRouter internal router;
@@ -57,14 +59,13 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     function _wantGusdIsCurrency0() internal view virtual returns (bool);
 
     function setUp() public virtual {
-        vm.warp(1_000_000);
+        _deployOracle();
         deployFreshManagerAndRouters();
         underlying = new MockERC20("USD Coin", "USDC", 6);
         gusd = new GUSD(IERC20(address(underlying)), address(this));
         ledger = address(new RevenueLedger(IERC20(address(gusd)), address(this)));
-        oracle = new MockGPUPriceOracle(address(this));
         pol = new GPUMarketLiquidity(IERC20(address(gusd)), address(manager), address(this));
-        issuance = new GPUIssuance(IERC20(address(gusd)), IGPUPriceOracle(address(oracle)), ledger, address(pol), address(this));
+        issuance = new GPUIssuance(IERC20(address(gusd)), oracle, ledger, address(pol), address(this));
         GPU_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_MAIN");
 
         bytes memory ctorArgs =
@@ -87,16 +88,14 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         issuance.createGpu(GPU_ID, "GPU hour", "GPU", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(GPU_ID, true);
         gpu = GPUToken(issuance.tokenOf(GPU_ID));
-        oracle.setPrice(GPU_ID, 25_000, block.timestamp); // 2.5000 gUSD/GPU-hour
 
         // a second GPU with NO pool: genesis + unregistered-pool tests
         GENESIS_ID = _pickGpuId(_wantGusdIsCurrency0(), "GPU_ROUTER_GENESIS");
         issuance.createGpu(GENESIS_ID, "Genesis GPU", "GGPU", 50, POOL_FEE, TICK_SPACING);
         issuance.setIssuanceEnabled(GENESIS_ID, true);
-        oracle.setPrice(GENESIS_ID, 25_000, block.timestamp);
 
         gIsC0 = address(gusd) < address(gpu);
-        // init at the oracle reference ($2.50/GPU-hour) so the native book
+        // init at the report reference ($2.50/GPU-hour) so the native book
         // sits at the hook's edges (the C-max merged-book geometry)
         initTick = gIsC0 ? int24(267_120) : int24(-267_120); // spacing-aligned (raw ref ~267_161)
         manager.initialize(_canonicalKey(), TickMath.getSqrtPriceAtTick(initTick));
@@ -114,7 +113,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         IERC20(address(gpu)).approve(address(router), type(uint256).max);
         vm.stopPrank();
 
-        // LP the canonical pool around the oracle anchor (issue first:
+        // LP the canonical pool around the report anchor (issue first:
         // _issueGpuTo deals gUSD absolutely, which would clobber a prior
         // _dealGusd balance)
         _issueGpuTo(address(this), 1_000e18);
@@ -180,8 +179,19 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         deal(address(gusd), to, amount * 25_000 / 1e16 + 100e6);
         vm.startPrank(to);
         gusd.approve(address(issuance), type(uint256).max);
-        issuance.issue(gpuId, amount, to);
+        issuance.issue(gpuId, amount, to, _updateData(gpuId, 25_000));
         vm.stopPrank();
+    }
+
+    /// @dev Wrapped hook revert (ERC-7751) over raw inner error bytes.
+    function _wrapHook(bytes memory inner) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.beforeSwap.selector,
+            inner,
+            abi.encodePacked(Hooks.HookCallFailed.selector)
+        );
     }
 
     // ---------------------------------------------------------- genesis BUY
@@ -190,7 +200,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     /// issuance fallback (zero v4 dependency), principal -> vault instantly.
     function test_genesisBuy_issuanceOnly() public {
         uint256 gpuOut = 10e18; // 10 GPU-hours
-        (uint256 base, uint256 issFee,) = issuance.quoteIssue(GENESIS_ID, gpuOut);
+        (uint256 base, uint256 issFee,) = issuance.quoteIssue(GENESIS_ID, gpuOut, _updateData(GENESIS_ID, 25_000));
 
         uint256 ledgerBefore = gusd.balanceOf(ledger);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
@@ -199,7 +209,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
                 gpuId: GENESIS_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: base + issFee,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GENESIS_ID, 25_000)
             })
         );
 
@@ -219,7 +229,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     /// change refunded; the executable quote anchors execution exactly.
     function test_buy_viaPool_gusdPayment() public {
         uint256 gpuOut = 1e12;
-        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuOut);
+        GpuQuoter.QuoteResult memory q = gq.quoteBuyExactOut(_canonicalKey(), gpuOut, _updateData(GPU_ID, 25_000));
         assertEq(q.gpuOut, gpuOut);
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
@@ -227,7 +237,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: q.gusdIn,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -248,7 +258,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: gpuOut, payment: address(underlying), maxPaid: 2_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -273,7 +283,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: gpuOut, payment: address(gusd), maxPaid: 2_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -302,7 +312,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 1,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
     }
@@ -316,7 +326,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 paid = router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 100e18, payment: address(gusd), maxPaid: 10_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         assertEq(gpu.balanceOf(alice), 100e18, "full demand filled");
@@ -325,28 +335,59 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         assertEq(gusd.balanceOf(address(router)), 0);
     }
 
-    /// Stale oracle: the hook is inert — native-only BUY still works, no
-    /// POL fills, no backstop, no fees.
-    function test_buy_staleOracle_nativeOnly() public {
-        vm.warp(block.timestamp + 30 days);
-        uint256 hookFees0 = hook.totalHookFeesGusd();
-        uint256 polFees0 = hook.totalPolFeesGusd();
-        uint256 principal0 = pol.principalContributed(GPU_ID);
-        uint256 issued0 = issuance.gpuConfig(GPU_ID).totalIssued;
-        uint256 aliceGpuBefore = gpu.balanceOf(alice);
+    /// Fail-closed: an OLD-EPOCH report cannot price a buy — the router
+    /// bubbles the hook's wrapped oracle error; nothing executes.
+    function test_buy_oldEpochReport_revertsFailClosed() public {
+        IGpuOracle.Report memory r = _report(GPU_ID, 25_000);
+        bytes memory updateData = _updateDataFor(r);
+        _nextEpoch();
+        // arm before pranking: the expectation's arguments (oracle views)
+        // are evaluated before arming, so a prank armed first would be
+        // consumed by the argument evaluation
+        vm.expectRevert(
+            _wrapHook(abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch))
+        );
         vm.prank(alice);
-        uint256 paid = router.buy(
+        router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: updateData
             })
         );
-        assertGt(paid, 0, "native-only buy works");
-        assertEq(gpu.balanceOf(alice) - aliceGpuBefore, 1e12);
-        assertEq(hook.totalHookFeesGusd(), hookFees0, "no hook fees when stale");
-        assertEq(hook.totalPolFeesGusd(), polFees0, "no POL fills when stale");
-        assertEq(pol.principalContributed(GPU_ID), principal0, "no backstop when stale");
-        assertEq(issuance.gpuConfig(GPU_ID).totalIssued, issued0, "no in-swap issuance when stale");
+    }
+
+    /// Fail-closed on the genesis path too: primary issuance without a
+    /// current-epoch report reverts (raw oracle error — no hook involved).
+    function test_genesisBuy_oldEpochReport_revertsFailClosed() public {
+        IGpuOracle.Report memory r = _report(GENESIS_ID, 25_000);
+        bytes memory updateData = _updateDataFor(r);
+        _nextEpoch();
+        // arm before pranking: the expectation's arguments (oracle views)
+        // are evaluated before arming, so a prank armed first would be
+        // consumed by the argument evaluation
+        vm.expectRevert(
+            abi.encodeWithSelector(IGpuOracle.UnknownGpuEpoch.selector, oracle.currentEpoch(), r.epoch)
+        );
+        vm.prank(alice);
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: GENESIS_ID, gpuOut: 1e18, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: updateData
+            })
+        );
+    }
+
+    /// Empty updateData (garbled wire format) reverts on decode — the
+    /// cached-price world is unreachable from every entrypoint.
+    function test_buy_emptyUpdateData_reverts() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        router.buy(
+            GpuRouter.BuyParams({
+                gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: ""
+            })
+        );
     }
 
     function test_buy_paramValidation() public {
@@ -355,21 +396,21 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 0, payment: address(gusd), maxPaid: 100,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         vm.expectRevert(GpuRouter.UnsupportedPayment.selector);
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 10, payment: address(0xBEEF), maxPaid: 100,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         vm.expectRevert(GpuRouter.UnknownGpu.selector);
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: bytes32("NOPE"), gpuOut: 10, payment: address(gusd), maxPaid: 100,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         vm.stopPrank();
@@ -386,7 +427,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 aliceGusdBefore = gusd.balanceOf(alice);
 
         vm.prank(alice);
-        uint256 gpuOut = router.buyExactIn(GPU_ID, gusdMaxIn, minGpuOut, 0, 0, alice);
+        uint256 gpuOut = router.buyExactIn(GPU_ID, gusdMaxIn, minGpuOut, 0, 0, alice, _updateData(GPU_ID, 25_000));
 
         assertGt(gpuOut, minGpuOut, "full fill");
         assertEq(gusd.balanceOf(alice), aliceGusdBefore - gusdMaxIn, "paid exactly gusdMaxIn");
@@ -398,13 +439,13 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     function test_buyExactIn_slippage() public {
         vm.prank(alice);
         vm.expectRevert(GpuRouter.Slippage.selector);
-        router.buyExactIn(GPU_ID, 1e9, 1e21, 0, 0, alice); // minGpuOut unreachable
+        router.buyExactIn(GPU_ID, 1e9, 1e21, 0, 0, alice, _updateData(GPU_ID, 25_000)); // minGpuOut unreachable
     }
 
     function test_buyExactIn_requiresCanonicalPool() public {
         vm.prank(alice);
         vm.expectRevert(GpuRouter.NotCanonicalPool.selector);
-        router.buyExactIn(GENESIS_ID, 1e9, 0, 0, 0, alice);
+        router.buyExactIn(GENESIS_ID, 1e9, 0, 0, 0, alice, _updateData(GENESIS_ID, 25_000));
     }
 
     // --------------------------------------------------------------- SELL
@@ -424,7 +465,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 out = router.sell(
             GpuRouter.SellParams({
                 gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -454,7 +495,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 out = router.sell(
             GpuRouter.SellParams({
                 gpuId: GPU_ID, gpuIn: gpuIn, payout: address(underlying), minOut: minOut, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -471,7 +512,12 @@ abstract contract GpuRouterTestBase is Test, Deployers {
     /// Empty pool (initialized, zero liquidity, zero bid inventory): SELL
     /// fails closed — the honest closed market.
     function test_sell_emptyPoolRevertsCleanly() public {
-        manager.initialize(_canonicalKeyFor(GENESIS_ID), SQRT_PRICE_1_1); // no LP
+        // init at the report anchor (orientation-adjusted, like the main
+        // pool) so the sell walk actually reaches the bid edge — at a
+        // disconnected price the walk can never hit the edge and the swap
+        // degrades to a native no-op on the empty book instead of the
+        // honest capacity revert under test
+        manager.initialize(_canonicalKeyFor(GENESIS_ID), TickMath.getSqrtPriceAtTick(initTick)); // no LP
         GPUToken genGpu = GPUToken(issuance.tokenOf(GENESIS_ID));
         _issueGpuTo(GENESIS_ID, bob, 10e18);
         vm.startPrank(bob);
@@ -483,18 +529,12 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         hook.setPolCaps(0, 0);
         vm.prank(bob);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CustomRevert.WrappedError.selector,
-                address(hook),
-                IHooks.beforeSwap.selector,
-                abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector),
-                abi.encodePacked(Hooks.HookCallFailed.selector)
-            )
+            _wrapHook(abi.encodePacked(GPUHook.InsufficientMarketCapacity.selector))
         );
         router.sell(
             GpuRouter.SellParams({
                 gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GENESIS_ID, 25_000)
             })
         );
     }
@@ -511,7 +551,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         uint256 out = router.sell(
             GpuRouter.SellParams({
                 gpuId: GPU_ID, gpuIn: gpuIn, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GPU_ID, 25_000)
             })
         );
 
@@ -529,7 +569,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         router.sell(
             GpuRouter.SellParams({
                 gpuId: GPU_ID, gpuIn: 1e12, payout: address(gusd), minOut: 5e13, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GPU_ID, 25_000)
             })
         );
     }
@@ -540,7 +580,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         router.sell(
             GpuRouter.SellParams({
                 gpuId: GENESIS_ID, gpuIn: 1e12, payout: address(gusd), minOut: 1, deadline: 0, sqrtLimitX96: 0,
-                recipient: bob
+                recipient: bob, updateData: _updateData(GENESIS_ID, 25_000)
             })
         );
     }
@@ -559,7 +599,7 @@ abstract contract GpuRouterTestBase is Test, Deployers {
         router.buy(
             GpuRouter.BuyParams({
                 gpuId: GPU_ID, gpuOut: 1e12, payment: address(gusd), maxPaid: 2_000_000e6,
-                deadline: 0, sqrtLimitX96: 0, recipient: alice
+                deadline: 0, sqrtLimitX96: 0, recipient: alice, updateData: _updateData(GPU_ID, 25_000)
             })
         );
         (uint256 g0b, uint256 g1b) = stateView.getFeeGrowthGlobals(_canonicalKey().toId());

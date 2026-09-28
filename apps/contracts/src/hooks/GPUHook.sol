@@ -26,21 +26,31 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IGPUIssuance} from "../interfaces/IGPUIssuance.sol";
 import {IMarketLiquidity} from "../interfaces/IMarketLiquidity.sol";
-import {IGPUPriceOracle} from "../oracle/IGPUPriceOracle.sol";
+import {IGpuOracle} from "../oracle/IGpuOracle.sol";
+import {ReportCodec} from "../oracle/ReportCodec.sol";
 
 /// @title GPUHook — protocol market maker inside every canonical GPU/gUSD pool.
 /// @notice Permissions: afterInitialize, beforeSwap, afterSwap (+ both swap
-///         return-delta flags), mask 0x10CC. The hook reads the guarded oracle
-///         INSIDE every swap, derives oracle-anchored bid/ask edges, simulates
-///         the native book's walk to the edge (bounded, word-skipped), and
-///         fills everything beyond the edge from GPUMarketLiquidity inventory
-///         (POL) with GPUIssuance as the final in-swap backstop. One swap call
-///         is the complete market. Stale oracle => the hook fills nothing.
+///         return-delta flags), mask 0x10CC. The hook consumes the caller-
+///         submitted oracle report INSIDE every swap, derives report-anchored
+///         bid/ask edges, simulates the native book's walk to the edge
+///         (bounded, word-skipped), and fills everything beyond the edge from
+///         GPUMarketLiquidity inventory (POL) with GPUIssuance as the final
+///         in-swap backstop. One swap call is the complete market. No valid
+///         current-epoch report => the swap reverts (fail-closed) — there is
+///         no native-only degradation, and empty/garbage hookData can never
+///         bypass the check (direct PoolManager swaps included).
 /// @dev    Lifecycle: plan in beforeSwap (absorb the beyond-edge input),
 ///         realize in afterSwap (settle fills, return the output delta). The
-///         plan is stateless: afterSwap recovers the absorbed amount from the
-///         native swapDelta and re-derives every spend from a fresh guarded
-///         oracle read — no transient state, safe under nested swaps.
+///         caller submits the oracle report as hookData
+///         (`updateData = abi.encode(Report, signature)`, see IGpuOracle):
+///         beforeSwap CONSUMES it (first-consumer-per-epoch binding on the
+///         oracle) and afterSwap re-derives every spend from the SAME report
+///         via `oracle.verify` — the oracle's transient dedupe makes that a
+///         TLOAD, never a second ecrecover — so both phases always price at
+///         the same execution price. The plan is stateless: afterSwap
+///         recovers the absorbed amount from the native swapDelta; safe under
+///         nested swaps (each nested swap carries its own report in hookData).
 contract GPUHook is IHooks, IHookStats, Ownable2Step {
     using PoolIdLibrary for PoolKey;
     using ProtocolFeeLibrary for uint16;
@@ -51,12 +61,24 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     uint256 public constant DEFAULT_MAX_WALK_TICKS = 48;
     uint256 public constant DEFAULT_MAX_POL_NOTIONAL_GUSD = 1_000_000e6;
     uint256 public constant DEFAULT_PER_BLOCK_POL_CAP_GUSD = 5_000_000e6;
-    uint256 public constant DEFAULT_MAX_ORACLE_STALENESS = 25 hours;
 
     struct PolParams {
         uint16 askBps;
         uint16 bidBps;
         uint16 polFeeBps;
+    }
+
+    /// @dev The buy-ladder fill (see `_buyLadder`): POL ask fill plus the
+    ///      issuance backstop fill. Memory struct rather than a 7-tuple so
+    ///      settle functions stay inside the EVM stack limit.
+    struct Ladder {
+        uint256 polGpu;
+        uint256 polSpend;
+        uint256 polFee;
+        uint256 issueGpu;
+        uint256 base;
+        uint256 fee;
+        uint256 total;
     }
 
     struct PoolCtx {
@@ -79,7 +101,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     IPoolManager public immutable poolManager;
     address public immutable gUSD;
     IGPUIssuance public immutable issuance;
-    IGPUPriceOracle public immutable oracle;
+    IGpuOracle public immutable oracle;
     address public immutable revenueLedger;
     IMarketLiquidity internal _vault;
     /// @dev Self-deployed helper holding the walk machinery — keeps the hook's
@@ -89,7 +111,6 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     PoolWalk internal immutable _poolWalk;
 
     uint16 public hookFeeBps; // hook fee in gUSD on every fill shape (buys exactIn: out of the absorbed budget)
-    uint256 public maxOracleStaleness = DEFAULT_MAX_ORACLE_STALENESS;
     uint256 public maxWalkTicks = DEFAULT_MAX_WALK_TICKS;
     uint256 public maxPolNotionalGusd = DEFAULT_MAX_POL_NOTIONAL_GUSD;
     uint256 public perBlockPolCapGusd = DEFAULT_PER_BLOCK_POL_CAP_GUSD;
@@ -116,6 +137,10 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     error HarvestExceedsPending();
     error SingleCurrencyPoolsOnly();
     error GpuMismatch();
+    /// @notice A swap arrived with empty hookData — no oracle report to price
+    ///         it with. Fail-closed: direct PoolManager swaps must submit the
+    ///         same report the router would.
+    error ReportRequired();
 
     event PoolRegistered(PoolId indexed poolId, bytes32 indexed gpuId);
     event HookSwap(PoolId indexed id, address indexed sender, int128 amount0, int128 amount1, uint24 swapFee);
@@ -133,7 +158,6 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     event PolPausedSet(bool paused);
     event PolCapsSet(uint256 maxPolNotionalGusd, uint256 perBlockPolCapGusd);
     event HookFeeBpsSet(uint16 oldFeeBps, uint16 newFeeBps);
-    event MaxOracleStalenessSet(uint256 seconds_);
     event MaxWalkTicksSet(uint256 v);
     event PolFeeCharged(PoolId indexed poolId, bytes32 indexed gpuId, uint256 gusdFee);
     event FeesHarvested(address indexed token, uint256 amount);
@@ -141,7 +165,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     constructor(
         IPoolManager poolManager_,
         address gUSD_,
-        IGPUPriceOracle oracle_,
+        IGpuOracle oracle_,
         IGPUIssuance issuance_,
         address revenueLedger_,
         address initialOwner
@@ -232,29 +256,38 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         }
     }
 
-    /// @dev Guarded oracle read: (price, ok) — ok=false on zero price, future
-    ///      timestamp, or staleness beyond maxOracleStaleness.
-    function _oraclePrice(bytes32 gpuId) internal view returns (uint256 price, bool ok) {
-        uint256 updatedAt;
-        try oracle.getPrice(gpuId) returns (uint256 p_, uint256 u_) {
-            price = p_;
-            updatedAt = u_;
-        } catch {
-            return (0, false);
-        }
-        if (price == 0 || updatedAt > block.timestamp) return (0, false);
-        if (block.timestamp - updatedAt > maxOracleStaleness) return (0, false);
-        ok = true;
+    /// @dev Fail-closed report consumption (plan phase): decode the wire
+    ///      format and CONSUME the report against this pool's GPU — the first
+    ///      consumer of the epoch binds it on the oracle. Empty hookData
+    ///      reverts ReportRequired; invalid/expired/wrong-GPU/wrong-signer
+    ///      reports revert with the oracle's typed errors. There is no
+    ///      native-only degradation path.
+    function _consumeReport(bytes32 gpuId, bytes calldata hookData) internal returns (uint256 price) {
+        if (hookData.length == 0) revert ReportRequired();
+        (IGpuOracle.Report calldata report, bytes calldata signature) = ReportCodec.decode(hookData);
+        return oracle.consume(gpuId, report, signature);
     }
 
-    /// @notice Plan phase. Computes the native book's bounded walk to the
-    ///         oracle edge; absorbs the beyond-edge input and returns it as
-    ///         the specified delta (exactIn) or commits the hook's output
-    ///         supply (exactOut). Stale oracle or no work to do => zero
-    ///         deltas, pure-native swap. A walk cap or inventory shortfall
-    ///         degrades to native-only; only a genuine no-capacity market
-    ///         reverts InsufficientMarketCapacity.
-    function beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+    /// @dev Fail-closed report verification (realize phase): same report
+    ///      beforeSwap consumed. The oracle's transient dedupe (set by
+    ///      consume earlier in this transaction) makes this a TLOAD +
+    ///      structural checks — never a second ecrecover.
+    function _verifyReport(bytes32 gpuId, bytes calldata hookData) internal view returns (uint256 price) {
+        if (hookData.length == 0) revert ReportRequired();
+        (IGpuOracle.Report calldata report, bytes calldata signature) = ReportCodec.decode(hookData);
+        return oracle.verify(gpuId, report, signature);
+    }
+
+    /// @notice Plan phase. Consumes the caller-submitted oracle report
+    ///         (fail-closed: no valid current-epoch report => revert) and
+    ///         computes the native book's bounded walk to the report-price
+    ///         edge; absorbs the beyond-edge input and returns it as the
+    ///         specified delta (exactIn) or commits the hook's output supply
+    ///         (exactOut). No protocol work (budget exhausted inside the
+    ///         spread, walk cap, zero beyond-edge demand) => zero deltas,
+    ///         native-only within the verified report's price context; only
+    ///         a genuine no-capacity market reverts InsufficientMarketCapacity.
+    function beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         external
         override
         onlyPoolManager
@@ -262,8 +295,8 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     {
         PoolCtx memory ctx = _ctx(key, params);
         uint256 budget = ctx.exactIn ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        (uint256 price, bool ok) = _oraclePrice(ctx.gpuId);
-        if (!ok || budget == 0) {
+        uint256 price = _consumeReport(ctx.gpuId, hookData);
+        if (budget == 0) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
         PolParams memory pp = _paramsFor(ctx.gpuId);
@@ -306,7 +339,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         if (beyond == 0) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
-        Plan memory plan = _plan(key.toId(), key.tickSpacing, ctx, pp, price, effAskBps, beyond);
+        Plan memory plan = _plan(key.toId(), key.tickSpacing, ctx, pp, price, effAskBps, beyond, hookData);
         if (plan.revert_) revert InsufficientMarketCapacity();
         if (plan.deltaSpecified == 0 && plan.deltaUnspecified == 0) {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
@@ -329,7 +362,8 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         PolParams memory pp,
         uint256 price,
         uint16 effAskBps,
-        uint256 beyond
+        uint256 beyond,
+        bytes calldata updateData
     ) internal view returns (Plan memory p) {
         uint256 cd = issuance.compositionDivisor();
         uint16 issueFeeBps = issuance.feeBpsOf(ctx.gpuId);
@@ -346,7 +380,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
                     uint256 base,
                     uint256 fee,
                     uint256 total
-                ) = _buyLadder(ctx.gpuId, pp, price, effAskBps, cd, issueFeeBps, gusdBudget, type(uint256).max);
+                ) = _buyLadder(ctx.gpuId, pp, price, effAskBps, cd, issueFeeBps, gusdBudget, type(uint256).max, updateData);
                 // Commit the FULL cap, not the ladder spend: the backstop's
                 // quantity floor can leave the ladder 1-2 wei short of the
                 // budget, and a realize-side absorb re-derived from the swap
@@ -390,7 +424,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
                     uint256 base,
                     uint256 fee,
                     uint256 total
-                ) = _buyLadder(ctx.gpuId, pp, price, effAskBps, cd, issueFeeBps, spendCap, demandCap);
+                ) = _buyLadder(ctx.gpuId, pp, price, effAskBps, cd, issueFeeBps, spendCap, demandCap, updateData);
                 uint256 covered = polGpu + issueGpu;
                 uint256 residual = beyond - covered;
                 if (residual > GPU_DUST) {
@@ -505,7 +539,8 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         uint256 cd,
         uint16 issueFeeBps,
         uint256 gusdBudget,
-        uint256 demandCap
+        uint256 demandCap,
+        bytes calldata updateData
     )
         internal
         view
@@ -542,7 +577,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         // budget when the exact total does not fit or the quote degrades.
         bool filled = false;
         if (want != 0) {
-            try issuance.quoteIssueCredited(gpuId, want) returns (uint256 b, uint256 f, uint256 t) {
+            try issuance.quoteIssueCredited(gpuId, want, updateData) returns (uint256 b, uint256 f, uint256 t) {
                 if (t <= leftover) {
                     issueGpu = want;
                     base = b;
@@ -559,7 +594,7 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
         if (!filled) {
             issueGpu = Math.min(want, issueBudget);
             if (issueGpu > 0) {
-                try issuance.quoteIssueCredited(gpuId, issueGpu) returns (uint256 b, uint256 f, uint256 t) {
+                try issuance.quoteIssueCredited(gpuId, issueGpu, updateData) returns (uint256 b, uint256 f, uint256 t) {
                     base = b;
                     fee = f;
                     total = t;
@@ -595,19 +630,22 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
 
     /// @notice Realize phase. Recovers the hook's absorb/supply from the
     ///         native swapDelta (the pre-hookDelta native result), re-derives
-    ///         every spend from a fresh guarded oracle read, settles both
-    ///         legs to ledger zero, and emits HookSwap + one GpuFill per
-    ///         fill source. Stateless: safe under repeated swaps per lock.
+    ///         every spend from the SAME report beforeSwap consumed (the
+    ///         oracle's transient dedupe makes this a TLOAD + arithmetic —
+    ///         never a second ecrecover, never a fresh oracle read), settles
+    ///         both legs to ledger zero, and emits HookSwap + one GpuFill per
+    ///         fill source. beforeSwap and afterSwap therefore always price
+    ///         at the same execution price. Stateless: safe under repeated
+    ///         swaps per lock.
     function afterSwap(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         BalanceDelta swapDelta,
-        bytes calldata
+        bytes calldata hookData
     ) external override onlyPoolManager returns (bytes4, int128) {
         PoolCtx memory ctx = _ctx(key, params);
-        (uint256 price, bool ok) = _oraclePrice(ctx.gpuId);
-        if (!ok) return (IHooks.afterSwap.selector, 0);
+        uint256 price = _verifyReport(ctx.gpuId, hookData);
 
         // Specified currency: input for exactIn, output for exactOut.
         bool specIsC0 = ctx.exactIn == ctx.zeroForOne;
@@ -630,14 +668,14 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
             }
             if (absorb == 0) return (IHooks.afterSwap.selector, 0);
             delta = ctx.isBuy
-                ? _settleBuyIn(sender, key, ctx, absorb, price)
+                ? _settleBuyIn(sender, key, ctx, absorb, price, hookData)
                 : _settleSellIn(sender, key, ctx, absorb, price);
         } else {
             // Supply recovered: what the hook owes beyond the native output.
             uint256 supplied = uint256(params.amountSpecified) - uint256(nativeSpec);
             if (supplied == 0) return (IHooks.afterSwap.selector, 0);
             delta = ctx.isBuy
-                ? _settleBuyOut(sender, key, ctx, supplied, price)
+                ? _settleBuyOut(sender, key, ctx, supplied, price, hookData)
                 : _settleSellOut(sender, key, ctx, supplied, price);
         }
         return (IHooks.afterSwap.selector, delta);
@@ -654,44 +692,49 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     ///      absorb − hookFeeGusd and the buyer still receives the full gross
     ///      fills. Money closes at zero: hookFeeGusd + polFee → ledger,
     ///      total → issuance pull, polSpend − polFee + tail → vault credit.
-    function _settleBuyIn(address sender, PoolKey calldata key, PoolCtx memory ctx, uint256 absorb, uint256 price)
-        internal
-        returns (int128)
-    {
+    function _settleBuyIn(
+        address sender,
+        PoolKey calldata key,
+        PoolCtx memory ctx,
+        uint256 absorb,
+        uint256 price,
+        bytes calldata updateData
+    ) internal returns (int128) {
         uint256 hookFeeGusd = Math.mulDiv(absorb, hookFeeBps, 1e4, Math.Rounding.Ceil);
         if (hookFeeGusd > absorb) hookFeeGusd = absorb;
         uint256 budget = absorb - hookFeeGusd;
         PolParams memory pp = _paramsFor(ctx.gpuId);
         uint256 cd = issuance.compositionDivisor();
         uint16 issueFeeBps = issuance.feeBpsOf(ctx.gpuId);
-        (uint256 polGpu, uint256 polSpend, uint256 polFee, uint256 issueGpu, uint256 base, uint256 fee, uint256 total) =
-            _buyLadder(ctx.gpuId, pp, price, _effAskBps(pp, ctx.gpuId), cd, issueFeeBps, budget, type(uint256).max);
+        Ladder memory L;
+        (L.polGpu, L.polSpend, L.polFee, L.issueGpu, L.base, L.fee, L.total) =
+            _buyLadder(ctx.gpuId, pp, price, _effAskBps(pp, ctx.gpuId), cd, issueFeeBps, budget, type(uint256).max, updateData);
         poolManager.take(Currency.wrap(gUSD), address(this), absorb);
         Currency gpuCur = ctx.gIsC0 ? key.currency1 : key.currency0;
-        if (polGpu > 0) {
+        if (L.polGpu > 0) {
             poolManager.sync(gpuCur);
-            _vault.pullGpuToManager(ctx.gpuId, polGpu);
+            _vault.pullGpuToManager(ctx.gpuId, L.polGpu);
             poolManager.settle();
         }
-        if (issueGpu > 0) {
+        if (L.issueGpu > 0) {
             // The pull bound is budget−polSpend, not absorb−polSpend: the
             // ladder's total ≤ leftover is measured against the fee-net
             // budget, and issuance's fail-closed transferFrom must not reach
             // past it into the fee reserve.
-            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), budget - polSpend);
+            issuance.issueCredited(ctx.gpuId, L.issueGpu, address(this), budget - L.polSpend, updateData);
             poolManager.sync(gpuCur);
-            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), issueGpu);
+            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), L.issueGpu);
             poolManager.settle();
         }
-        uint256 grossGpu = polGpu + issueGpu;
-        uint256 tail = budget - (polSpend + total);
-        if (polFee + hookFeeGusd > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee + hookFeeGusd);
+        uint256 grossGpu = L.polGpu + L.issueGpu;
+        uint256 tail = budget - (L.polSpend + L.total);
+        if (L.polFee + hookFeeGusd > 0) IERC20(gUSD).safeTransfer(revenueLedger, L.polFee + hookFeeGusd);
         totalHookFeesGusd += hookFeeGusd;
-        if (polSpend > polFee) _vault.creditBidFromTrade(ctx.gpuId, polSpend - polFee + tail);
+        if (L.polSpend > L.polFee) _vault.creditBidFromTrade(ctx.gpuId, L.polSpend - L.polFee + tail);
         else if (tail > 0) _vault.creditBidFromTrade(ctx.gpuId, tail);
-        _bookPol(polSpend, polFee);
-        if (polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, polGpu, polSpend, polFee, 0);
-        if (issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, issueGpu, base + fee, fee, 1);
+        _bookPol(L.polSpend, L.polFee);
+        if (L.polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.polGpu, L.polSpend, L.polFee, 0);
+        if (L.issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.issueGpu, L.base + L.fee, L.fee, 1);
         _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(absorb), _toI128(grossGpu));
         return -_toI128(grossGpu);
     }
@@ -734,49 +777,54 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     ///      FIRST (physical funding for the backstop transferFrom), then GPU
     ///      is delivered. Deterministic recompute == plan, so the committed
     ///      beforeSwap charge is exact; divergence reverts via unlock.
-    function _settleBuyOut(address sender, PoolKey calldata key, PoolCtx memory ctx, uint256 supplied, uint256 price)
-        internal
-        returns (int128)
-    {
-        PolParams memory pp = _paramsFor(ctx.gpuId);
-        uint16 effAskBps = _effAskBps(pp, ctx.gpuId);
-        uint256 denomAsk = price * (1e4 + uint256(effAskBps));
-        uint256 capLeft = _polCapLeft();
-        uint256 capGpu = capLeft == 0 ? 0 : Math.mulDiv(capLeft, 1e20, denomAsk);
-        uint256 polGpu = Math.min(Math.min(supplied, _vault.askInventoryGpu(ctx.gpuId)), capGpu);
-        uint256 polSpend = Math.mulDiv(polGpu, denomAsk, 1e20, Math.Rounding.Ceil);
-        uint256 polFee = Math.mulDiv(polSpend, pp.polFeeBps, 1e4, Math.Rounding.Ceil);
-        uint256 issueGpu = supplied - polGpu;
-        uint256 base;
-        uint256 fee;
-        uint256 charge = polSpend;
-        if (issueGpu > 0) {
-            (uint256 b, uint256 f, uint256 t) = issuance.quoteIssueCredited(ctx.gpuId, issueGpu);
-            base = b;
-            fee = f;
-            charge = polSpend + t;
+    function _settleBuyOut(
+        address sender,
+        PoolKey calldata key,
+        PoolCtx memory ctx,
+        uint256 supplied,
+        uint256 price,
+        bytes calldata updateData
+    ) internal returns (int128) {
+        Ladder memory L;
+        uint256 charge;
+        {
+            PolParams memory pp = _paramsFor(ctx.gpuId);
+            uint16 effAskBps = _effAskBps(pp, ctx.gpuId);
+            uint256 denomAsk = price * (1e4 + uint256(effAskBps));
+            uint256 capLeft = _polCapLeft();
+            uint256 capGpu = capLeft == 0 ? 0 : Math.mulDiv(capLeft, 1e20, denomAsk);
+            L.polGpu = Math.min(Math.min(supplied, _vault.askInventoryGpu(ctx.gpuId)), capGpu);
+            L.polSpend = Math.mulDiv(L.polGpu, denomAsk, 1e20, Math.Rounding.Ceil);
+            L.polFee = Math.mulDiv(L.polSpend, pp.polFeeBps, 1e4, Math.Rounding.Ceil);
+            L.issueGpu = supplied - L.polGpu;
+            charge = L.polSpend;
+            if (L.issueGpu > 0) {
+                uint256 t;
+                (L.base, L.fee, t) = issuance.quoteIssueCredited(ctx.gpuId, L.issueGpu, updateData);
+                charge = L.polSpend + t;
+            }
         }
         uint256 hookFee = Math.mulDiv(charge, hookFeeBps, 1e4, Math.Rounding.Ceil);
         poolManager.take(Currency.wrap(gUSD), address(this), charge + hookFee);
         Currency gpuCur = ctx.gIsC0 ? key.currency1 : key.currency0;
-        if (polGpu > 0) {
+        if (L.polGpu > 0) {
             poolManager.sync(gpuCur);
-            _vault.pullGpuToManager(ctx.gpuId, polGpu);
+            _vault.pullGpuToManager(ctx.gpuId, L.polGpu);
             poolManager.settle();
         }
-        if (issueGpu > 0) {
-            issuance.issueCredited(ctx.gpuId, issueGpu, address(this), charge - polSpend);
+        if (L.issueGpu > 0) {
+            issuance.issueCredited(ctx.gpuId, L.issueGpu, address(this), charge - L.polSpend, updateData);
             poolManager.sync(gpuCur);
-            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), issueGpu);
+            IERC20(ctx.gpuToken).safeTransfer(address(poolManager), L.issueGpu);
             poolManager.settle();
         }
-        if (polFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, polFee);
+        if (L.polFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, L.polFee);
         if (hookFee > 0) IERC20(gUSD).safeTransfer(revenueLedger, hookFee);
         totalHookFeesGusd += hookFee;
-        if (polSpend > polFee) _vault.creditBidFromTrade(ctx.gpuId, polSpend - polFee);
-        _bookPol(polSpend, polFee);
-        if (polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, polGpu, polSpend, polFee, 0);
-        if (issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, issueGpu, base + fee, fee, 1);
+        if (L.polSpend > L.polFee) _vault.creditBidFromTrade(ctx.gpuId, L.polSpend - L.polFee);
+        _bookPol(L.polSpend, L.polFee);
+        if (L.polGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.polGpu, L.polSpend, L.polFee, 0);
+        if (L.issueGpu > 0) emit GpuFill(key.toId(), ctx.gpuId, sender, true, L.issueGpu, L.base + L.fee, L.fee, 1);
         _emitHookSwap(key.toId(), sender, ctx.gIsC0, _toI128Neg(charge + hookFee), _toI128(supplied));
         // The unspecified leg is the gUSD input for buys: the fee rides on
         // top of the beforeSwap charge, so afterSwap must ADD it to the
@@ -875,29 +923,45 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
             || interfaceId == type(IERC165).interfaceId;
     }
 
-    /// @notice Merged-book state for a GPU: POL params, live flag (fresh
-    ///         oracle, not paused, some capacity), and edge prices in the
-    ///         oracle's 4-decimal convention.
-    function polState(bytes32 gpuId)
+    /// @notice Merged-book state for a GPU at a VERIFIED report's price: POL
+    ///         params, live flag (report verified, not paused), and edge
+    ///         prices in the report's 4-decimal convention. Reverts unless
+    ///         the report passes the full acceptance set — never quotes an
+    ///         unverified price.
+    function polState(bytes32 gpuId, IGpuOracle.Report calldata report, bytes calldata signature)
         external
         view
         returns (uint16 askBps, uint16 bidBps, uint16 polFeeBps, bool live, uint256 askPrice, uint256 bidPrice)
     {
         PolParams memory pp = _paramsFor(gpuId);
-        (uint256 price, bool ok) = _oraclePrice(gpuId);
+        uint256 price = oracle.verify(gpuId, report, signature);
         askBps = pp.askBps;
         bidBps = pp.bidBps;
         polFeeBps = pp.polFeeBps;
-        live = ok && !polPaused;
-        if (ok) {
-            // Quote doctrine: mirror _effAskBps (pause + R2 issuance cap) so
-            // the view's ask edge is the edge execution actually walks to.
-            uint16 effAskBps = polPaused ? 0 : pp.askBps;
-            uint16 issueFeeBps = issuance.feeBpsOf(gpuId);
-            if (issueFeeBps < effAskBps) effAskBps = issueFeeBps;
-            (askPrice, bidPrice) =
+        live = !polPaused;
+        // Quote doctrine: mirror _effAskBps (pause + R2 issuance cap) so
+        // the view's ask edge is the edge execution actually walks to.
+        uint16 effAskBps = polPaused ? 0 : pp.askBps;
+        uint16 issueFeeBps = issuance.feeBpsOf(gpuId);
+        if (issueFeeBps < effAskBps) effAskBps = issueFeeBps;
+        (askPrice, bidPrice) =
             (Math.mulDiv(price, 1e4 + uint256(effAskBps), 1e4), Math.mulDiv(price, 1e4 - uint256(pp.bidBps), 1e4));
-        }
+    }
+
+    /// @notice Observability snapshot over the oracle's last consumed report
+    ///         for a GPU — describes what last executed on-chain; NEVER a
+    ///         price input (see IGpuOracle).
+    function oracleLastConsumed(bytes32 gpuId)
+        external
+        view
+        returns (uint256 price, uint64 observedAt, uint64 epoch, bytes32 reportHash)
+    {
+        return (
+            oracle.lastConsumedPrice(gpuId),
+            oracle.lastConsumedAt(gpuId),
+            oracle.lastConsumedEpoch(gpuId),
+            oracle.lastConsumedReportHash(gpuId)
+        );
     }
 
     // ------------------------------------------------------------- admin --
@@ -913,11 +977,6 @@ contract GPUHook is IHooks, IHookStats, Ownable2Step {
     function setPolPaused(bool paused) external onlyOwner {
         polPaused = paused;
         emit PolPausedSet(paused);
-    }
-
-    function setMaxOracleStaleness(uint256 seconds_) external onlyOwner {
-        maxOracleStaleness = seconds_;
-        emit MaxOracleStalenessSet(seconds_);
     }
 
     function setMaxWalkTicks(uint256 v) external onlyOwner {

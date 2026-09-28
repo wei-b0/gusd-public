@@ -48,9 +48,9 @@ export const revenueDistributed = event("RevenueDistributed");
 export const hookPoolRegistered = event("HookPoolRegistered");
 export const hookSwap = event("HookSwap");
 export const gpuFill = event("GpuFill");
-export const oraclePricePublished = event("OraclePricePublished", ["blockTimestamp", "updatedAtSec"]);
-export const oraclePriceOverridden = event("OraclePriceOverridden", ["blockTimestamp", "updatedAtSec"]);
-export const oraclePublisherAccepted = event("OraclePublisherAccepted");
+export const priceConsumed = event("PriceConsumed", ["blockTimestamp", "observedAtSec"]);
+export const signerTransferStarted = event("SignerTransferStarted");
+export const signerAccepted = event("SignerAccepted");
 export const pmPoolInitialized = event("PmPoolInitialized", ["blockTimestamp"], [
   "fee",
   "tick",
@@ -76,9 +76,8 @@ export const gpuAssets = table("GpuAsset", (value) => String(value.gpuId), [
   "sellCount",
   "lastTradeAtSec",
 ]);
-export const oracleState = table("OracleState", (value) => String(value.gpuId), [
-  "updatedAtSec",
-  "overriddenAtSec",
+export const gpuOracleState = table("GpuOracleState", (value) => String(value.gpuId), [
+  "observedAtSec",
 ]);
 export const gpuTokens = table("GpuToken", (value) => String(value.token));
 export const walletBalances = table("WalletBalance", (value) => `${value.wallet}_${value.token}`, [
@@ -115,7 +114,8 @@ export const protocolStats = table("ProtocolStats", () => "protocol", [
   "issuedCount",
   "buyCount",
   "sellCount",
-  "maxOracleStalenessSec",
+  "maxObservationAgeSec",
+  "epochLengthSec",
 ]);
 export const sgusdVault = table("SgusdVault", () => "vault", ["depositCount", "withdrawCount"]);
 export const protocolStatsDaily = table("ProtocolStatsDaily", (value) => String(value.bucketStart), [

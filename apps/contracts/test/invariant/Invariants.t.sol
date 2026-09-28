@@ -15,25 +15,28 @@ import {GPUIssuance} from "../../src/GPUIssuance.sol";
 import {GPUMarketLiquidity} from "../../src/GPUMarketLiquidity.sol";
 import {GPUToken} from "../../src/GPUToken.sol";
 import {GPUHook} from "../../src/hooks/GPUHook.sol";
-import {MockGPUPriceOracle} from "../../src/oracle/MockGPUPriceOracle.sol";
-import {IGPUPriceOracle} from "../../src/oracle/IGPUPriceOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {OracleReports} from "../utils/OracleReports.sol";
 import {HandlerMintRedeem, HandlerIssuance, HandlerMarket, HandlerGovernance, IWorld, NotWorld} from "./Handlers.t.sol";
 
 /// @notice The invariant world AND the IWorld facade the handlers call into.
-contract InvariantTest is Test, Deployers, IWorld {
+///         The oracle is the REAL GpuOracle: handlers carry signed
+///         current-epoch reports (updateData) on every issuance and swap, and
+///         repricing happens per-epoch through the world's attestor key.
+contract InvariantTest is Test, Deployers, OracleReports, IWorld {
     GUSD internal s_gusd;
     sgUSD internal s_sg;
     RevenueLedger internal s_ledger;
     GPUIssuance internal s_issuance;
     GPUMarketLiquidity internal s_pol;
     GPUHook public hook;
-    MockGPUPriceOracle internal s_oracle;
     GPUToken internal s_h100;
     MockERC20 internal s_usdc;
+    // the report price every handler signs at; moves only via reprice()
+    uint256 internal s_price;
 
     address[] public actors;
 
@@ -42,7 +45,7 @@ contract InvariantTest is Test, Deployers, IWorld {
     HandlerMarket public hMarket;
     HandlerGovernance public hGov;
 
-    bytes32 internal constant H100 = bytes32(bytes("H100_SXM_80GB"));
+    // H100 comes from OracleReports (shared rig constant)
     uint160 constant HOOK_FLAGS = uint160(
         Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
@@ -61,23 +64,22 @@ contract InvariantTest is Test, Deployers, IWorld {
     }
 
     function setUp() public {
-        vm.warp(1_000_000);
+        _deployOracle(); // warps to 1_000_000 and deploys the real GpuOracle
         deployFreshManagerAndRouters();
         s_gusd = new GUSD(IERC20(address(s_usdc)), address(this));
         s_sg = new sgUSD(IERC20(address(s_gusd)), address(this));
         s_ledger = new RevenueLedger(IERC20(address(s_gusd)), address(this));
-        s_oracle = new MockGPUPriceOracle(address(this));
         s_pol = new GPUMarketLiquidity(IERC20(address(s_gusd)), address(manager), address(this));
         s_issuance = new GPUIssuance(
-            IERC20(address(s_gusd)), IGPUPriceOracle(address(s_oracle)), address(s_ledger), address(s_pol), address(this)
+            IERC20(address(s_gusd)), oracle, address(s_ledger), address(s_pol), address(this)
         );
         bytes memory ctorArgs =
-            abi.encode(IPoolManager(address(manager)), address(s_gusd), s_oracle, s_issuance, address(s_ledger), address(this));
+            abi.encode(IPoolManager(address(manager)), address(s_gusd), oracle, s_issuance, address(s_ledger), address(this));
         (address hookAddr, bytes32 salt) =
             HookMiner.find(address(this), HOOK_FLAGS, type(GPUHook).creationCode, ctorArgs);
         hook = GPUHook(hookAddr);
         new GPUHook{salt: salt}(
-            IPoolManager(address(manager)), address(s_gusd), s_oracle, s_issuance, address(s_ledger), address(this)
+            IPoolManager(address(manager)), address(s_gusd), oracle, s_issuance, address(s_ledger), address(this)
         );
         s_pol.setRefs(address(s_issuance), address(hook));
 
@@ -92,7 +94,7 @@ contract InvariantTest is Test, Deployers, IWorld {
         s_issuance.createGpu(H100, "H100 SXM 80GB GPU-hour", "H100", 50, 3000, 60);
         s_issuance.setIssuanceEnabled(H100, true);
         s_h100 = GPUToken(s_issuance.tokenOf(H100));
-        s_oracle.setPrice(H100, 25_000, block.timestamp);
+        s_price = 25_000;
 
         for (uint256 i; i < 4; ++i) {
             actors.push(makeAddr(string.concat("actor", vm.toString(i))));
@@ -120,7 +122,7 @@ contract InvariantTest is Test, Deployers, IWorld {
         s_usdc.approve(address(s_gusd), type(uint256).max);
         s_gusd.mint(10_000_000e6, actors[0]);
         s_gusd.approve(address(s_issuance), type(uint256).max);
-        s_issuance.issue(H100, 200e18, actors[0]);
+        s_issuance.issue(H100, 200e18, actors[0], _updateData(H100, 25_000));
         vm.stopPrank();
         manager.initialize(poolKey(), TickMath.getSqrtPriceAtTick(-276325)); // ~2.5 gUSD/H100
         IERC20(address(s_gusd)).approve(address(modifyLiquidityRouter), type(uint256).max);
@@ -161,8 +163,21 @@ contract InvariantTest is Test, Deployers, IWorld {
         return address(s_ledger);
     }
 
-    function oracle() external view override returns (address) {
-        return address(s_oracle);
+    function currentPrice() external view override returns (uint256) {
+        return s_price;
+    }
+
+    function signUpdateData(bytes32 gpuId, uint256 price) external view override returns (bytes memory) {
+        return _updateData(gpuId, price);
+    }
+
+    function reprice(uint256 price) external override {
+        if (msg.sender != address(hGov)) revert NotWorld();
+        // a new report price takes effect in a NEW epoch: every trade before
+        // this warp binds the old epoch to the old price, and this warp lands
+        // exactly on the next epoch boundary (fresh, unbound epoch)
+        _nextEpoch();
+        s_price = bound(price, 1, 100_000);
     }
 
     function swapRouterT() external view override returns (address) {
@@ -227,9 +242,9 @@ contract InvariantTest is Test, Deployers, IWorld {
         );
     }
 
-    /// @notice INVARIANT 7: no oracle-NAV redemption — oracle price changes
-    ///         (the handler sets arbitrary prices) never alter the cumulative
-    ///         principal accounting.
+    /// @notice INVARIANT 7: no oracle-NAV redemption — report repricing (the
+    ///         handler arms arbitrary report prices in fresh epochs) never
+    ///         alters the cumulative principal accounting.
     function invariant_noNavRedemption() public view {
         assertEq(s_pol.principalContributed(H100), initPrincipal + gBase, "principal moved with price");
     }

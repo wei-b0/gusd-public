@@ -1,8 +1,8 @@
 # Mainnet deploy — Robinhood Chain (4663)
 
 The production deployment recipe. Every ingredient is real: the reserve
-asset, the publisher identity, the treasury, the funding stables, the
-seed prices. The testnet recipes (Deploy.full / Demo / IndexerDemo /
+asset, the attestor identity, the treasury, the funding stables, the
+pool-anchor prices. The testnet recipes (Deploy.full / Demo / IndexerDemo /
 DeployMockOracle) **refuse to run here** — they deploy mock tokens, fund
 public anvil keys and seed demo activity, none of which may ever be a
 production chain's first transactions.
@@ -12,18 +12,19 @@ production chain's first transactions.
 | Input | Where it goes | How to verify |
 |---|---|---|
 | Deploy key | `PRIVATE_KEY` (env, inline — never a file) | `cast wallet address` |
-| Publisher key | `PUBLISHER` (address) + `PUBLISHER_PRIVATE_KEY` (infra) | A **separate key** from the deployer — it becomes the oracle's publish role at construction. Fund with gas. |
+| Attestor identity | `ORACLE_ATTESTOR` (address, **required**) | A **separate key** from the deployer — the `GpuOracle` is constructed with it as the report signer; its private key lives in the attestor's infra (`ATTESTOR_PRIVATE_KEY`), never in the deploy env. The attestor aborts boot unless its key matches `GpuOracle.signer()`. |
 | Treasury address | `TREASURY` | Receives the non-vault revenue split |
 | Real USDG address on 4663 | `UNDERLYING` | `cast call <addr> "symbol()(string)"` → `USDG`, 6 decimals |
 | Real funding stables on 4663 | `STABLES` (comma-separated) | Canonical issuers only — never a token's self-reported metadata |
-| Launch seed prices | `SEED_PRICE_H100`, `SEED_PRICE_H200`, `SEED_PRICE_L40S`, `SEED_PRICE_RTX4090` | The oracle pipeline's live snapshot at deploy time (PRICE_SCALE ×10_000: 25_000 = $2.50/GPU-hr) |
+| Pool-anchor prices | `SEED_PRICE_H100`, `SEED_PRICE_H200`, `SEED_PRICE_L40S`, `SEED_PRICE_RTX4090` | The oracle pipeline's live snapshot at deploy time (PRICE_SCALE ×10_000: 25_000 = $2.50/GPU-hr) |
 | Hypersync token | `ENVIO_API_TOKEN` (infra/.env) | Required by the indexer's config generator for 4663 |
 
-Seed prices are not decoration: the deploy seeds the oracle with them and
-initializes every canonical pool at that price, so the first real fills
-price against them until the publisher's first publication clears its
-deviation trigger. Set them from live collector data, not defaults — the
-L40S/RTX-4090 dev defaults are stylized fixtures.
+The anchor prices are not decoration: they set every canonical pool's
+starting sqrt price (a pure computation — the deploy writes no oracle state)
+and are the attestor's first-report target: the attestor must serve reports
+at the live price from the first epoch on, or the first trades revert on the
+report-acceptance window. Set them from live collector data, not defaults —
+the L40S/RTX-4090 dev defaults are stylized fixtures.
 
 ## 1) Fund the deployer
 
@@ -38,7 +39,7 @@ moves through the product, not the deploy script.
 ```sh
 cd apps/contracts
 UNDERLYING=0x… \
-PUBLISHER=0x… \
+ORACLE_ATTESTOR=0x… \
 TREASURY=0x… \
 STABLES=0x…,0x… \
 SEED_PRICE_H100=25000 SEED_PRICE_H200=32000 SEED_PRICE_L40S=6000 SEED_PRICE_RTX4090=3000 \
@@ -47,19 +48,31 @@ forge script script/Deploy.s.sol --rpc-url https://rpc.mainnet.chain.robinhood.c
   --broadcast --sig "run()"
 ```
 
+Optional oracle knobs: `ORACLE_EPOCH_LENGTH` (default 60s) and
+`ORACLE_MAX_OBSERVATION_AGE` (default 300s) — owner-tunable after deploy.
+
 What lands, unchanged from every environment: the v4 core (or reused verbatim
 via `POOL_MANAGER`/`STATE_VIEW`/`QUOTER` when the chain has a canonical stack
 — liquidity must not fragment across two managers) + Permit2 (canonical
 address), the hook (mined at the 0x10CC flags), the 4 launch SKUs with
-**issuance enabled, oracle seeded at the env prices, canonical pools
-initialized live** — empty by design: the hook is the book, genesis buys ride
-the in-swap backstop, and LPs provision through the PositionManager. The mint
-corridor is 50 bps both ways, the hook fee 50 bps, the POL book ask/bid
-0.5%/0.5% + 0.1% POL fee.
+**issuance enabled, the pull oracle constructed with the `ORACLE_ATTESTOR`
+signer, canonical pools initialized live at the anchor prices** — empty by
+design: the hook is the book, genesis buys ride the in-swap backstop, and
+LPs provision through the PositionManager. Deployment itself sends **no
+oracle transaction** — the first real trade embeds the attestor's signed
+report (`updateData`) in its own tx. The mint corridor is 50 bps both ways,
+the hook fee 50 bps, the POL book ask/bid 0.5%/0.5% + 0.1% POL fee.
 
-### Deployed — 2026-09-13
+### Deployed — 2026-09-13 (pre-migration record)
 
-The production deploy is live on 4663. Robinhood Chain hosts a canonical v4
+The 2026-09-13 production deploy ran the push oracle (`GPUPriceOracle` +
+publisher daemon). The pull-oracle migration (2026-09) replaces that
+contract wholesale — per its clean-redeploy posture (PROTOCOL.md §11) a
+fresh `Deploy` with `ORACLE_ATTESTOR` is required for the new oracle to go
+live; the recipe above is that deploy. The canonical v4 stack below is
+reused unchanged.
+
+Robinhood Chain hosts a canonical v4
 stack (Robinhood team-deployed); it was reused verbatim via
 `POOL_MANAGER`/`STATE_VIEW`/`QUOTER`/`POSITION_MANAGER` (39% less gas than a
 fresh stack, and liquidity stays unified on the chain's canonical manager).
@@ -77,12 +90,12 @@ deployed contracts, so never trust a bare `getCode` here):
 | WETH | `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` |
 
 The deployed record (`deployments/4663.json`) carries `startBlock`
-(the pre-broadcast head — the indexer's backfill anchor) and
-`oraclePublisher` (the publish identity ops funds and keeps hot).
-Seeded from the live collector snapshot: H100 31,855 · H200 40,099 ·
-L40S 13,153 · RTX4090 3,946. Broadcast spent ~0.00235 ETH pinned at
-0.115 gwei (the chain's base fee sits at ~0.097–0.099 gwei; forge's
-default estimate pads 2× and can be pinned with `--with-gas-price`).
+(the pre-broadcast head — the indexer's backfill anchor) and the oracle
+address. The pre-migration deploy's seeds came from the live collector
+snapshot: H100 31,855 · H200 40,099 · L40S 13,153 · RTX4090 3,946.
+Broadcast spent ~0.00235 ETH pinned at 0.115 gwei (the chain's base fee
+sits at ~0.097–0.099 gwei; forge's default estimate pads 2× and can be
+pinned with `--with-gas-price`).
 
 There is **no genesis seeding script on mainnet** — deliberately. The
 vault's bid capacity is born from the first real genesis buy (the in-swap
@@ -102,7 +115,7 @@ self-bootstrapping design, exercised by real money.
   The deterministic mirror prices them from the hook's public state; the
   float-seeded GpuQuoter is only for books that carry native CL liquidity.
 
-## 4) Indexer + oracle + publisher (the stack)
+## 4) Indexer + oracle + attestor (the stack)
 
 `infra/.env`:
 
@@ -110,16 +123,17 @@ self-bootstrapping design, exercised by real money.
 INDEXER_CHAIN_ID=4663
 ENVIO_API_TOKEN=<hypersync token>          # required for 4663
 INDEXER_RPC_URL=https://rpc.mainnet.chain.robinhood.com   # fallback reads
-PUBLISHER_TARGET=chain
-PUBLISHER_RPC_URL=https://rpc.mainnet.chain.robinhood.com
-PUBLISHER_CHAIN_ID=4663
-PUBLISHER_PRIVATE_KEY=0x…                  # the PUBLISHER key above — publish role only
-PUBLISHER_ORACLE_ADDRESS=0x…               # from deployments/4663.json ".oracle"
+ATTESTOR_CHAIN_ID=4663
+ATTESTOR_ORACLE_ADDRESS=0x…                # from deployments/4663.json ".oracle"
+ATTESTOR_PRIVATE_KEY=0x…                   # the ORACLE_ATTESTOR key — signer only, never sends txs
+ATTESTOR_ORACLE_URL=http://oracle:8080     # the benchmark API to poll
 ```
 
 `pnpm stack:up`, then verify: indexer `/ready` green, oracle `/v1/health`
-healthy, publisher emitting publications (the first ones confirm the seeds
-or replace them on ≥0.5% deviation).
+healthy, and current attestations flowing — `GET
+<oracle>/v1/prices/:gpu/attestation` must answer `kind: "current"` with a
+report whose signature recovers to `GpuOracle.signer()`. The attestor sends
+no transactions on mainnet (the pull oracle's 0-OpEx-when-idle guarantee).
 
 ## 5) Web build
 
@@ -141,7 +155,7 @@ no route, and funding rides the mint desk directly.
 
 - `Deploy.full runFull()` / `Demo` / `IndexerDemo` / `DeployMockOracle` —
   all four now revert on 4663.
-- The mock USDT (`0xAd8F…8AFE`) and its per-chain display pins in
+- The mock USDT (`0x0Ad4…0C64`) and its per-chain display pins in
   `stables.ts` — Anvil/testnet posture only; 4663 lists only real issuers.
 - Public anvil keys (`0xac09…`, `0x5de4…`, `0x7c85…`) signing anything.
 - The GpuQuoter's simulation floats — not a mock, but real parked collateral:

@@ -4,9 +4,10 @@
 
 This is the gUSD monorepo: a GPU-hour-backed stablecoin protocol. An
 offchain benchmark oracle computes GPU-hour prices from live provider data,
-a publisher writes them to the onchain `GPUPriceOracle`, an indexer turns
-protocol events into queryable Postgres views, and a trading-desk web app
-(issuance, pools, staking) runs on top. pnpm@11.25.0 + Turborepo, Node ≥ 24,
+an attestor signs them into EIP-712 reports that trades embed and the
+onchain `GpuOracle` verifies (pull oracle — no publisher daemon), an indexer
+turns protocol events into queryable Postgres views, and a trading-desk web
+app (issuance, pools, staking) runs on top. pnpm@11.25.0 + Turborepo, Node ≥ 24,
 Foundry for the contracts, Uniswap v4 for the GPU markets.
 
 Per-directory rules live in `apps/contracts/AGENTS.md` (read
@@ -17,9 +18,9 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 
 | Path | What it is |
 | --- | --- |
-| `apps/contracts` | Foundry: GUSD, GPUIssuance, GPUMarketLiquidity, GPUToken, RevenueLedger, sgUSD, GPUHook, GpuRouter, GpuQuoter, StableRouter, `GPUPriceOracle`. `deployments/<chainId>.json` is the one shared address record |
+| `apps/contracts` | Foundry: GUSD, GPUIssuance, GPUMarketLiquidity, GPUToken, RevenueLedger, sgUSD, GPUHook, GpuRouter, GpuQuoter, StableRouter, `GpuOracle` (pull oracle). `deployments/<chainId>.json` is the one shared address record |
 | `apps/oracle` | Fastify price API: collectors → benchmark engine → `/v1/prices*`, `/v1/providers`, `/v1/health`, WS `/v1/stream`, SSE `/v1/stream/sse`. Also proxies the indexer as `/v1/protocol/*` (registered only when `INDEXER_SCHEMA` is set) |
-| `apps/publisher` | oracle → `GPUPriceOracle.publish()` loop, gated by PROTOCOL.md §11 |
+| `apps/attestor` | oracle → signed report loop: polls the benchmark API and serves current attestations (`@gusd/attestor-client` signs the EIP-712 reports the contracts consume) |
 | `apps/indexer` | Envio HyperIndex: chain events → `gusd_index_envio_<env>_v<n>` Postgres schemas; config + ABI JSON + address constants generated at boot from the deployment record (`scripts/generate-config.ts`). Chain 4663 via HyperSync (`ENVIO_API_TOKEN` required, optional RPC fallback), 31337/46630 RPC-only; Hasura disabled, healthz/metrics on :9898. Its HTTP surface stays private to the compose network — reachable only through the oracle's `/v1/protocol` proxy |
 | `apps/web` | Next.js trading desk — the only component NOT containerized |
 | `packages/db` | Drizzle schema, migrations, append-only triggers, repos |
@@ -27,7 +28,7 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 | `packages/collectors` | 20 provider collectors + ECB FX + watchdog feeds; thin I/O, pure parsers |
 | `packages/collector-kit` | scheduler lanes, timeout/retry, circuit breaker |
 | `packages/normalize`, `packages/gpu-catalog`, `packages/types`, `packages/eslint-config`, `packages/typescript-config` | label normalization + catalogue, shared types, tooling |
-| `infra/` | `docker-compose.yml` (postgres, db-migrate, indexer, oracle, publisher) + `.env.example` |
+| `infra/` | `docker-compose.yml` (postgres, db-migrate, indexer, oracle, attestor) + `.env.example` |
 
 One Postgres serves everything (host port 54329): `public.*` is the oracle's
 market data — the authoritative source for every displayed price — and
@@ -47,7 +48,7 @@ RTX_4090_PANEL_V1 → RTX_4090_24GB
 ```
 
 Everything derives from that constant by import, never by mirroring: the
-oracle engine/replay/server, the publisher's watched list, and the web app's
+oracle engine/replay/server, the attestor's watched list, and the web app's
 `ORACLE_PANELS` all read it from `@gusd/gpu-catalog`.
 
 - The broader `CATALOG` in the same file (27 SKUs — A100, B200, B300, GB200,
@@ -57,7 +58,7 @@ oracle engine/replay/server, the publisher's watched list, and the web app's
 - Onchain, `Deploy.s.sol` registers exactly the four launch SKUs (canonical
   posture). `Deploy.full.s.sol` runs `Deploy` unchanged, then adds genesis
   inventory, quoter floats, demo activity, and a deterministic mock USDT
-  (`stables[1]`, `0xAd8F…8AFE`, pinned in the web's `stables.ts`). The chain
+  (`stables[1]`, `0x0Ad4…0C64`, pinned in the web's `stables.ts`). The chain
   it produces is non-virgin — `Demo.s.sol` requires virgin state.
 - Protocol-side canon: `apps/contracts/PROTOCOL.md` §3. Offchain canon:
   `docs/oracle/METHODOLOGY.md` and `docs/oracle/PROVIDERS.md`.
@@ -87,27 +88,25 @@ figure carry a bounded (±0.05%) mean-reverting offset around the computed
 anchor so rate-card-settled panels print a moving series; the anchor itself
 is never moved by it.
 
-## Publisher posture (PROTOCOL.md §11 — liveness-first)
+## Attestor posture (PROTOCOL.md §11 — pull oracle)
 
-The publisher (`apps/publisher`) polls the oracle's `index_candidates`,
-audits each latest candidate, and keeps the on-chain price current: publish
-on a deviation ≥ `PUBLISHER_MIN_DEVIATION_PCT` (default 0.9) vs the last
-published figure, or after `PUBLISHER_HEARTBEAT_MS` (default 24h) — whichever
-first. Quality verdicts (quorum, dispersion, band, staleness, jump,
-source-health breakers) are **non-blocking audit annotations** recorded to
-`publish_violations` — a numeric price always publishes (a `withheld`
-candidate publishes too, annotations riding along). The sole hard stop
-is a null price — a candidate with no numeric price publishes nothing.
-`candidate
-flagged` in `docker logs gusd-publisher` means "published anyway, here's why
-a human should look".
+The attestor (`apps/attestor`) polls the oracle API, audits each latest
+candidate against `ATTESTOR_MIN_CONTRIBUTORS` / `ATTESTOR_MAX_DISPERSION` /
+`ATTESTOR_MAX_FRESHNESS_MS`, and keeps a signed report ready for the
+CURRENT epoch (default 60s, `ATTESTOR_EPOCH_LENGTH`) — trading pulls it:
+every BUY/SELL/issuance embeds the report + signature (`updateData`) in its
+own transaction, and the contract verifies + consumes it there. There is no
+publication cadence, no deviation trigger, and no onchain write loop; the
+chain sees oracle activity only when trades consume reports. Quality
+verdicts are **non-blocking audit annotations** recorded to the attestor's
+store — the sole hard stop is a numeric price failing the audit
+(a `withheld` candidate signs nothing).
 
-The compose stack defaults to `PUBLISHER_TARGET=chain` against the local
-Anvil posture (account #0 key — a public dev key, injected by compose;
-override the whole block in `infra/.env` for remote chains).
-`PUBLISHER_TARGET=mock` runs the pipeline without any chain. The `chain`
-target aborts boot loudly on a chain-id / `PRICE_SCALE` / publisher
-mismatch.
+The compose stack defaults to the local Anvil posture (account #0 key — a
+public dev key, injected by compose; the attestor IS the deployer there;
+override the whole block in `infra/.env` for remote chains). The attestor
+aborts boot loudly on a chain-id / `ATTESTOR_ORACLE_ADDRESS` / signer
+mismatch — the configured key must equal `GpuOracle.signer()`.
 
 ## Commands
 
@@ -119,12 +118,12 @@ pnpm install                       # corepack enable for pnpm 11.25.0
 
 `./start-dev.sh` = fresh Anvil on :8545 + full `Deploy.full` redeploy
 (addresses rotate every run; stale broadcast/cache wiped; ~140 txs) + Envio
-schema drop + compose backend up with the publisher's oracle address
+schema drop + compose backend up with the attestor's oracle address
 injected + web `abi:sync` + a health/4-canonical-pools data barrier.
 `--build` rebuilds the docker images (`gusd-indexer:local`,
-`gusd-oracle:local`, `gusd-publisher:local`); by default the stack reuses
+`gusd-oracle:local`, `gusd-attestor:local`); by default the stack reuses
 the prebuilt images, so **run `./start-dev.sh --build` after editing
-indexer/oracle/publisher code**. Phase failures leave the chain/containers
+indexer/oracle/attestor code**. Phase failures leave the chain/containers
 up on purpose; logs land in `${TMPDIR:-/tmp}/gusd-dev`.
 
 ```sh
@@ -133,7 +132,7 @@ pnpm stack:up / pnpm stack:down    # compose backend only (stack:up injects
 pnpm --filter @gusd/web dev        # web dev server (manual; → localhost:3000)
 pnpm --filter @gusd/web abi:sync   # regenerate web addresses from the record
 pnpm test / lint / check-types / build   # turbo, all workspaces
-pnpm dev:oracle / dev:publisher / dev:indexer   # host-run single services
+pnpm dev:oracle / dev:attestor / dev:indexer   # host-run single services
 pnpm replay                        # offline replay: fixtures → DB → API
 pnpm replay:verify                 # byte-compare audit of stored candidates
 pnpm db:generate / pnpm db:migrate # drizzle schema / migrate
@@ -145,8 +144,8 @@ pnpm web:fixture                   # zero-dep mock oracle fixture server (:8081)
   `NEXT_PUBLIC_INDEXER_URL=http://127.0.0.1:8080/v1/protocol`.
 - Backend overrides live in `infra/.env` (gitignored; shape in
   `infra/.env.example`): ports, indexer schemas, chains, collector API keys,
-  publisher posture.
-- A root `pnpm dev` starts host-run oracle/publisher/indexer too — that
+  attestor posture.
+- A root `pnpm dev` starts host-run oracle/attestor/indexer too — that
   collides with the containers. A host-run `dev:oracle` on :8080 shadows the
   container's oracle; `start-dev.sh` kills such shadows (and stale anvils on
   :8545) before starting.
@@ -154,7 +153,7 @@ pnpm web:fixture                   # zero-dep mock oracle fixture server (:8081)
   single address record: the indexer reads it at boot from a read-only mount
   (`docker compose restart indexer` picks up a redeploy without an image
   rebuild), the web regenerates from it via `abi:sync`, and `stack:up`
-  injects its `.oracle` into the publisher.
+  injects its `.oracle` into the attestor.
 
 ### Contracts
 
@@ -168,10 +167,30 @@ Deploy recipes (Anvil account #0 key is a public dev key, local posture
 only):
 
 ```sh
-# Full-app posture: production Deploy + genesis inventory + demo activity
+# Full-app posture: production Deploy + genesis inventory + demo activity.
+# Fresh anvil needs a raised block limit (the default 30M is below the
+# largest Deploy tx), and the deploy runs on the 86,400s day grid: an idle
+# anvil's head clock only advances with txs, so reports signed at head time
+# in the sim land in a later wall-clock epoch on a 60s grid and revert
+# UnknownGpuEpoch — the day grid makes any idle gap invisible. The script
+# reads ORACLE_EPOCH_LENGTH / ORACLE_MAX_OBSERVATION_AGE.
+anvil --port 8545 --gas-limit 1000000000
+ORACLE_EPOCH_LENGTH=86400 ORACLE_MAX_OBSERVATION_AGE=86400 \
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   forge script script/Deploy.full.s.sol --rpc-url http://127.0.0.1:8545 \
-  --broadcast --sig "runFull()"
+  --broadcast --sig "runFull()" --gas-limit 600000000
+# --gas-limit on the forge run both bounds the WHOLE sim frame (the hook's
+# CREATE2 salt-mining loop burns ~500M before it finds a salt) and skips
+# the per-tx re-estimation phase — unused gas is unspent on-chain. Then
+# owner-switch the live grid back: setEpochLength(60) first, then
+# setMaxObservationAge(300) — each setter's floor check reads the other
+# knob, so the order matters.
+# the reprice proof is a second invocation, after the oracle epoch rolls
+# past the seed binding (a broadcast's simulation is one frozen block —
+# the script header explains; a failed attempt prints the wait):
+PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  forge script script/Deploy.full.s.sol --fork-url http://127.0.0.1:8545 \
+  --broadcast --sig "runReprice()"
 ```
 
 Minimal flow-testing (`Deploy` + `Demo`) needs a virgin chain — it will not
@@ -185,11 +204,14 @@ Default `pnpm test` is network-free and skips the gated suites. Turbo's
 `dist/`, so rebuild (or run via turbo) after editing package sources.
 
 - `RUN_DB_TESTS=1` (needs the `gusd-postgres` container on :54329) runs the
-  DB-backed suites: `packages/db` integration tests, publisher
-  `db.integration`, oracle e2e (replay → API → WS/SSE), and the web
+  DB-backed suites: `packages/db` integration tests, attestor
+  integration tests, oracle e2e (replay → API → WS/SSE), and the web
   route-handler/identity integration tests.
 - `RUN_ANVIL_TESTS=1` (needs a local anvil on :8545) runs the web
-  tx-lifecycle tests and the indexer anvil e2e.
+  tx-lifecycle tests and the indexer anvil e2e. The indexer e2e is
+  self-contained — it boots its own anvil on :18545 and deploys on the
+  day grid itself — so it only needs foundry (`~/.foundry/bin`) on PATH
+  and the `gusd-postgres` container.
 - Both vars are declared in `turbo.json` `globalEnv`.
 
 CI (`.github/workflows/ci.yml`) mirrors this: a network-free `core` job

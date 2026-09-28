@@ -18,7 +18,7 @@
  * to anchor arithmetic off the API price — the same reference the desk
  * hero and the chart stand on — display only; the submit button stays
  * gated on the quote itself, and a gap between the fallback ledger and
- * the fill is slippage, never a second displayed price. The chain oracle
+ * the fill is slippage, never a second displayed price. The attested price
  * refines the fallback bounds only on their favorable side: a lower
  * oracle lifts a receive floor, a higher one raises a pay cap. When the
  * data layer asserts no reference price, the slip goes dormant rather
@@ -136,17 +136,25 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
         mode === "gusd"
           ? { asset, side, basis: "gusd", gusd: activeValue, toleranceBps }
           : { asset, side, basis: "units", size: activeValue, toleranceBps };
-      // A quote-timeout speaks its retry voice and gets exactly one silent
-      // re-attempt — a hung RPC read shouldn't leave a dead end the user
+      // A quote-timeout or oracle-stale speaks its retry voice and gets
+      // exactly one silent re-attempt — a hung RPC read, or a quote that
+      // landed inside the attestor's renewal gap (the 60s boundary; the
+      // next report is seconds away), shouldn't leave a dead end the user
       // can't clear (re-clicking a preset is a no-op; the effect only
-      // refires on a settled-input change). A second timeout keeps the
-      // voice and waits for real input.
+      // refires on a settled-input change). A second failure keeps the
+      // voice and waits for real input — the fail-closed gate itself is
+      // never retried away, only given one patient beat.
       const attempt = (retry: boolean) => {
         trading
           .quoteDetailed(request)
           .then((q) => {
             if (!alive) return;
-            if (q !== null && "unavailable" in q && q.reason === "quote-timeout" && retry) {
+            if (
+              q !== null &&
+              "unavailable" in q &&
+              (q.reason === "quote-timeout" || q.reason === "oracle-stale") &&
+              retry
+            ) {
               retryTimer = setTimeout(() => attempt(false), QUOTE_RETRY_MS);
               return;
             }
@@ -197,7 +205,7 @@ export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
       : `${fmtGusdLedger(formatGusdRaw(raw))} gUSD`;
   const failureVoice = (f: QuoteFailure): string | null => {
     if (f.reason === "oracle-stale") {
-      return "The chain's price publication is stale — orders wait for a fresh oracle publication.";
+      return "No current price report for this market — orders wait for the attestor's next attestation. Try again in a moment.";
     }
     if (f.reason === "quote-timeout") {
       return "The chain is slow to quote right now — nothing is wrong with the order, try again in a moment.";

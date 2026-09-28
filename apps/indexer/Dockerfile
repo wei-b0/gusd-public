@@ -5,7 +5,8 @@ RUN corepack enable
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/indexer/package.json apps/indexer/
 COPY apps/oracle/package.json apps/oracle/
-COPY apps/publisher/package.json apps/publisher/
+COPY apps/attestor/package.json apps/attestor/
+COPY packages/attestor-client/package.json packages/attestor-client/
 COPY apps/web/package.json apps/web/
 COPY apps/contracts/package.json apps/contracts/
 COPY packages/collector-kit/package.json packages/collector-kit/

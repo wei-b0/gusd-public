@@ -30,9 +30,11 @@ describe("normalizeActionError", () => {
     expect(normalizeActionError(viemRevert("ZeroAmount")).voice).toMatch(/greater than zero/i);
   });
 
-  it("maps the oracle voices", () => {
-    expect(normalizeActionError(viemRevert("OracleStale")).voice).toMatch(/stale/i);
-    expect(normalizeActionError(viemRevert("OraclePriceZero")).voice).toMatch(/no index price/i);
+  it("maps the pull-oracle voices", () => {
+    expect(normalizeActionError(viemRevert("UnknownGpuEpoch")).voice).toMatch(/expired/i);
+    expect(normalizeActionError(viemRevert("StaleObservation")).voice).toMatch(/too old/i);
+    expect(normalizeActionError(viemRevert("InvalidSigner")).voice).toMatch(/attestor/i);
+    expect(normalizeActionError(viemRevert("ReportRequired")).voice).toMatch(/price report/i);
   });
 
   it("maps the vault voices", () => {

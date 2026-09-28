@@ -17,9 +17,9 @@ import type {
   MarketDataPort,
   MintPort,
   TradingPort,
-  TxPort,
 } from "@/domain/ports";
 import { InertBridgePort } from "@/data/web3/bridge/inert";
+import { WalletlessTxPort } from "@/data/web3/walletless";
 import type { ActionRecord } from "@/domain/actions";
 import type {
   Account,
@@ -57,6 +57,15 @@ const TICK_MS = 1_800;
 
 /** The one honest voice a build without wallet support can speak. */
 const NO_WALLET = "This build runs without wallet support — nothing can sign here.";
+
+/**
+ * Frozen empty ledgers and the frozen empty earn snapshot. These feed
+ * useSyncExternalStore snapshot getters, which must return the same
+ * reference between changes (Object.is) — a fresh literal per call makes
+ * React re-render forever the moment any listener fires.
+ */
+const EMPTY_EARN_STATE: EarnState = Object.freeze({ rate: null, seeded: null, updatedAt: null });
+const NO_ACTIONS: readonly ActionRecord[] = Object.freeze([]);
 
 /**
  * Frozen session snapshots for the prototype world. The prototype session
@@ -135,7 +144,7 @@ export class MockServices {
   earn: EarnPortImpl;
   mint: MintPortImpl;
   bridge: InertBridgePort;
-  tx: MockTxPort;
+  tx: WalletlessTxPort;
   actions: MockActionPort;
 
   constructor() {
@@ -146,7 +155,7 @@ export class MockServices {
     this.earn = new EarnPortImpl();
     this.mint = new MintPortImpl();
     this.bridge = new InertBridgePort();
-    this.tx = new MockTxPort();
+    this.tx = new WalletlessTxPort();
     this.actions = new MockActionPort();
   }
 }
@@ -394,30 +403,11 @@ class AuthPortImpl implements AuthPort {
  * The prototype has no chain access: transactions are simply refused rather
  * than simulated. Real writes arrive with the protocol behind the same port.
  */
-class MockTxPort implements TxPort {
-  list(): readonly TxRecord[] {
-    return [];
-  }
-
-  get(): TxRecord | null {
-    return null;
-  }
-
-  subscribe(): () => void {
-    return () => {};
-  }
-
-  run(): Promise<TxRecord> {
-    return Promise.reject(new Error(NO_WALLET));
-  }
-
-  clear(): void {}
-}
 
 /** No wallet means no action can run; the runner seam exists for parity. */
 class MockActionPort implements ActionPort {
   list(): readonly ActionRecord[] {
-    return [];
+    return NO_ACTIONS;
   }
 
   get(): ActionRecord | null {
@@ -447,7 +437,7 @@ class EarnPortImpl {
   private listeners = new Set<() => void>();
 
   getEarnState(): EarnState {
-    return { rate: null, seeded: null, updatedAt: null };
+    return EMPTY_EARN_STATE;
   }
 
   async quote(_direction: EarnDirection, _amount: number): Promise<EarnQuote | null> {

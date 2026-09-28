@@ -170,14 +170,17 @@ d("sgUSD stake/unstake against the deployed protocol", () => {
     const rateRaw = await contracts.sgusd.read.convertToAssets([1_000_000n]);
     expect(rateRaw > 1_000_000n).toBe(true);
 
-    // Unstake 400 shares: the gUSD paid out is exactly the previewed
-    // figure and the shares burned are the input — approval-free.
-    const shares = 400_000_000n;
+    // Unstake half the session's stake: the gUSD paid out is exactly the
+    // previewed figure and the shares burned are the input — approval-free.
+    // The demo seeds the vault with production-scale revenue, so the share
+    // price sits far above 1 and a fixed share figure would outgrow the
+    // stake itself — size from the balance instead.
+    const sgBefore = await contracts.sgusd.read.balanceOf([owner]);
+    const shares = sgBefore / 2n;
     const assetsOut = await contracts.sgusd.read.previewRedeem([shares]);
     expect(assetsOut > shares).toBe(true);
 
     const gusdBefore = await contracts.gusd.read.balanceOf([owner]);
-    const sgBefore = await contracts.sgusd.read.balanceOf([owner]);
 
     const { hash } = await redeemSpec(shares, owner).execute(wallet);
     const receipt = await waitForTransactionReceipt(getPublicClient(), { hash });

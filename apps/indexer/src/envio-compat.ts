@@ -24,13 +24,12 @@ const NUMBER_FIELDS = new Set([
   "registeredBlockNumber",
   "lastSwapBlockNumber",
   "issuanceFeeBps",
-  "lastPublishedBlockNumber",
+  "lastConsumedBlockNumber",
   "firstSeenBlockNumber",
   "lastSeenBlockNumber",
   "mintFeeBps",
   "redeemFeeBps",
   "hookFeeBps",
-  "maxDeviationBps",
   "sgusdSplitBps",
 ]);
 

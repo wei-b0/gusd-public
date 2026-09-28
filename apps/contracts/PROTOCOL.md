@@ -480,28 +480,36 @@ offchain indexer
        ↓
 normalized GPU index
        ↓
-oracle publication
+attestor-signed report (EIP-712)
        ↓
-onchain GPU price
+trade embeds report + signature; contract verifies and consumes
 ```
+
+The oracle is a pull oracle (Pyth-style). A single attestor signer produces one
+report per GPU per epoch; the report binds a price to an observation time, an
+epoch, and a validity window. Consumers fetch a current report from the oracle
+API and embed it (`updateData`) in the same transaction that uses it — the
+contract verifies the signature, checks the acceptance window, and records the
+consumption. Nothing onchain changes while no trade asks for a price: idle
+markets cost zero oracle gas.
 
 Current intended policy:
 
 ```text
-index evaluation       ~15 seconds
-deviation publication  0.9% / 90 bps
-heartbeat              approximately 24 hours
+epoch length           60 seconds (owner-tunable)
+max observation age    300 seconds (owner-tunable)
+acceptance             current epoch + report validity window only
 ```
 
 The precise production implementation is outside the contracts workspace.
 
 Contracts should depend only on a minimal oracle interface.
 
-Implementation note (2026-09): the publication path is live — the offchain
-publisher writes `GPUPriceOracle.publish()` (publisher-EOA signed; owner
-`setPriceOverride` is genesis/incident-only). The optional onchain deviation
-bound is a compromised-key safety valve, distinct from the 0.9% publication
-trigger above, and ships disabled by default. No economics change.
+Implementation note (2026-09): the pull-oracle path is live — the attestor
+signs reports offchain and every BUY/SELL/issuance embeds and consumes one.
+There is no publisher daemon, no onchain publication cadence, and no
+deviation/heartbeat policy; the 2-step signer rotation is the only admin
+surface besides the epoch/observation-age knobs. No economics change.
 
 ---
 
@@ -701,9 +709,8 @@ Possible responsibilities include:
 
 - pool validation,
 - GPU identification,
-- oracle integration,
-- oracle freshness enforcement,
-- oracle/market deviation monitoring,
+- oracle integration (report verification and consumption),
+- report-acceptance enforcement (current epoch, validity window),
 - protocol fee collection,
 - dynamic fee behavior,
 - market safety logic.

@@ -263,7 +263,7 @@ function ReceiptRow({ p, now }: { p: PanelProviderDto; now: number | null }) {
   const valid = observedAt !== null && now !== null;
   const age = valid ? now - observedAt : null;
   // Lamp semantics follow the desk's Index sources: fresh within the
-  // publisher's gate is live, within the carry-forward window delayed, past
+  // oracle's gate is live, within the carry-forward window delayed, past
   // it stale — and an unparseable stamp is delayed, never live (freshness we
   // cannot vouch for is not live).
   const status =

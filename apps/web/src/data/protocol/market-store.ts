@@ -24,7 +24,7 @@
 import type { AssetId, MarketTrade } from "@/domain/types";
 import { assetForGpuId, gpuIdForAsset } from "@/data/web3/gpu-id";
 import { inRangeGusdDepth, swapToMarketTrade, trades24h, volume24hGusd } from "./map";
-import type { GpuAssetDto, OracleStateDto, PoolDto, PoolStatsBucketDto, StatsBody, SwapTapeDto } from "./dto";
+import type { GpuAssetDto, GpuOracleStateDto, PoolDto, PoolStatsBucketDto, StatsBody, SwapTapeDto } from "./dto";
 import { getProtocolClient, type ProtocolClient } from "./client";
 
 /** Oldest-first ring per pool: the port contract serves oldest-first and
@@ -46,7 +46,7 @@ export interface ProtocolMarketState {
   /** Hourly buckets per pool with the window they were fetched for. */
   hourly: Readonly<Record<string, { fromSec: number; buckets: readonly PoolStatsBucketDto[] }>>;
   /** Indexed oracle publication state per lowercase gpuId. */
-  oracleState: Readonly<Record<string, OracleStateDto | null>>;
+  oracleState: Readonly<Record<string, GpuOracleStateDto | null>>;
   /** Protocol aggregates + the sgUSD vault (either may be null pre-data). */
   stats: StatsBody | null;
   version: number;
@@ -188,8 +188,8 @@ export class ProtocolMarketStore {
     return pool === null ? null : inRangeGusdDepth(pool);
   }
 
-  /** Oracle publication state for one gpu — lazy with cooldown, since only
-   *  the transparency row asks for it. */
+  /** The last consumed oracle report for one gpu — lazy with cooldown,
+   *  since only the transparency row asks for it. */
   ensureOracleState(gpuId: string): void {
     this.ensureOnce(`oracle:${gpuId}`, async () => {
       try {

@@ -1,13 +1,13 @@
 /**
  * Unit tests for the protocol mappers — pure functions over wire DTOs.
- * Doctrine is tested here too: the published oracle value never leaks into
+ * Doctrine is tested here too: the consumed oracle price never leaks into
  * a display figure, and the depth figure is a depth figure (never a price).
  */
 import { describe, expect, it } from "vitest";
 import type { IndexedEvent } from "@/domain/indexer";
 import type {
   ExecutionDto,
-  OracleStateDto,
+  GpuOracleStateDto,
   PoolDto,
   PoolStatsBucketDto,
   SgusdVaultDto,
@@ -21,7 +21,7 @@ import {
   gusdNumber,
   inRangeGusdDepth,
   mergeActivity,
-  oraclePublicationRow,
+  oracleReportRow,
   sgusdSupply,
   swapToMarketTrade,
   trades24h,
@@ -325,54 +325,53 @@ describe("activity rows", () => {
   });
 });
 
-describe("oraclePublicationRow — transparency only, never a price", () => {
-  const state = (overrides: Partial<OracleStateDto> = {}): OracleStateDto => ({
+describe("oracleReportRow — transparency only, never a price", () => {
+  const state = (overrides: Partial<GpuOracleStateDto> = {}): GpuOracleStateDto => ({
     chainId: 31337,
     gpuId: H100_GPU_ID,
     price: "25000",
-    previousPrice: "24000",
-    updatedAtSec: 1_700_000_000,
-    overriddenPrice: null,
-    overriddenAtSec: null,
-    lastPublishedBlockNumber: 300,
+    observedAtSec: 1_700_000_000,
+    epoch: "16",
+    reportHash: `0x${"cd".repeat(32)}`,
+    caller: "0xf39fd6e500000000000000000000000000000000",
+    lastConsumedBlockNumber: 300,
     priceScale: 10_000,
     ageSec: 5,
-    staleness: "fresh",
+    freshness: "current",
     ...overrides,
   });
 
   it("exposes health fields and recomputes age at read time", () => {
-    const r = oraclePublicationRow(state(), 1_700_000_030);
+    const r = oracleReportRow(state(), 1_700_000_030);
     expect(r).toEqual({
-      staleness: "fresh",
+      freshness: "current",
       ageSec: 30,
-      updatedAtSec: 1_700_000_000,
-      lastPublishedBlockNumber: 300,
-      overridden: false,
+      observedAtSec: 1_700_000_000,
+      epoch: "16",
+      lastConsumedBlockNumber: 300,
     });
   });
 
-  it("flags overrides and unknown state", () => {
-    expect(oraclePublicationRow(state({ overriddenPrice: "26000", overriddenAtSec: 1_699_999_000 }), 1).overridden).toBe(true);
-    expect(oraclePublicationRow(null, 1).staleness).toBe("unknown");
+  it("unknown for absent state", () => {
+    expect(oracleReportRow(null, 1).freshness).toBe("unknown");
   });
 
   it("leaves the age null on the pre-mount clock rather than guessing", () => {
-    const r = oraclePublicationRow(state(), null);
+    const r = oracleReportRow(state(), null);
     expect(r.ageSec).toBeNull();
-    expect(r.updatedAtSec).toBe(1_700_000_000);
-    expect(r.staleness).toBe("fresh");
-    expect(oraclePublicationRow(state({ updatedAtSec: null }), 1).ageSec).toBeNull();
+    expect(r.observedAtSec).toBe(1_700_000_000);
+    expect(r.freshness).toBe("current");
+    expect(oracleReportRow(state({ observedAtSec: null }), 1).ageSec).toBeNull();
   });
 
-  it("the row type carries no price field — the published value cannot render", () => {
-    const r = oraclePublicationRow(state(), 1);
+  it("the row type carries no price field — the consumed value cannot render", () => {
+    const r = oracleReportRow(state(), 1);
     expect(Object.keys(r).sort()).toEqual([
       "ageSec",
-      "lastPublishedBlockNumber",
-      "overridden",
-      "staleness",
-      "updatedAtSec",
+      "epoch",
+      "freshness",
+      "lastConsumedBlockNumber",
+      "observedAtSec",
     ]);
   });
 });

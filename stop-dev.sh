@@ -26,7 +26,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-docker info >/dev/null 2>&1 || die "Docker daemon not running — nothing docker-side to stop" 1
+# Rootless docker fallback — same as start-dev.sh: try the standard rootless
+# socket before declaring the daemon absent (exported for every later call).
+docker info >/dev/null 2>&1 || {
+  rootless_sock="unix:///run/user/$(id -u)/docker.sock"
+  if [ -S "${rootless_sock#unix://}" ] && DOCKER_HOST="$rootless_sock" docker info >/dev/null 2>&1; then
+    export DOCKER_HOST="$rootless_sock"
+  else
+    die "Docker daemon not running — nothing docker-side to stop" 1
+  fi
+}
 
 if [ "$VOLUMES" = 1 ]; then
   reply=""
@@ -84,6 +93,22 @@ kill_shadows() { # kill_shadows PORT LABEL — kill NON-Docker listeners on PORT
   done
 }
 kill_shadows 8545 "anvil"
+
+# Head-clock keeper (start-dev's evm_mine loop): pid-file, guarded against pid
+# reuse by matching the loop's distinctive RPC method in its args.
+if [ -f "$LOG_DIR/clockkeeper.pid" ]; then
+  ck_pid=$(cat "$LOG_DIR/clockkeeper.pid" 2>/dev/null || true)
+  ck_cmd=$(ps -o args= -p "$ck_pid" 2>/dev/null || true)
+  case "$ck_cmd" in
+    *evm_mine*)
+      log "stopping the head-clock keeper (pid $ck_pid)"
+      kill "$ck_pid" 2>/dev/null || true
+      ;;
+    "") ;;
+    *) log "clockkeeper pid $ck_pid runs something else now — leaving it (pid reuse)" ;;
+  esac
+  rm -f "$LOG_DIR/clockkeeper.pid"
+fi
 
 # Leftover host-run dev:oracle on 8080: docker's proxy is gone after down, so
 # anything still listening is foreign. Warn only — it's the user's call.

@@ -493,7 +493,7 @@ export class OracleFeedStore {
     // Receipt lockstep: keep a loaded panel receipt on the publication it
     // describes. The `!== undefined` guard makes this a no-op during
     // bootstrap (which fetches panels itself) — one GET per publication
-    // after that, debounced ≥10s apart per gpu by the publisher.
+    // after that, debounced ≥10s apart per gpu by the oracle.
     if (this.state.panelProviders[gpuId] !== undefined && !this.panelPending.has(gpuId)) {
       void this.fetchPanel(gpuId).catch(() => {
         // The next publication or resync retries; not worth surfacing.

@@ -21,7 +21,7 @@ import {
   useIndexedActivity,
   type IndexedActivityState,
 } from "./activity-store";
-import type { OracleStateDto, PoolDto, StatsBody } from "./dto";
+import type { GpuOracleStateDto, PoolDto, StatsBody } from "./dto";
 
 /** Read one slice of the protocol store as an externally-stored value. No
  *  store (indexer unset, or mock market mode) reads `server`. */
@@ -48,12 +48,12 @@ export function useProtocolStats(): StatsBody | null {
   }, null);
 }
 
-/** The indexed oracle publication state behind one asset — transparency
- *  only. Consumers render health/comparison fields (publication value at
- *  PRICE_SCALE, staleness/age/block, benchmark-vs-onchain gap on the Health
- *  tab); it must never render as a market or display price — the four
- *  price notions stay apart. */
-export function useOraclePublication(asset: AssetId): OracleStateDto | null {
+/** The indexed oracle report state behind one asset — transparency only.
+ *  Consumers render health/comparison fields (the last consumed report's
+ *  price at PRICE_SCALE, freshness/age/block, benchmark-vs-consumed gap on
+ *  the Health tab); it must never render as a market or display price — the
+ *  four price notions stay apart. */
+export function useOracleReport(asset: AssetId): GpuOracleStateDto | null {
   return useProtocolSlice(
     (store) => {
       if (!isOracleBacked(asset)) return null;

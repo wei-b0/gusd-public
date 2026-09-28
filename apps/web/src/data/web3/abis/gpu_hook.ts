@@ -16,7 +16,7 @@ export const GPU_HOOK_ABI = [
       {
         "name": "oracle_",
         "type": "address",
-        "internalType": "contract IGPUPriceOracle"
+        "internalType": "contract IGpuOracle"
       },
       {
         "name": "issuance_",
@@ -116,6 +116,11 @@ export const GPU_HOOK_ABI = [
   {
     "type": "error",
     "name": "PoolAlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportRequired",
     "inputs": []
   },
   {
@@ -260,19 +265,6 @@ export const GPU_HOOK_ABI = [
         "type": "uint24",
         "indexed": false,
         "internalType": "uint24"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "MaxOracleStalenessSet",
-    "inputs": [
-      {
-        "name": "seconds_",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -434,19 +426,6 @@ export const GPU_HOOK_ABI = [
       }
     ],
     "anonymous": false
-  },
-  {
-    "type": "function",
-    "name": "DEFAULT_MAX_ORACLE_STALENESS",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -912,7 +891,7 @@ export const GPU_HOOK_ABI = [
         "internalType": "BalanceDelta"
       },
       {
-        "name": "",
+        "name": "hookData",
         "type": "bytes",
         "internalType": "bytes"
       }
@@ -1283,7 +1262,7 @@ export const GPU_HOOK_ABI = [
         ]
       },
       {
-        "name": "",
+        "name": "hookData",
         "type": "bytes",
         "internalType": "bytes"
       }
@@ -1463,19 +1442,6 @@ export const GPU_HOOK_ABI = [
   },
   {
     "type": "function",
-    "name": "maxOracleStaleness",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "maxPolNotionalGusd",
     "inputs": [],
     "outputs": [
@@ -1508,7 +1474,41 @@ export const GPU_HOOK_ABI = [
       {
         "name": "",
         "type": "address",
-        "internalType": "contract IGPUPriceOracle"
+        "internalType": "contract IGpuOracle"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "oracleLastConsumed",
+    "inputs": [
+      {
+        "name": "gpuId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "price",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "observedAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "epoch",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "reportHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -1573,6 +1573,58 @@ export const GPU_HOOK_ABI = [
         "name": "gpuId",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "report",
+        "type": "tuple",
+        "internalType": "struct IGpuOracle.Report",
+        "components": [
+          {
+            "name": "version",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "gpuId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "observedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "epoch",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "validFrom",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "validUntil",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "calcHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "signature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -1669,19 +1721,6 @@ export const GPU_HOOK_ABI = [
         "name": "feeBps",
         "type": "uint16",
         "internalType": "uint16"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setMaxOracleStaleness",
-    "inputs": [
-      {
-        "name": "seconds_",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "outputs": [],

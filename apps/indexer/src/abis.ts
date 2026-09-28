@@ -32,7 +32,6 @@ export const issuanceAbi = parseAbi([
   "event Issued(address indexed caller, bytes32 indexed gpuId, address indexed to, uint256 amount, uint256 base, uint256 fee)",
   "event IssuanceEnabledSet(bytes32 indexed gpuId, bool enabled)",
   "event IssuanceFeeSet(bytes32 indexed gpuId, uint16 feeBps)",
-  "event MaxOracleStalenessSet(uint256 seconds_)",
 ]);
 
 /** GPUToken — child tokens discovered via factory on GpuCreated.token. */
@@ -85,14 +84,16 @@ export const marketLiquidityAbi = parseAbi([
   "event InventoryPulled(bytes32 indexed gpuId, address token, uint256 amount, bool isGusd)",
 ]);
 
-/** GPUPriceOracle — onchain publications (transparency/comparison only).
- *  PublisherTransferStarted (two-step-own intermediate step, no consumer)
- *  is deliberately not fetched. */
+/** GpuOracle (pull oracle) — consumption attestations and admin config
+ *  (transparency/comparison only). SignerTransferStarted (two-step-signer
+ *  intermediate step, no consumer beyond the audit trail) IS fetched — the
+ *  rotation is security-relevant and cheap to keep. */
 export const oracleAbi = parseAbi([
-  "event PricePublished(bytes32 indexed gpuId, uint256 price, uint256 updatedAt, uint256 previousPrice)",
-  "event PriceOverridden(bytes32 indexed gpuId, uint256 price, uint256 updatedAt)",
-  "event PublisherAccepted(address indexed previousPublisher, address indexed newPublisher)",
-  "event MaxDeviationBpsSet(uint16 bps)",
+  "event PriceConsumed(bytes32 indexed gpuId, uint256 price, uint64 indexed epoch, uint64 observedAt, bytes32 indexed reportHash, address caller)",
+  "event SignerTransferStarted(address indexed currentSigner, address indexed nextSigner)",
+  "event SignerAccepted(address indexed previousSigner, address indexed newSigner)",
+  "event EpochLengthSet(uint64 seconds_)",
+  "event MaxObservationAgeSet(uint64 seconds_)",
 ]);
 
 /** IPoolManager — v4 singleton pool lifecycle, filtered to canonical pool ids. */

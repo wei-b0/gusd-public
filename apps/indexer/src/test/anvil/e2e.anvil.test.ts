@@ -33,9 +33,9 @@ import {
   type TableDump,
 } from "./harness.js";
 
-const H100_GPU_ID = `0x${Buffer.from("H100_SXM_80GB", "utf8").toString("hex").padEnd(64, "0")}`;
-/** The chain's write surface for the reorg test: one oracle publication. */
-const PUBLISH_ABI = parseAbi(["function publish(bytes32 gpuId, uint256 price, uint256 updatedAt)"]);
+/** The chain's write surface for the reorg test: one oracle admin write (the
+ *  pull oracle has no publisher to poke — prices ride the trades themselves). */
+const ORACLE_ADMIN_ABI = parseAbi(["function setMaxObservationAge(uint64 seconds_)"]);
 
 // House gate idiom: the suite costs minutes of wall clock plus foundry +
 // Postgres, so it only runs under RUN_ANVIL_TESTS=1.
@@ -54,8 +54,8 @@ async function schemaQuery<T extends Record<string, unknown>>(
   return res.rows;
 }
 
-/** Publishes a price as the deployer (the fresh deployment's publisher). */
-async function publishPrice(price: number): Promise<void> {
+/** Sets the observation age as the owner (the fresh deployment's admin). */
+async function setObservationAge(seconds: number): Promise<void> {
   const account = privateKeyToAccount(DEPLOYER_PK as `0x${string}`);
   const wallet = createWalletClient({
     account,
@@ -66,9 +66,9 @@ async function publishPrice(price: number): Promise<void> {
   const hash = await wallet.writeContract({
     account,
     address: deployment.oracle as `0x${string}`,
-    abi: PUBLISH_ABI,
-    functionName: "publish",
-    args: [H100_GPU_ID as `0x${string}`, BigInt(price), BigInt(Math.floor(Date.now() / 1000))],
+    abi: ORACLE_ADMIN_ABI,
+    functionName: "setMaxObservationAge",
+    args: [BigInt(seconds)],
   });
   expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
   const publicClient = createPublicClient({ chain: foundry, transport: http(ANVIL_URL) });
@@ -92,8 +92,9 @@ async function waitForSchema(
 beforeAll(async () => {
   await spawnAnvil();
   // Deploy.full — the canonical deployed + churned chain in one script:
-  // 4 launch SKUs (oracle seed prices, enabled issuance, canonical pools),
-  // quoter floats funded, mock USDT, the product churn (issuance + pool
+  // 4 launch SKUs (enabled issuance, canonical pools, attestor-signed
+  // bootstrap trades), quoter floats funded, mock USDT, the product churn
+  // (issuance + pool
   // buys, a sell, LP), and the closing stake + distribute. The older
   // Deploy + Demo pair drifted apart — minimal Deploy deliberately leaves
   // the quoter floats unfunded ("Floats are funded by Deploy.full"), so
@@ -123,10 +124,11 @@ d("indexer onchain suites (gated)", () => {
       // last-landed protocol events; their presence in the derived state
       // means the historical backfill reached the churn's final blocks. The
       // figures are the script's deterministic closing state (the same
-      // numbers two independent Deploy.full replays landed) — 10,397.45 gUSD
-      // vault share under the four-SKU universe, recomputed when Deploy.full
-      // slimmed from seven SKUs (the pre-cut figure was 12,014.37 and is
-      // what the stale pin on main still names).
+      // number two independent Deploy.full replays landed — the manual
+      // dev-chain deploy and this suite's own) — 10,397.39 gUSD vault share
+      // under the four-SKU universe. Recomputed each time the demo's shape
+      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, and the
+      // two-phase rework (runReprice extraction) moved it to 10,397.39.
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -135,7 +137,7 @@ d("indexer onchain suites (gated)", () => {
       );
       expect(closing).toHaveLength(1);
       expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
-      expect(closing[0]!.revenue_gusd).toBe("10397454680");
+      expect(closing[0]!.revenue_gusd).toBe("10397386590");
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_envio_e2e_a"."PmSwap"`,
@@ -246,49 +248,45 @@ d("indexer onchain suites (gated)", () => {
         );
       const swapsBefore = await swapCount();
 
-      // Snapshot → publish 31000 → indexed → revert → publish 32000.
+      // Snapshot → admin sets 86,410 → indexed → revert → admin sets 86,420.
+      // The write values ride just above the deployment's epoch grid: the
+      // harness deploys with the 86,400s day grid (the only grid that
+      // survives forge's sim→broadcast clock gap on an idle anvil), and the
+      // setter's floor is the epoch length — setMaxObservationAge reverts
+      // ObservationAgeBelowEpoch below it. The values are arbitrary beyond
+      // that; they only need to differ so the rollback is observable.
       const snapshot = await evmSnapshot();
-      await publishPrice(31_000);
-      await waitForSchema("price 31000 indexed", async () => {
-        const rows = await schemaQuery<{ price: string }>(
-          `select price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
-          [H100_GPU_ID],
+      await setObservationAge(86_410);
+      await waitForSchema("age 86410 indexed", async () => {
+        const rows = await schemaQuery<{ max_observation_age_sec: string }>(
+          `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
+          [],
         );
-        return rows[0]?.price === "31000";
+        return rows[0]?.max_observation_age_sec === "86410";
       });
       const replacedForkTip = await envioProcessedBlock(instE);
 
       await evmRevert(snapshot);
-      await publishPrice(32_000);
+      await setObservationAge(86_420);
       while (Number(BigInt(await anvilRpc<string>("eth_blockNumber", []))) <= replacedForkTip) {
         await anvilRpc("evm_mine", []);
       }
-      await waitForSchema("price 32000 indexed", async () => {
-        const rows = await schemaQuery<{ price: string }>(
-          `select price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
-          [H100_GPU_ID],
+      await waitForSchema("age 86420 indexed", async () => {
+        const rows = await schemaQuery<{ max_observation_age_sec: string }>(
+          `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
+          [],
         );
-        return rows[0]?.price === "32000";
+        return rows[0]?.max_observation_age_sec === "86420";
       });
 
-      // The reverted publication is gone from history AND derived state;
-      // everything else (the churn's swaps) survived the rollback.
-      const published = await schemaQuery<{ price: string }>(
-        `select price from "gusd_index_envio_e2e_e"."OraclePricePublished" where gpu_id = $1 order by block_number`,
-        [H100_GPU_ID],
+      // The reverted admin write is gone from derived state (the singleton
+      // mirrors the post-rollback write only); everything else (the churn's
+      // swaps) survived the rollback.
+      const stats = await schemaQuery<{ max_observation_age_sec: string }>(
+        `select max_observation_age_sec from "gusd_index_envio_e2e_e"."ProtocolStats"`,
+        [],
       );
-      expect(published.map((r) => r.price)).not.toContain("31000");
-      expect(published.map((r) => r.price)).toContain("32000");
-
-      const state = await schemaQuery<{ price: string; previous_price: string | null }>(
-        `select price, previous_price from "gusd_index_envio_e2e_e"."OracleState" where gpu_id = $1`,
-        [H100_GPU_ID],
-      );
-      expect(state[0]!.price).toBe("32000");
-      // Deploy.full's churn reprices H100 27555 → 30000 ("oracle reprice"
-      // segment) — the last publication in history once the 31000 publish
-      // reverted, so it is what previous_price points at.
-      expect(state[0]!.previous_price).toBe("30000");
+      expect(stats[0]!.max_observation_age_sec).toBe("86420");
 
       expect(await swapCount()).toBe(swapsBefore);
       await instE.kill();

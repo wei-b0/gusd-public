@@ -25,22 +25,25 @@ import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
 import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
-import {MockGPUPriceOracle} from "../src/oracle/MockGPUPriceOracle.sol";
-import {GPUPriceOracle} from "../src/oracle/GPUPriceOracle.sol";
+import {GpuOracle} from "../src/oracle/GpuOracle.sol";
+import {IGpuOracle} from "../src/oracle/IGpuOracle.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @notice The product chain, require-asserted, on live state:
 ///         genesis BUY (cold pool: 100% in-swap issuance backstop) ->
 ///         external LP via PositionManager -> pool BUY (quote == execution)
-///         -> mixed BUY -> SELL -> oracle reprice (instant, structural) ->
-///         distribute -> sgUSD accrual. Every flow is a single router call.
-///         REFUSES mainnets (TestnetOnly) — demo activity on a public dev
-///         key is testnet posture.
+///         -> mixed BUY -> SELL -> report reprice (next epoch, structural) ->
+///         distribute -> sgUSD accrual. Every flow is a single router call
+///         carrying the signed current-epoch report (updateData) — the demo
+///         signs with the attestor key (ORACLE_ATTESTOR_PK, defaulting to
+///         PRIVATE_KEY). REFUSES mainnets (TestnetOnly) — demo activity on a
+///         public dev key is testnet posture.
 contract Demo is Script, TestnetOnly {
     using PoolIdLibrary for PoolKey;
 
     bytes32 constant H100 = bytes32(bytes("H100_SXM_80GB"));
+    bytes32 constant DEMO_CALC_HASH = keccak256("gusd.demo.report.v1");
 
     // anvil rich keys (demo-only): deployer = #0, alice = #2, bob = #3
     uint256 constant ALICE_PK = 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
@@ -66,6 +69,12 @@ contract Demo is Script, TestnetOnly {
         address gpuQuoterAddr = vm.parseJsonAddress(json, ".gpuQuoter");
         address oracleAddr = vm.parseJsonAddress(json, ".oracle");
         address polAddr = vm.parseJsonAddress(json, ".marketLiquidity");
+
+        // the demo signs every trade's updateData with the attestor key
+        // (ORACLE_ATTESTOR_PK, defaulting to PRIVATE_KEY — Deploy's attestor
+        // default is the deployer)
+        uint256 attestorPk = vm.envOr("ORACLE_ATTESTOR_PK", pk);
+        require(vm.addr(attestorPk) == GpuOracle(oracleAddr).signer(), "attestor key != oracle signer");
 
         GUSD gusd = GUSD(gusdAddr);
         GPUIssuance issuance = GPUIssuance(issuanceAddr);
@@ -114,7 +123,8 @@ contract Demo is Script, TestnetOnly {
             maxPaid: 300e6,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: alice
+            recipient: alice,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         uint256 paid1 = router.buy(b1);
         vm.stopBroadcast();
@@ -165,7 +175,7 @@ contract Demo is Script, TestnetOnly {
         vm.stopBroadcast();
         vm.startBroadcast(BOB_PK);
         underlying.approve(routerAddr, type(uint256).max);
-        GpuQuoter.QuoteResult memory q3 = gpuQuoter.quoteBuyExactOut(key, 2e18);
+        GpuQuoter.QuoteResult memory q3 = gpuQuoter.quoteBuyExactOut(key, 2e18, _updateData(oracleAddr, attestorPk, H100, 25_000));
         require(q3.gpuOut == 2e18 && q3.gusdIn > 0, "step3 quote shape");
         (uint256 f0, uint256 f1) = stateView.getFeeGrowthGlobals(poolId);
         uint256 fgBuy = gIsC0 ? f0 : f1;
@@ -178,7 +188,8 @@ contract Demo is Script, TestnetOnly {
             maxPaid: q3.gusdIn,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         uint256 paid3 = router.buy(b3);
         vm.stopBroadcast();
@@ -210,7 +221,8 @@ contract Demo is Script, TestnetOnly {
             maxPaid: 20e6,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         router.buy(b4);
         vm.stopBroadcast();
@@ -245,7 +257,8 @@ contract Demo is Script, TestnetOnly {
             minOut: 2e6,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 25_000)
         });
         uint256 out5 = router.sell(s5);
         vm.stopBroadcast();
@@ -255,25 +268,23 @@ contract Demo is Script, TestnetOnly {
         require(pol.bidInventoryGusd(H100) <= bid5, "step5 bid inventory spent or refilled");
         require(pol.askInventoryGpu(H100) >= ask5, "step5 vault acquired GPU at the bid edge");
 
-        // ---------------------------------------------- 6) oracle reprice
-        // No keeper, no migration: the very next swap is priced from the NEW
-        // oracle value. Bob buys 1 H100 in gUSD; the blend (native leg at old
-        // spot + edges at the new reference) can only price at or below the
-        // new primary total — and strictly better than the old book when the
-        // backstop closes the tail.
-        vm.startBroadcast(pk);
-        _setPrice(deployer, oracleAddr, H100, 30_000); // $3.00/GPU-hour
-        vm.stopBroadcast();
-        (uint16 askBps6, uint16 bidBps6,, bool live6, uint256 askPrice6, uint256 bidPrice6) = hook.polState(H100);
-        require(live6, "step6 hook live");
-        require(askPrice6 == 30_000 * (10_000 + askBps6) / 10_000, "step6 ask repriced");
-        require(bidPrice6 == 30_000 * (10_000 - bidBps6) / 10_000, "step6 bid repriced");
+        // ---------------------------------------------- 6) report reprice
+        // No publish tx, no keeper: the reprice is a fresh attestor-signed
+        // report at the NEW price, executable once the chain has rolled into
+        // a new epoch (one price per epoch — the binding IS the repricing
+        // gate; the warp targets the next boundary in sim, and the broadcast
+        // must land inside the matching real epoch — rerun the demo if a
+        // segment straddles a boundary). Bob buys 1 H100 in gUSD; the blend
+        // (native leg at old spot + edges at the new reference) can only
+        // price at or below the new primary total — and strictly better than
+        // the old book when the backstop closes the tail.
+        _nextEpoch();
         vm.startBroadcast(BOB_PK);
         // bob pays this one in gUSD: mint it from his USDC and approve
         underlying.approve(gusdAddr, type(uint256).max);
         gusd.mint(10e6, bob);
         gusd.approve(routerAddr, type(uint256).max);
-        GpuQuoter.QuoteResult memory q6 = gpuQuoter.quoteBuyExactOut(key, 1e18);
+        GpuQuoter.QuoteResult memory q6 = gpuQuoter.quoteBuyExactOut(key, 1e18, _updateData(oracleAddr, attestorPk, H100, 30_000));
         require(q6.gusdIn <= 3_015_000, "step6 blended price at or below the new primary ask");
         require(q6.gusdIn >= 2_500_000, "step6 repriced above the old flat primary level");
         GpuRouter.BuyParams memory b6 = GpuRouter.BuyParams({
@@ -283,7 +294,8 @@ contract Demo is Script, TestnetOnly {
             maxPaid: q6.gusdIn,
             deadline: 0,
             sqrtLimitX96: 0,
-            recipient: bob
+            recipient: bob,
+            updateData: _updateData(oracleAddr, attestorPk, H100, 30_000)
         });
         uint256 paid6 = router.buy(b6);
         vm.stopBroadcast();
@@ -322,19 +334,54 @@ contract Demo is Script, TestnetOnly {
         console2.log("Product chain complete: BUY GPU / SELL GPU, oracle-priced in-swap market making");
     }
 
-    /// @dev Reprice through whichever oracle deployment is live: the
-    ///      production GPUPriceOracle (publish() when the deployer is the
-    ///      publisher, setPriceOverride() when a separate PUBLISHER was
-    ///      granted) or the legacy owner-gated mock.
-    function _setPrice(address deployer, address oracleAddr, bytes32 gpuId, uint256 price) internal {
-        try GPUPriceOracle(oracleAddr).publisher() returns (address pub) {
-            if (pub == deployer) {
-                GPUPriceOracle(oracleAddr).publish(gpuId, price, block.timestamp);
-            } else {
-                GPUPriceOracle(oracleAddr).setPriceOverride(gpuId, price, block.timestamp);
-            }
-        } catch {
-            MockGPUPriceOracle(oracleAddr).setPrice(gpuId, price, block.timestamp);
-        }
+    /// @dev The signed current-epoch report the demo's trades carry as
+    ///      updateData (observedAt = now; calcHash = demo receipt binding).
+    function _updateData(address oracleAddr, uint256 attestorPk, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (bytes memory)
+    {
+        IGpuOracle oracle = IGpuOracle(oracleAddr);
+        IGpuOracle.Report memory r = _reportFor(oracle, gpuId, price);
+        return abi.encode(r, _sigFor(oracle, attestorPk, r));
+    }
+
+    function _reportFor(IGpuOracle oracle, bytes32 gpuId, uint256 price)
+        internal
+        view
+        returns (IGpuOracle.Report memory r)
+    {
+        uint64 epoch = oracle.currentEpoch();
+        uint64 len = oracle.epochLength();
+        r = IGpuOracle.Report({
+            version: 1,
+            gpuId: gpuId,
+            price: price,
+            observedAt: uint64(block.timestamp),
+            epoch: epoch,
+            validFrom: epoch * len,
+            validUntil: (epoch + 1) * len,
+            calcHash: DEMO_CALC_HASH
+        });
+    }
+
+    function _sigFor(IGpuOracle oracle, uint256 attestorPk, IGpuOracle.Report memory r)
+        internal
+        view
+        returns (bytes memory)
+    {
+        (uint8 v, bytes32 r32, bytes32 s) = vm.sign(attestorPk, oracle.reportDigest(r));
+        return abi.encodePacked(r32, s, v);
+    }
+
+    /// @dev Sim-only clock advance to the next epoch boundary: forge scripts
+    ///      simulate at a constant timestamp, so without a warp the reprice
+    ///      segment's reports would bind the SAME epoch the seed-price trades
+    ///      already bound (one price per epoch). The recorded calldata carries
+    ///      report fields verbatim — a live rerun must land its txs inside
+    ///      matching epochs (see step 6's note).
+    function _nextEpoch() internal {
+        uint64 len = uint64(vm.envOr("ORACLE_EPOCH_LENGTH", uint256(60)));
+        vm.warp((block.timestamp / len + 1) * len);
     }
 }

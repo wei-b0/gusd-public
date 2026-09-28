@@ -256,12 +256,12 @@ export interface ProtocolStatsDto {
   mintFeeBps: number | null;
   redeemFeeBps: number | null;
   hookFeeBps: number | null;
-  maxOracleStalenessSec: number | null;
-  maxDeviationBps: number | null;
+  maxObservationAgeSec: number | null;
+  epochLengthSec: number | null;
   sgusdSplitBps: number | null;
   vault: string | null;
   treasury: string | null;
-  publisher: string | null;
+  attestor: string | null;
 }
 
 export interface SgusdVaultDto {
@@ -283,39 +283,44 @@ export interface StatsBody {
 
 // --- indexed oracle state (transparency only, NEVER a display price) -----------------
 
-export interface OracleStateDto {
+export interface GpuOracleStateDto {
   chainId: number;
   gpuId: string;
-  /** The onchain published value — USD/GPU-hr × 10_000 (PRICE_SCALE).
+  /** The last consumed report's price — USD/GPU-hr × 10_000 (PRICE_SCALE).
    *  Health/comparison rendering only (the oracle Health tab prints it at
    *  scale, labeled); never a market or display price. */
   price: string | null;
-  previousPrice: string | null;
-  updatedAtSec: number | null;
-  overriddenPrice: string | null;
-  overriddenAtSec: number | null;
-  lastPublishedBlockNumber: number | null;
+  observedAtSec: number | null;
+  /** The consumed report's epoch — one attestation slot per (gpuId, epoch). */
+  epoch: string | null;
+  /** keccak(abi.encode(Report, signature)) of the consumed report. */
+  reportHash: string | null;
+  /** The trade that consumed the report. */
+  caller: string | null;
+  lastConsumedBlockNumber: number | null;
   /** Fixed interpretation constant for `price`. */
   priceScale: 10_000;
-  /** Serving-time age of the publication — a live computation at the API
+  /** Serving-time age of the observation — a live computation at the API
    *  boundary, never indexed state. */
   ageSec: number | null;
-  /** vs the protocol's maxOracleStalenessSec config mirror. */
-  staleness: "fresh" | "stale" | "unknown";
+  /** vs the protocol's maxObservationAgeSec config mirror. */
+  freshness: "current" | "expired" | "unknown";
 }
 
-export interface OraclePublicationDto {
+export interface PriceConsumedDto {
   chainId: number;
   blockNumber: number;
   logIndex: number;
   blockTimestampSec: number;
   gpuId: string;
   price: string;
-  previousPrice: string;
-  updatedAtSec: number;
+  epoch: string;
+  observedAtSec: number;
+  reportHash: string;
+  caller: string;
 }
 
 export interface OracleStateBody {
-  oracle: OracleStateDto | null;
-  history?: OraclePublicationDto[];
+  oracle: GpuOracleStateDto | null;
+  history?: PriceConsumedDto[];
 }

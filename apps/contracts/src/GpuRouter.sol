@@ -28,7 +28,13 @@ import {GpuPoolKey} from "./libraries/GpuPoolKey.sol";
 ///         and the genesis fallback: when a GPU's canonical pool is not yet
 ///         registered, BUY mints 100% via primary issuance (zero v4
 ///         dependency — a v4 problem can never fail a primary buy).
-/// @dev    Settle pattern inside unlock callbacks: sync -> transfer -> settle
+/// @dev    Pull-oracle pass-through: every flow carries `updateData`
+///         (`abi.encode(Report, signature)`, see IGpuOracle) from the caller
+///         into the swap's hookData (pool path) or straight into issuance
+///         (genesis path). The router NEVER verifies — the hook and issuance
+///         are the verification points, and both fail closed without a valid
+///         current-epoch report.
+///         Settle pattern inside unlock callbacks: sync -> transfer -> settle
 ///         with the FULL funded balance settled before the swap. Any leg
 ///         reverting reverts the whole transaction: v4 transient state rolls
 ///         back and nothing settles early. The router never holds funds at
@@ -89,6 +95,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint256 deadline; // 0 = no deadline
         uint160 sqrtLimitX96; // 0 = wide
         address recipient; // 0 = msg.sender
+        bytes updateData; // signed oracle report pricing THIS trade (wire format, IGpuOracle)
     }
 
     struct SellParams {
@@ -99,6 +106,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint256 deadline; // 0 = no deadline
         uint160 sqrtLimitX96; // 0 = wide
         address recipient; // 0 = msg.sender
+        bytes updateData; // signed oracle report pricing THIS trade (wire format, IGpuOracle)
     }
 
     constructor(IPoolManager poolManager_, GUSD gUSD_, GPUIssuance issuance_, GPUHook hook_)
@@ -123,7 +131,8 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
     ///         through the canonical pool — the hook fills native LP flow,
     ///         POL inventory and the issuance backstop inside the single
     ///         swap. When the pool is not registered (genesis market), mints
-    ///         100% via primary issuance. Unconsumed funds are refunded.
+    ///         100% via primary issuance at the submitted report. Unconsumed
+    ///         funds are refunded.
     function buy(BuyParams calldata p) external nonReentrant returns (uint256 paid) {
         if (p.gpuOut == 0) revert ZeroGpuOut();
         _checkDeadline(p.deadline);
@@ -149,9 +158,10 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             revert UnsupportedPayment();
         }
 
-        // 2) genesis fallback: unregistered pool => 100% issuance, zero v4.
+        // 2) genesis fallback: unregistered pool => 100% issuance at the
+        //    submitted report (which issuance consumes — fail-closed), zero v4.
         if (hook.poolGpuId(key.toId()) == bytes32(0)) {
-            (, uint256 issuanceFee) = issuance.issue(p.gpuId, p.gpuOut, recipient);
+            (, uint256 issuanceFee) = issuance.issue(p.gpuId, p.gpuOut, recipient, p.updateData);
             if (IERC20(gpuToken).balanceOf(address(this)) != 0) revert DustLeft();
             uint256 change0 = IERC20(address(gUSD)).balanceOf(address(this));
             if (change0 > 0) IERC20(address(gUSD)).safeTransfer(recipient, change0);
@@ -159,9 +169,10 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             return funded - change0;
         }
 
-        // 3) single pool swap: the hook composes native + POL + backstop.
+        // 3) single pool swap: the hook composes native + POL + backstop,
+        //    pricing everything at the report carried in hookData.
         (uint256 polFee, uint256 hookFee) = _feesSnapshot();
-        poolManager.unlock(abi.encode(ACTION_BUY, key, p.gpuOut, p.sqrtLimitX96, recipient));
+        poolManager.unlock(abi.encode(ACTION_BUY, key, p.gpuOut, p.sqrtLimitX96, recipient, p.updateData));
         (polFee, hookFee) = _feesSnapshotDelta(polFee, hookFee);
 
         // 4) refund the unconsumed balance; the router never holds funds.
@@ -184,7 +195,8 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint256 minGpuOut,
         uint256 deadline,
         uint160 sqrtLimitX96,
-        address recipient
+        address recipient,
+        bytes memory updateData
     ) external nonReentrant returns (uint256 gpuOut) {
         if (gusdMaxIn == 0) revert ZeroAmount();
         _checkDeadline(deadline);
@@ -197,7 +209,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
 
         (uint256 polFee, uint256 hookFee) = _feesSnapshot();
         bytes memory ret = poolManager.unlock(
-            abi.encode(ACTION_BUY_EXACT_IN, key, gpuToken, gusdMaxIn, minGpuOut, sqrtLimitX96, to)
+            abi.encode(ACTION_BUY_EXACT_IN, key, gpuToken, gusdMaxIn, minGpuOut, sqrtLimitX96, to, updateData)
         );
         (polFee, hookFee) = _feesSnapshotDelta(polFee, hookFee);
         gpuOut = abi.decode(ret, (uint256));
@@ -212,8 +224,10 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
 
     /// @notice SELL `gpuIn` GPU tokens for at least `minOut` in `payout`
     ///         (gUSD or the reserve asset). Pure secondary execution —
-    ///         proceeds come from native LPs and the POL bid inventory; the
-    ///         issuance and the oracle are untouched by sells.
+    ///         proceeds come from native LPs and the POL bid inventory. The
+    ///         report still rides along: the hook fails closed without a
+    ///         valid current-epoch report, even though sells draw no
+    ///         issuance.
     function sell(SellParams calldata p) external nonReentrant returns (uint256 out) {
         if (p.gpuIn == 0) revert ZeroAmount();
         _checkDeadline(p.deadline);
@@ -234,7 +248,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
 
         (uint256 polFee, uint256 hookFee) = _feesSnapshot();
         bytes memory ret = poolManager.unlock(
-            abi.encode(ACTION_SELL_EXACT_IN, key, gpuToken, p.gpuIn, requiredGusd, p.sqrtLimitX96, to, msg.sender)
+            abi.encode(ACTION_SELL_EXACT_IN, key, gpuToken, p.gpuIn, requiredGusd, p.sqrtLimitX96, to, msg.sender, p.updateData)
         );
         (polFee, hookFee) = _feesSnapshotDelta(polFee, hookFee);
         uint256 gusdNet = abi.decode(ret, (uint256));
@@ -257,8 +271,8 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         uint8 action = abi.decode(data[:32], (uint8));
 
         if (action == ACTION_BUY) {
-            (, PoolKey memory key, uint256 gpuOut, uint160 sqrtLimit, address recipient) =
-                abi.decode(data, (uint8, PoolKey, uint256, uint160, address));
+            (, PoolKey memory key, uint256 gpuOut, uint160 sqrtLimit, address recipient, bytes memory updateData) =
+                abi.decode(data, (uint8, PoolKey, uint256, uint160, address, bytes));
 
             // Pay-then-swap: settle the router's FULL gUSD balance first so
             // the hook's inside-swap takes can never fail for reserves.
@@ -272,7 +286,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
                     amountSpecified: int256(gpuOut), // exact-out: GPU demanded
                     sqrtPriceLimitX96: _limit(zeroForOne, sqrtLimit)
                 }),
-                ""
+                updateData // the hook consumes/verifies this report in-lock
             );
 
             // exactOut delivers the demanded amount or reverts; the caller's
@@ -290,8 +304,16 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
         }
 
         if (action == ACTION_BUY_EXACT_IN) {
-            (, PoolKey memory key, address gpuToken, uint256 gusdMaxIn, uint256 minGpuOut, uint160 sqrtLimit, address to) =
-                abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address));
+            (
+                ,
+                PoolKey memory key,
+                address gpuToken,
+                uint256 gusdMaxIn,
+                uint256 minGpuOut,
+                uint160 sqrtLimit,
+                address to,
+                bytes memory updateData
+            ) = abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address, bytes));
 
             _settleGusd();
             bool zeroForOne = _buyZeroForOne(key);
@@ -302,7 +324,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
                     amountSpecified: -int256(gusdMaxIn), // exact-in
                     sqrtPriceLimitX96: _limit(zeroForOne, sqrtLimit)
                 }),
-                ""
+                updateData
             );
 
             uint256 gpuOut = uint256(uint128(zeroForOne ? delta.amount1() : delta.amount0()));
@@ -322,8 +344,9 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
             uint256 requiredGusd,
             uint160 sqrtLimit,
             address to,
-            address seller
-        ) = abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address, address));
+            address seller,
+            bytes memory updateData
+        ) = abi.decode(data, (uint8, PoolKey, address, uint256, uint256, uint160, address, address, bytes));
 
         _settleGpu(gpuToken, gpuIn);
         bool zeroForOne = !_buyZeroForOne(key); // GPU -> gUSD
@@ -334,7 +357,7 @@ contract GpuRouter is SafeCallback, ReentrancyGuard {
                 amountSpecified: -int256(gpuIn), // exact-in
                 sqrtPriceLimitX96: _limit(zeroForOne, sqrtLimit)
             }),
-            ""
+            updateData
         );
 
         // gUSD is the currency received (positive), GPU the one spent (neg.)

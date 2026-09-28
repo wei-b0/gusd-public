@@ -9,6 +9,13 @@
  * floor). Buy/sell params mirror GpuRouter.sol's BuyParams/SellParams
  * one-to-one; the exact-in buy takes flat args. All amounts are raw
  * onchain units.
+ *
+ * Every trade carries `updateData` — the signed oracle report
+ * (`abi.encode(Report, signature)`) pricing THIS trade, consumed by the
+ * hook/issuance in the same transaction (pull oracle, IGpuOracle). The
+ * report is pinned across re-quote → simulate → sign by the trading port;
+ * a stale report reverts on-chain rather than filling at a price the user
+ * never saw.
  */
 
 import type { Address } from "viem";
@@ -35,6 +42,8 @@ export interface BuyParams {
   sqrtLimitX96: bigint;
   /** 0 = msg.sender; the desk always names the session wallet. */
   recipient: Address;
+  /** The signed oracle report pricing THIS trade (IGpuOracle wire format). */
+  updateData: `0x${string}`;
 }
 
 /** GpuRouter.SellParams — exact-in GPU, payout floor in payout units. */
@@ -51,6 +60,8 @@ export interface SellParams {
   sqrtLimitX96: bigint;
   /** 0 = msg.sender; the desk always names the session wallet. */
   recipient: Address;
+  /** The signed oracle report pricing THIS trade (IGpuOracle wire format). */
+  updateData: `0x${string}`;
 }
 
 /** Buy GPU: pulls `maxPaid` gUSD, fills the composed market, refunds the rest. */
@@ -103,6 +114,8 @@ export interface BuyExactInParams {
   sqrtLimitX96: bigint;
   /** 0 = msg.sender; the desk always names the session wallet. */
   recipient: Address;
+  /** The signed oracle report pricing THIS trade (IGpuOracle wire format). */
+  updateData: `0x${string}`;
 }
 
 /** Buy GPU spend-exact: pulls exactly `gusdMaxIn` gUSD, delivers ≥
@@ -120,7 +133,10 @@ export function buyExactInSpec(
         address: getContracts().addresses.router,
         abi: GPU_ROUTER_ABI,
         functionName: "buyExactIn",
-        args: [params.gpuId, params.gusdMaxIn, params.minGpuOut, params.deadline, params.sqrtLimitX96, recipient],
+        // ABI order: (gpuId, gusdMaxIn, minGpuOut, deadline, sqrtLimitX96,
+        // recipient, updateData) — updateData is LAST; anything else puts
+        // the report bytes on the recipient slot and encoding refuses.
+        args: [params.gpuId, params.gusdMaxIn, params.minGpuOut, params.deadline, params.sqrtLimitX96, recipient, params.updateData],
         account: wallet.account ?? null,
         chain: null,
       });

@@ -177,7 +177,7 @@ Keep the hook as small as practical.
 
 # Oracle Integration Boundary
 
-Another agent is independently building the GPU oracle and price publication system.
+Another agent is independently building the GPU oracle and price attestation system.
 
 Contract development must not depend on that implementation being complete.
 
@@ -188,40 +188,42 @@ The exact final interface should be kept minimal.
 Conceptually:
 
 ```solidity
-interface IGPUPriceOracle {
-    function getPrice(bytes32 gpuId)
+interface IGpuOracle {
+    function consume(bytes32 gpuId, Report calldata report, bytes calldata signature)
         external
-        view
-        returns (
-            uint256 price,
-            uint256 updatedAt
-        );
+        returns (uint256 price);
 }
 ```
 
-The final signature may change if required by the production oracle.
+The production interface is exactly this shape — the report rides the
+consumer's calldata (`updateData`), never a storage read — see
+`src/oracle/IGpuOracle.sol`.
 
 Before changing shared oracle semantics, coordinate around:
 
 - canonical GPU IDs,
 - price decimals,
 - timestamp semantics,
-- staleness behavior.
+- report acceptance (epoch + validity window).
 
 Do not embed provider/indexer logic into protocol contracts.
 
 ## Production oracle (implemented)
 
-The publication path is no longer hypothetical. The coordination points above
+The pull-oracle path is no longer hypothetical. The coordination points above
 are now fixed in code on both sides:
 
-- `src/oracle/GPUPriceOracle.sol` is the production oracle: publisher-EOA
-  `publish()`, 2-step publisher rotation, owner-only `setPriceOverride()`
-  escape hatch (genesis seeding + incident response), optional owner-settable
-  `maxDeviationBps` deviation bound (ships disabled).
-- The offchain publisher (`apps/publisher`, `PUBLISHER_TARGET=chain`) encodes
-  and submits `publish()`. Its encoder mirrors `src/libraries/GpuId.sol` and
-  the scaling below in `apps/publisher/src/encoding.ts`.
+- `src/oracle/GpuOracle.sol` is the production oracle: a pull oracle —
+  every consumer embeds an EIP-712 `Report` + attestor signature
+  (`updateData`) in its own transaction; the oracle verifies it with a single
+  `ecrecover`, binds one report per (gpuId, epoch) (first consumed wins), and
+  enforces the validity window + observation-age floor. Admin surface:
+  2-step signer rotation, owner-tunable `epochLength` / `maxObservationAge`.
+  There is no publisher daemon, no `publish()`, and no onchain price writes.
+- The offchain attestor (`packages/attestor-client`, consumed by
+  `apps/attestor`) builds and signs reports. Its codec mirrors
+  `src/libraries/GpuId.sol`, the EIP-712 domain, and the scaling below in
+  `packages/attestor-client/src/report.ts`.
 
 Consumer-side enforcement (all verified in tests; changes here also require
 cross-stack coordination):
@@ -231,22 +233,23 @@ cross-stack coordination):
   (10^(18+4−6) = 1e16) is derived from the oracle's own scale, never
   re-declared as a literal.
 - `quoteIssue()` applies the same guards as `issue()` (known + enabled GPU,
-  amount, oracle price/freshness via the shared `_oraclePrice()`), so a quote
-  can never display a price execution would reject.
+  amount, report acceptance via the shared `updateData` consumption), so a
+  quote can never display a price execution would reject.
 - The canonical pool's deploy-time starting price comes from the LIVE oracle
   (`GPUIssuance.oracleSqrtPriceX96(gpuId)`, inverted at the radicand level
-  when gUSD sorts as currency0); an external oracle that has never published
-  fails the deploy (`OraclePriceZero`).
+  when gUSD sorts as currency0); a report with a zero price fails the deploy
+  (`OraclePriceZero`).
 
 Encoding contract (changing any of it requires cross-stack coordination):
 
 - `gpuId` — bytes32 left-aligned printable-ASCII SKU (0x21..0x7E, 1–32 bytes),
   bijective with the `packages/gpu-catalog` string IDs.
 - `price` — USD per GPU-hour × 10_000 (4-decimal fixed point).
-- `updatedAt` — unix seconds of the observation; the oracle clamps a future
-  value to `block.timestamp` on write, so consumers never see a future stamp.
-- Staleness is a consumer concern (`GPUIssuance.maxOracleStaleness`), not an
-  oracle concern.
+- `observedAt` / `validFrom` / `validUntil` — unix seconds bounding the
+  report's acceptance; the contracts reject future observations outright.
+- Freshness is one acceptance set shared by every consumer (hook + issuance):
+  the report's validity window plus the observation-age floor — not a
+  per-consumer staleness knob.
 
 ---
 

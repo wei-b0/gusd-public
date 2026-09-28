@@ -1,6 +1,6 @@
 [
   {
-    "name": "PricePublished",
+    "name": "PriceConsumed",
     "type": "event",
     "inputs": [
       {
@@ -13,57 +13,74 @@
         "name": "price"
       },
       {
-        "type": "uint256",
-        "name": "updatedAt"
+        "type": "uint64",
+        "name": "epoch",
+        "indexed": true
       },
       {
-        "type": "uint256",
-        "name": "previousPrice"
-      }
-    ]
-  },
-  {
-    "name": "PriceOverridden",
-    "type": "event",
-    "inputs": [
+        "type": "uint64",
+        "name": "observedAt"
+      },
       {
         "type": "bytes32",
-        "name": "gpuId",
-        "indexed": true
-      },
-      {
-        "type": "uint256",
-        "name": "price"
-      },
-      {
-        "type": "uint256",
-        "name": "updatedAt"
-      }
-    ]
-  },
-  {
-    "name": "PublisherAccepted",
-    "type": "event",
-    "inputs": [
-      {
-        "type": "address",
-        "name": "previousPublisher",
+        "name": "reportHash",
         "indexed": true
       },
       {
         "type": "address",
-        "name": "newPublisher",
+        "name": "caller"
+      }
+    ]
+  },
+  {
+    "name": "SignerTransferStarted",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "currentSigner",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "nextSigner",
         "indexed": true
       }
     ]
   },
   {
-    "name": "MaxDeviationBpsSet",
+    "name": "SignerAccepted",
     "type": "event",
     "inputs": [
       {
-        "type": "uint16",
-        "name": "bps"
+        "type": "address",
+        "name": "previousSigner",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "newSigner",
+        "indexed": true
+      }
+    ]
+  },
+  {
+    "name": "EpochLengthSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint64",
+        "name": "seconds_"
+      }
+    ]
+  },
+  {
+    "name": "MaxObservationAgeSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint64",
+        "name": "seconds_"
       }
     ]
   }

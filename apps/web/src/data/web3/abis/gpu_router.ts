@@ -233,6 +233,11 @@ export const GPU_ROUTER_ABI = [
             "name": "recipient",
             "type": "address",
             "internalType": "address"
+          },
+          {
+            "name": "updateData",
+            "type": "bytes",
+            "internalType": "bytes"
           }
         ]
       }
@@ -279,6 +284,11 @@ export const GPU_ROUTER_ABI = [
         "name": "recipient",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "updateData",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [
@@ -385,6 +395,11 @@ export const GPU_ROUTER_ABI = [
             "name": "recipient",
             "type": "address",
             "internalType": "address"
+          },
+          {
+            "name": "updateData",
+            "type": "bytes",
+            "internalType": "bytes"
           }
         ]
       }

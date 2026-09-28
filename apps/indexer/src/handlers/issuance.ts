@@ -181,17 +181,6 @@ function isInSwapBackstop(
   );
 }
 
-handlers.on("GPUIssuance:MaxOracleStalenessSet", async ({ event, context }) => {
-  const { seconds_ } = event.args;
-  await context.db
-    .insert(protocolStats)
-    .values({
-      ...zeroProtocolStats(context.chain.id),
-      maxOracleStalenessSec: Number(seconds_),
-    })
-    .onConflictDoUpdate({ maxOracleStalenessSec: Number(seconds_) });
-});
-
 handlers.on("GPUIssuance:IssuanceEnabledSet", async ({ event, context }) => {
   const { gpuId, enabled } = event.args;
   const asset = await context.db.find(gpuAssets, {

@@ -7,6 +7,7 @@
  */
 
 import type { Address } from "viem";
+import type { SignedReport } from "@gusd/attestor-client";
 import { getContracts, gpuTokenClient, erc20Client } from "./contracts";
 import { poolIdOf, canonicalPoolKey } from "./pool";
 import { formatGusdRaw, formatStableRaw, formatGpuUnits } from "@/domain/units";
@@ -67,24 +68,34 @@ export interface ContractReads {
   >;
   /** Market registration state (token, issuance gate, pool). */
   registration(gpuId: `0x${string}`): Promise<GpuRegistration | null>;
-  /** Issuance quote: base, fee, total — gUSD product units. */
-  quoteIssue(gpuId: `0x${string}`, amountRaw: bigint): Promise<{ base: number; fee: number; totalPaid: number }>;
+  /** Issuance quote against a signed report: base, fee, total — gUSD
+   *  product units. Reverts unless `updateData` is the executable report
+   *  for this market's current epoch (the acceptance set runs on-chain). */
+  quoteIssue(gpuId: `0x${string}`, amountRaw: bigint, updateData: `0x${string}`): Promise<{ base: number; fee: number; totalPaid: number }>;
   /** GUSD fee + pause state (pause blocks mint/redeem and reserve-paid legs). */
   gusdState(): Promise<GusdState>;
   /** Vault share price + caps for one owner. */
   sgusdState(owner: Address): Promise<SGusdState>;
   /** Protocol trading fee, bps (display + sell net math). */
   hookFeeBps(): Promise<number>;
-  /** Oracle freshness for a market (execution input; never a display price).
-   *  `rawPrice` is the oracle's own 4-decimal fixed point (product price ×
-   *  10_000) — the scale issuance's math runs at. Staleness judged by
-   *  issuance's own limit — the constraint issue() enforces. */
-  oracleUpdatedAt(gpuId: `0x${string}`): Promise<{ rawPrice: bigint; updatedAt: number; isStale: boolean }>;
-  /** The hook's full plan-input state for one market, in one batch — the
-   *  deterministic quoter's input set (see trading/hook-quote.ts). Every
-   *  field is a public view; the per-block POL usage has no getter and is
-   *  structurally 0 at quote time (a landing tx's block starts fresh). */
-  hookMarketState(gpuId: `0x${string}`): Promise<HookMarketState>;
+  /** What last EXECUTED onchain for this market — the hook's view over the
+   *  oracle's observability cache. Display only, never a price input: the
+   *  executable price is always the report consumed in the caller's own
+   *  transaction. Zero price = nothing has consumed for this gpu yet. */
+  oracleLastConsumed(gpuId: `0x${string}`): Promise<{
+    price: bigint;
+    observedAtSec: number;
+    epoch: number;
+    reportHash: `0x${string}`;
+  }>;
+  /** The hook's full plan-input state for one market, in one batch, priced
+   *  at the VERIFIED report the caller is about to embed (hook.polState
+   *  reverts unless the report passes the full acceptance set — never
+   *  quotes an unverified price). The deterministic quoter's input set
+   *  (see trading/hook-quote.ts). Every other field is a public view; the
+   *  per-block POL usage has no getter and is structurally 0 at quote time
+   *  (a landing tx's block starts fresh). */
+  hookMarketState(gpuId: `0x${string}`, signed: SignedReport): Promise<HookMarketState>;
 }
 
 /**
@@ -151,8 +162,8 @@ export function contractReads(): ContractReads {
         issuanceFeeBps: Number(cfg.feeBps),
       };
     },
-    async quoteIssue(gpuId, amountRaw) {
-      const [base, fee, totalPaid] = await issuance.read.quoteIssue([gpuId, amountRaw]);
+    async quoteIssue(gpuId, amountRaw, updateData) {
+      const [base, fee, totalPaid] = await issuance.read.quoteIssue([gpuId, amountRaw, updateData]);
       return {
         base: formatGusdRaw(base),
         fee: formatGusdRaw(fee),
@@ -179,53 +190,58 @@ export function contractReads(): ContractReads {
     async hookFeeBps() {
       return Number(await hook.read.hookFeeBps());
     },
-    async oracleUpdatedAt(gpuId) {
-      const [getPrice, maxStaleness] = await Promise.all([
-        oracle.read.getPrice([gpuId]),
-        issuance.read.maxOracleStaleness(),
-      ]);
-      const [rawPrice, updatedAtRaw] = getPrice;
-      const now = Math.floor(Date.now() / 1000);
-      const age = now - Number(updatedAtRaw);
+    async oracleLastConsumed(gpuId) {
+      const [price, observedAt, epoch, reportHash] = await hook.read.oracleLastConsumed([gpuId]);
       return {
-        rawPrice,
-        updatedAt: Number(updatedAtRaw),
-        isStale: rawPrice === 0n || age > Number(maxStaleness),
+        price,
+        observedAtSec: Number(observedAt),
+        epoch: Number(epoch),
+        reportHash,
       };
     },
-    async hookMarketState(gpuId) {
-      const [polState, polPaused, maxPol, perBlockCap, hookStaleness, hookFee, getPrice, issueCfg, issueStaleness, cd, bidInv, askInv] =
+    async hookMarketState(gpuId, signed) {
+      const r = signed.report;
+      // viem encodes the tuple straight from the report — uint64 fields as
+      // bigint, the ABI's own component order.
+      const reportArg = {
+        version: r.version,
+        gpuId: r.gpuId,
+        price: r.price,
+        observedAt: BigInt(r.observedAt),
+        epoch: BigInt(r.epoch),
+        validFrom: BigInt(r.validFrom),
+        validUntil: BigInt(r.validUntil),
+        calcHash: r.calcHash,
+      };
+      const [polState, maxPol, perBlockCap, hookFee, issueCfg, cd, bidInv, askInv, obsAge] =
         await Promise.all([
-          hook.read.polState([gpuId]),
-          hook.read.polPaused(),
+          hook.read.polState([gpuId, reportArg, signed.signature]),
           hook.read.maxPolNotionalGusd(),
           hook.read.perBlockPolCapGusd(),
-          hook.read.maxOracleStaleness(),
           hook.read.hookFeeBps(),
-          oracle.read.getPrice([gpuId]),
           issuance.read.gpuConfig([gpuId]),
-          issuance.read.maxOracleStaleness(),
           issuance.read.compositionDivisor(),
           marketLiquidity.read.bidInventoryGusd([gpuId]),
           marketLiquidity.read.askInventoryGpu([gpuId]),
+          oracle.read.maxObservationAge(),
         ]);
-      const [rawPrice, updatedAtRaw] = getPrice;
-      const [askBps, bidBps, polFeeBps] = polState;
+      const [askBps, bidBps, polFeeBps, live] = polState;
       return {
-        rawPrice,
-        oracleUpdatedAtSec: Number(updatedAtRaw),
-        hookMaxOracleStalenessSec: Number(hookStaleness),
+        rawPrice: r.price,
+        validFromSec: r.validFrom,
+        validUntilSec: r.validUntil,
+        observedAtSec: r.observedAt,
+        maxObservationAgeSec: Number(obsAge),
         askBps: Number(askBps),
         bidBps: Number(bidBps),
         polFeeBps: Number(polFeeBps),
-        polPaused,
+        polPaused: !live, // polState's `live` is exactly !polPaused
         maxPolNotionalGusd: maxPol,
         perBlockPolCapGusd: perBlockCap,
         perBlockUsedGusd: 0n, // internal mapping, no getter — fresh every landing block
         hookFeeBps: Number(hookFee),
         issueFeeBps: Number(issueCfg.feeBps),
         issuanceEnabled: issueCfg.enabled,
-        issuanceMaxOracleStalenessSec: Number(issueStaleness),
         compositionDivisor: cd,
         bidInventoryGusd: bidInv,
         askInventoryGpu: askInv,

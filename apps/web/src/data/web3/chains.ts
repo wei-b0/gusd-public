@@ -34,11 +34,20 @@ function rpcUrlFor(chainId: number): string | null {
   return null;
 }
 
+/**
+ * The anvil chain's wallet-facing RPC. addChain/switchChain hand these URLs
+ * to the WALLET, so they must be reachable from the reviewing browser — the
+ * same override the transports honor (NEXT_PUBLIC_RPC_URL_31337). A loopback
+ * default here would break every reviewer not on the server machine the
+ * moment a wallet had to add the chain.
+ */
+const ANVIL_RPC_URL = rpcUrlFor(31_337) ?? "http://127.0.0.1:8545";
+
 const ANVIL: Chain = defineChain({
   id: 31_337,
   name: "anvil",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: ["http://127.0.0.1:8545"] } },
+  rpcUrls: { default: { http: [ANVIL_RPC_URL] } },
 });
 
 const BASE_SEPOLIA: Chain = defineChain({
@@ -125,7 +134,7 @@ const REGISTRY: Record<number, ChainEntry> = {
       chainId: "0x7a69",
       chainName: "Anvil",
       nativeCurrency: ANVIL.nativeCurrency,
-      rpcUrls: ["http://127.0.0.1:8545"],
+      rpcUrls: [ANVIL_RPC_URL],
     },
     capabilities: { crossChainFunding: false, crossChainGuidance: false },
   },

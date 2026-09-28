@@ -8,7 +8,7 @@
  * are null/empty here and the UI says so; they are never simulated. What the
  * API does publish is served as series: OHLC candles for every chart range
  * from the server-bucketed canonical benchmark series (the database's
- * index_candidates — not trades, not onchain publications), window stats from
+ * index_candidates — not trades, not the chain's consumed reports), window stats from
  * that series gated on real coverage, sparklines from its hourly closes, and
  * freshness/quality from the candidates themselves.
  *
@@ -69,7 +69,7 @@ const SPARKLINE_WINDOW_MS = 48 * 3_600_000;
 /**
  * The series plan per chart interval: the oracle buckets the canonical
  * benchmark series (the database's index_candidates — not trades, not
- * onchain publications) at the grain the selector names, over the window
+ * the chain's consumed reports) at the grain the selector names, over the window
  * the domain plan assigns it — sized for 240–365 visible bars, wide enough
  * to read structure, tight enough that every bar keeps several pixels on a
  * desktop pane, and always inside the candles endpoint's per-request bucket

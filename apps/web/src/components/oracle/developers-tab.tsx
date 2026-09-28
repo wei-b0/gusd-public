@@ -41,7 +41,7 @@ const PROTOCOL_CATALOG = [
   { name: "Protocol stats", method: "REST", note: "GET /v1/protocol/stats · /stats/history — protocol aggregates, the sgUSD vault, and daily buckets" },
   { name: "Wallet state", method: "REST", note: "GET /v1/protocol/wallets/:address/balances · /positions · /executions — balances, cost basis, routed executions" },
   { name: "User events", method: "REST", note: "GET /v1/protocol/user-events?address= — the wallet's indexed protocol events, filterable by type" },
-  { name: "Oracle state", method: "REST", note: "GET /v1/protocol/oracle/:gpu — the indexed onchain publication per GPU (health/comparison only, never a display price)" },
+  { name: "Oracle state", method: "REST", note: "GET /v1/protocol/oracle/:gpu — the last report consumed onchain per GPU (health/comparison only, never a display price)" },
 ] as const;
 
 const PARAM_ROWS = [
@@ -298,7 +298,7 @@ curl $BASE/v1/prices/H100_PANEL_V1/providers
 # 1-hour reference candles for the trailing week (epoch ms)
 curl "$BASE/v1/prices/H100_PANEL_V1/candles?intervalSec=3600&from=$(($(date +%s)000-604800000))&to=$(date +%s)000"
 
-# indexed protocol state — pools, per-asset stats, the onchain publication
+# indexed protocol state — pools, per-asset stats, the last consumed report
 curl $BASE/v1/protocol/pools
 curl $BASE/v1/protocol/gpus/H100_SXM_80GB
 curl $BASE/v1/protocol/oracle/H100_SXM_80GB
@@ -340,7 +340,7 @@ BASE = "${ORACLE_BASE_URL}"
 # one-shot read
 candidate = requests.get(f"{BASE}/v1/prices/H100_PANEL_V1", timeout=5).json()
 
-# indexed protocol state — pools, per-asset stats, the onchain publication
+# indexed protocol state — pools, per-asset stats, the last consumed report
 pools = requests.get(f"{BASE}/v1/protocol/pools", timeout=5).json()
 oracle = requests.get(f"{BASE}/v1/protocol/oracle/H100_SXM_80GB", timeout=5).json()
 

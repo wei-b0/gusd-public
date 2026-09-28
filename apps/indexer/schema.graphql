@@ -189,34 +189,35 @@ type GpuFill
   source: Int!
 }
 
-type OraclePricePublished @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+type PriceConsumed @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
   id: ID!
   blockNumber: Int!
   logIndex: Int!
   blockTimestamp: BigInt!
   gpuId: String! @index
   price: BigInt!
-  previousPrice: BigInt!
-  updatedAtSec: BigInt!
+  epoch: BigInt!
+  observedAtSec: BigInt!
+  reportHash: String!
+  caller: String!
 }
 
-type OraclePriceOverridden @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+type SignerTransferStarted {
   id: ID!
   blockNumber: Int!
   logIndex: Int!
   blockTimestamp: BigInt!
-  gpuId: String! @index
-  price: BigInt!
-  updatedAtSec: BigInt!
+  currentSigner: String!
+  nextSigner: String!
 }
 
-type OraclePublisherAccepted {
+type SignerAccepted {
   id: ID!
   blockNumber: Int!
   logIndex: Int!
   blockTimestamp: BigInt!
-  previousPublisher: String!
-  newPublisher: String!
+  previousSigner: String!
+  newSigner: String!
 }
 
 type PmPoolInitialized {
@@ -351,15 +352,15 @@ type GpuAsset {
   lastTradeAtSec: BigInt
 }
 
-type OracleState {
+type GpuOracleState {
   id: ID!
   gpuId: String! @index
   price: BigInt
-  previousPrice: BigInt
-  updatedAtSec: BigInt
-  overriddenPrice: BigInt
-  overriddenAtSec: BigInt
-  lastPublishedBlockNumber: Int
+  observedAtSec: BigInt
+  epoch: BigInt
+  reportHash: String
+  caller: String
+  lastConsumedBlockNumber: Int
 }
 
 type GpuToken {
@@ -475,12 +476,12 @@ type ProtocolStats {
   mintFeeBps: Int
   redeemFeeBps: Int
   hookFeeBps: Int
-  maxOracleStalenessSec: BigInt
-  maxDeviationBps: Int
+  maxObservationAgeSec: BigInt
+  epochLengthSec: BigInt
   sgusdSplitBps: Int
   vault: String
   treasury: String
-  publisher: String
+  attestor: String
 }
 
 type SgusdVault {
