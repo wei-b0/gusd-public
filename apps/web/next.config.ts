@@ -53,6 +53,10 @@ const nextConfig: NextConfig = {
     // the desks kept their URLs' shape, only the mode name changed.
     { source: "/terminal", destination: "/spot/H100", permanent: true },
     { source: "/terminal/:asset", destination: "/spot/:asset", permanent: true },
+    // Neither desk has an unbound form — both are pre-bound to one market,
+    // so the bare links (F2 Spot, F3 Perps, the command line) land on the
+    // default desk.
+    { source: "/spot", destination: "/spot/H100", permanent: true },
     // `/perps` has no unbound form either — the desk is pre-bound to one
     // market, so the bare link lands on the default perp desk.
     { source: "/perps", destination: "/perps/H100", permanent: true },
