@@ -29,7 +29,7 @@ export default async function PerpsAssetPage({ params }: Props) {
         </Link>
         <span aria-hidden className="text-deep">/</span>
         <Link
-          href={`/terminal/${assetId}`}
+          href={`/spot/${assetId}`}
           className="slug text-dim transition-colors hover:text-amber"
         >
           {pairName(assetId)}

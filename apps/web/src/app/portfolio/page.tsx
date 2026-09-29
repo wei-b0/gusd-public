@@ -162,7 +162,7 @@ function PortfolioBook() {
                 Markets
               </Link>{" "}
               or the{" "}
-              <Link href="/terminal" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
+              <Link href="/spot" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
                 Terminal
               </Link>{" "}
               print here.
@@ -189,7 +189,7 @@ function PortfolioBook() {
                       <tr key={p.asset} className="border-b border-rule last:border-b-0">
                         <td className="py-2.5 pl-3.5 pr-4">
                           <Link
-                            href={`/terminal/${p.asset}`}
+                            href={`/spot/${p.asset}`}
                             className="num text-[13px] font-bold text-data transition-colors hover:text-bright"
                           >
                             {pairName(p.asset)}
@@ -247,7 +247,7 @@ function PortfolioBook() {
           <TuiPanel no="02" title="Liquid capital · gUSD" meta="settlement unit">
             <dl className="border-t border-rule">
               <Line label="gUSD balance" value={fmtFull(account.gUsdBalance)} />
-              <Line label="Trade with gUSD" value="Terminal ▸" href="/terminal" />
+              <Line label="Trade with gUSD" value="Terminal ▸" href="/spot" />
               <Line label="Mint gUSD" value="gUSD section ▸" href="/gusd" />
             </dl>
           </TuiPanel>

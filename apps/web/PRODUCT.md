@@ -29,13 +29,14 @@ The gUSD product consists of several closely related layers:
 
 - GPU Assets
 - Markets
+- Spot
+- Perps
 - gUSD
 - sgUSD
 - Earn
 - Index
 - Data
 - Protocol
-- Terminal
 - Portfolio
 - Vaults / capital products
 
@@ -357,10 +358,12 @@ The Markets experience should make the GPU asset class understandable as a whole
 
 # GPU Asset Detail
 
-Every GPU asset has one detailed surface: its desk on the Terminal. There is no
-separate market detail page — Markets is the discovery board, and clicking an
-asset anywhere in the product opens `/terminal/[asset]`, where analysis and
-execution live under one roof.
+Every GPU asset has one detailed surface: its desk. There is no separate
+market detail page — Markets is the discovery board, and clicking an asset
+anywhere in the product opens its desk, where analysis and execution live
+under one roof: the spot desk (`/spot/[asset]`) trades the asset itself, and
+the perps desk (`/perps/[asset]`) trades gUSD-settled leveraged exposure to
+the same benchmark.
 
 For example, the H100 desk exposes:
 
@@ -392,15 +395,15 @@ The GPU asset itself trades on gUSD.
 
 ---
 
-# Terminal
+# Spot
 
-Terminal is the professional trading interface — and the one place users trade.
-Every asset's depth (chart, statistics, the Index feed, activity) and its
-order entry live here together; Markets is discovery only. Provider/reference
-observations live on the Oracle's Benchmarks tab, which the desk's Index feed
-links to.
+Spot is the professional trading interface for GPU asset markets — the one
+place users trade the assets themselves. Every asset's depth (chart,
+statistics, the Index feed, activity) and its order entry live here together;
+Markets is discovery only. Provider/reference observations live on the
+Oracle's Benchmarks tab, which the desk's Index feed links to.
 
-The Terminal ships the full interaction model today:
+Spot ships the full interaction model today:
 
 - GPU asset selector
 - price chart
@@ -417,7 +420,29 @@ The Terminal ships the full interaction model today:
 
 The shell implementation prototypes the complete interaction model without pretending that mock trades are real onchain transactions.
 
-The Terminal may be deliberately more information-dense on desktop than the rest of the application.
+Spot may be deliberately more information-dense on desktop than the rest of the application.
+
+---
+
+# Perps
+
+Perps is the leveraged-exposure desk: gUSD-settled perpetual futures on the
+same GPU benchmarks the spot markets trade. No GPU tokens move — collateral
+is gUSD, fills are oracle reports, and the keeper executes armed orders. The
+perps desk mirrors the spot desk's exchange grammar (markets rail, dominant
+candlestick plate, trade rail) with perp-native depth:
+
+- mark price (the report the engine fills at) and the benchmark candle chart
+- funding rates (long/short) and borrow, per day
+- open interest per side and its caps
+- leverage up to the market's cap, with maintenance margin and liquidation
+  distance on every position
+- armed orders (open, close, stop-loss, take-profit) with their price bounds
+- liquidations tape — the public record of forced closes
+- settled, claimable PnL
+
+Perps and spot are siblings: the same discovery board lists both, and each
+asset's spot desk links across to its perp desk.
 
 ---
 
@@ -749,7 +774,8 @@ The intended application currently includes:
 ```text
 /
  /markets
- /terminal/[asset]
+ /spot/[asset]
+ /perps/[asset]
  /oracle
  /portfolio
  /protocol
@@ -761,9 +787,12 @@ Methodology, Health, Developers) with query deep links (`?tab=`,
 `/gusd`, the per-GPU oracle sheet `/oracle/[asset]` and `/index`,
 `/index/[asset]` into the Oracle's Benchmarks tab (`/oracle?tab=benchmarks`
 with the benchmark selected), `/data` into its Developers tab,
-`/markets/[asset]` to `/terminal/[asset]` — asset detail and trading share
-one roof — and `/terminal` to the default desk, `/terminal/H100`: the
-Terminal has no unbound form, it always shows one market's desk.
+`/markets/[asset]` to `/spot/[asset]` — asset detail and trading share
+one roof — and the pre-perps Terminal mode: `/terminal` and
+`/terminal/[asset]` to the spot desks. Neither desk has an unbound form —
+bare `/spot` and `/perps` land on the default desks (H100), so every desk
+owns its URL. `/markets` itself is the discovery board (it renders the same
+board as the front door, now covering spot AND perpetual markets).
 
 The exact routing may evolve as the product develops.
 

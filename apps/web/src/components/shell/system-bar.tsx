@@ -3,8 +3,9 @@
 /**
  * SystemBar — the machine's top rule: wordmark, command line, connection
  * control, live UTC clock. Present on every route. The command line speaks
- * the product's own names — markets, terminal H200, oracle, gusd — and a
- * bare GPU asset routes to that market's desk on the Terminal.
+ * the product's own names — markets, spot H200, perps H200, oracle, gusd —
+ * and a bare GPU asset routes to that market's spot desk. `terminal` remains
+ * a legacy alias for spot.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -43,10 +44,11 @@ function resolveCommand(raw: string): string | null {
   switch (head) {
     case "markets":
     case "board":
-      // An asset argument names a market — and a market lives on the desk.
-      return target ? `/terminal/${target}` : "/";
-    case "terminal":
-      return target ? `/terminal/${target}` : "/terminal";
+      // An asset argument names a market — and a market lives on a desk.
+      return target ? `/spot/${target}` : "/";
+    case "spot":
+    case "terminal": // legacy alias — the mode is Spot now
+      return target ? `/spot/${target}` : "/spot";
     case "perps":
       return target ? `/perps/${target}` : "/perps";
     case "oracle":
@@ -68,7 +70,7 @@ function resolveCommand(raw: string): string | null {
     case "protocol":
       return "/protocol";
     default:
-      return parseAssetId(head) ? `/terminal/${parseAssetId(head)}` : null;
+      return parseAssetId(head) ? `/spot/${parseAssetId(head)}` : null;
   }
 }
 
@@ -91,7 +93,7 @@ export function SystemBar() {
     if (!href) {
       const code = raw.trim().toUpperCase();
       setError(
-        `UNKNOWN COMMAND "${code}" — TRY MARKETS · TERMINAL · PERPS · ORACLE`,
+        `UNKNOWN COMMAND "${code}" — TRY MARKETS · SPOT · PERPS · ORACLE`,
       );
       if (clearTimer.current) clearTimeout(clearTimer.current);
       clearTimer.current = setTimeout(() => setError(null), 3_200);
@@ -116,7 +118,7 @@ export function SystemBar() {
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
             aria-label="Command line — type a product name or GPU asset"
-            placeholder="terminal H200"
+            placeholder="spot H200"
             spellCheck={false}
             autoCapitalize="none"
             autoComplete="off"

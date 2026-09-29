@@ -48,8 +48,11 @@ const nextConfig: NextConfig = {
     { source: "/index", destination: "/oracle?tab=benchmarks", permanent: true },
     { source: "/index/:asset", destination: "/oracle?tab=benchmarks&bench=:asset", permanent: true },
     { source: "/data", destination: "/oracle?tab=developers", permanent: true },
-    { source: "/markets/:asset", destination: "/terminal/:asset", permanent: true },
-    { source: "/terminal", destination: "/terminal/H100", permanent: true },
+    { source: "/markets/:asset", destination: "/spot/:asset", permanent: true },
+    // The Terminal mode became Spot once perps arrived as a sibling mode:
+    // the desks kept their URLs' shape, only the mode name changed.
+    { source: "/terminal", destination: "/spot/H100", permanent: true },
+    { source: "/terminal/:asset", destination: "/spot/:asset", permanent: true },
     // `/perps` has no unbound form either — the desk is pre-bound to one
     // market, so the bare link lands on the default perp desk.
     { source: "/perps", destination: "/perps/H100", permanent: true },
