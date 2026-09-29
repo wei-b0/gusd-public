@@ -81,5 +81,55 @@
         "name": "value"
       }
     ]
+  },
+  {
+    "name": "PerpEngineSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "engine",
+        "indexed": true
+      }
+    ]
+  },
+  {
+    "name": "PerpReservedUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "reserved"
+      }
+    ]
+  },
+  {
+    "name": "EngineWithdrawal",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "requested"
+      },
+      {
+        "type": "uint256",
+        "name": "paid"
+      }
+    ]
+  },
+  {
+    "name": "EngineWithdrawalCapSet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "cap"
+      }
+    ]
   }
 ]

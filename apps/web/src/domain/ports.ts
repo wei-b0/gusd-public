@@ -30,6 +30,15 @@ import type {
   MarketTrade,
   MintDirection,
   MintQuote,
+  PerpCloseQuote,
+  PerpCloseRequest,
+  PerpMarketState,
+  PerpOpenQuote,
+  PerpOpenRequest,
+  PerpPendingOrder,
+  PerpPositionState,
+  PerpSide,
+  PerpTriggerRequest,
   QuoteFailure,
   TradeAvailability,
   TradeQuote,
@@ -242,6 +251,54 @@ export interface BridgePort {
   execute(quote: BridgeQuote): AsyncIterable<BridgeProgress>;
 }
 
+/**
+ * The perp layer — gUSD-settled GPU perpetual futures on GpuPerpEngine.
+ * Every fill price is a consumed oracle report; orders are two-stage
+ * (create locks collateral + execution fee, the keeper executes with a
+ * fresh attestation). Previews pin one report and compute against exactly
+ * what execution will consume — the same attestation→pin→sim→self-heal
+ * doctrine the trading desk runs — and actions resolve to the action
+ * record the desk renders. sgUSD is the counterparty capital: settlements
+ * flow through the claimable counter, paid from the vault.
+ */
+export interface PerpPort {
+  /** Per-market risk parameters, OI, and pro-forma funding rates. Null for
+   *  an asset with no oracle settlement panel registered onchain. Works
+   *  without a session — market state is public. */
+  describeMarket(asset: AssetId): Promise<PerpMarketState | null>;
+  /** The caller's settled claimable balance (gUSD product units); null
+   *  without a session. */
+  getClaimable(): Promise<number | null>;
+  /** Live position state through a verified report — uPnL, equity,
+   *  maintenance, liquidation distance. Null without a session or an open
+   *  position on that side. */
+  getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionState | null>;
+  /** The caller's pending orders (locked and awaiting the keeper). */
+  listPendingOrders(): Promise<PerpPendingOrder[]>;
+  /** Execution-identical open preview at the pinned report, or null for an
+   *  invalid request (below min collateral, over leverage/OI caps). Works
+   *  without a session — quoting is public, acting is not. */
+  quoteOpen(request: PerpOpenRequest): Promise<PerpOpenQuote | null>;
+  /** Execution-identical close preview at the pinned report, or null when
+   *  there is no position and the request would close more than it holds. */
+  quoteClose(request: PerpCloseRequest): Promise<PerpCloseQuote | null>;
+  /** Arm an open (MarketIncrease). Requires a connected wallet; locks
+   *  collateral + execution fee in the engine. */
+  open(request: PerpOpenRequest): Promise<ActionRecord>;
+  /** Arm a close (MarketDecrease) — reduceOnly, keeper-executed. Requires
+   *  a connected wallet; locks the execution fee only. */
+  close(request: PerpCloseRequest): Promise<ActionRecord>;
+  /** Arm a TP/SL trigger order (create-with-replace). Requires a connected
+   *  wallet; locks the execution fee only. */
+  armTrigger(request: PerpTriggerRequest): Promise<ActionRecord>;
+  /** Cancel a pending order — refunds its escrowed fee (and locked
+   *  collateral on increases). Account-only, exempt from the delay. */
+  cancelOrder(orderId: number): Promise<ActionRecord>;
+  /** Settle claimable gUSD out of the sgUSD vault. Approval-free; pays
+   *  partially when the vault is short — the remainder stays claimable. */
+  claim(amount: number): Promise<ActionRecord>;
+}
+
 export interface Services {
   marketData: MarketDataPort;
   trading: TradingPort;
@@ -249,6 +306,7 @@ export interface Services {
   earn: EarnPort;
   mint: MintPort;
   bridge: BridgePort;
+  perp: PerpPort;
   tx: TxPort;
   actions: ActionPort;
 }

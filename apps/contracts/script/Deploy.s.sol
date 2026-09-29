@@ -28,9 +28,12 @@ import {GPUHook} from "../src/hooks/GPUHook.sol";
 import {GpuRouter} from "../src/GpuRouter.sol";
 import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {StableRouter} from "../src/StableRouter.sol";
+import {GpuPerpEngine} from "../src/GpuPerpEngine.sol";
+import {IGpuPerpEngine} from "../src/interfaces/IGpuPerpEngine.sol";
 import {GpuOracle} from "../src/oracle/GpuOracle.sol";
 import {IGpuOracle} from "../src/oracle/IGpuOracle.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
+import {PerpMath} from "../src/libraries/PerpMath.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "v4-periphery-test/shared/HookMiner.sol";
@@ -114,6 +117,34 @@ contract Deploy is Script, TestnetOnly {
         return uint64(vm.envOr("ORACLE_MAX_OBSERVATION_AGE", uint256(300)));
     }
 
+    /// @dev Perp market params, env-overridable per chain (identical for all
+    ///      four launch markets — generic-across-markets by design; per-market
+    ///      risk tuning is a later, owner-gated decision). Leverage is whole-x
+    ///      (PERP_MAX_LEVERAGE=20 → 200_000 bps); fees/rates are bps/ppm/s.
+    function _perpParams() internal view returns (IGpuPerpEngine.MarketParams memory p) {
+        p.maxLeverageBps = uint32(vm.envOr("PERP_MAX_LEVERAGE", uint256(20)) * PerpMath.BPS);
+        // 2.5% of notional: at the default 20x max leverage the initial margin is
+        // 5% of notional, so maintenance sits at half of it. _validateParams
+        // rejects mmBps × maxLeverageBps ≥ 1e8 (maintenance ≥ initial margin).
+        p.maintenanceMarginBps = uint32(vm.envOr("PERP_MAINTENANCE_BPS", uint256(250)));
+        p.openFeeBps = uint32(vm.envOr("PERP_OPEN_FEE_BPS", uint256(10)));
+        p.closeFeeBps = uint32(vm.envOr("PERP_CLOSE_FEE_BPS", uint256(10)));
+        p.liquidationFeeBps = uint32(vm.envOr("PERP_LIQ_FEE_BPS", uint256(100)));
+        p.fundingRatePpmPerSec = uint32(vm.envOr("PERP_FUNDING_PPM_PER_SEC", uint256(0)));
+        p.borrowRatePpmPerSec = uint32(vm.envOr("PERP_BORROW_PPM_PER_SEC", uint256(0)));
+        p.maxOiUsd = uint128(vm.envOr("PERP_MAX_OI", uint256(1_000_000e6)));
+        p.minCollateralUsd = uint128(vm.envOr("PERP_MIN_COLLATERAL", uint256(10e6)));
+        p.maxPositionUsd = uint128(vm.envOr("PERP_MAX_POSITION", uint256(100_000e6)));
+    }
+
+    function _perpMinOrderDelay() internal view returns (uint32) {
+        return uint32(vm.envOr("PERP_MIN_ORDER_DELAY", uint256(15)));
+    }
+
+    function _perpMaxWithdrawPerBlock() internal view returns (uint256) {
+        return vm.envOr("PERP_MAX_WITHDRAW_PER_BLOCK", uint256(500_000e6));
+    }
+
     struct Deployment {
         address underlying;
         address poolManager;
@@ -127,6 +158,7 @@ contract Deploy is Script, TestnetOnly {
         address hook;
         address router;
         address stableRouter;
+        address perpEngine;
         address[] stables;
         address permit2;
         address positionManager;
@@ -276,6 +308,13 @@ contract Deploy is Script, TestnetOnly {
         }
         d.stables = StableRouter(d.stableRouter).allStables();
 
+        // 5.6) perp engine: oracle-priced gUSD perpetuals backed by the sgUSD
+        //      vault. Deployed after sgUSD (no construction cycle — the
+        //      engine is owner-set wiring on the vault, setPerpEngine below).
+        d.perpEngine = address(
+            new GpuPerpEngine(IERC20(d.gusd), sgUSD(d.sgusd), IGpuOracle(d.oracle), d.ledger, deployer)
+        );
+
         // 6) wiring — no protocolFeeController: the hook captures the protocol
         //    trading share itself (gUSD-denominated in both directions)
         GUSD(d.gusd).setRevenueSink(d.ledger);
@@ -284,6 +323,12 @@ contract Deploy is Script, TestnetOnly {
         RevenueLedger(d.ledger).setTreasury(vm.envOr("TREASURY", deployer));
         RevenueLedger(d.ledger).setSplit(5_000);
         GPUHook(d.hook).setHookFeeBps(50);
+        // perp wiring: the vault recognizes the engine (claims pay through
+        // perpWithdraw), and the per-block engine-withdrawal cap bounds how
+        // fast claims can drain the vault (0 would be a full stop).
+        sgUSD(d.sgusd).setPerpEngine(d.perpEngine);
+        sgUSD(d.sgusd).setEngineMaxWithdrawPerBlock(_perpMaxWithdrawPerBlock());
+        GpuPerpEngine(d.perpEngine).setMinOrderDelay(_perpMinOrderDelay());
         // seed the sgUSD vault: 1 gUSD in, 1 share out (one-way gate). A mock
         // reserve funds itself; a real external asset must already sit on the
         // deployer (≥ the gross below) — there is no mint to call on it. The
@@ -321,6 +366,8 @@ contract Deploy is Script, TestnetOnly {
             // no oracle state involved. The attestor's first reports must
             // carry the live price matching these anchors.
             _initializeCanonicalPool(d, gpuId, catalogue[i].seedPrice);
+            // perp market: one per launch SKU, generic params
+            GpuPerpEngine(d.perpEngine).createMarket(gpuId, _perpParams());
         }
 
         vm.stopBroadcast();
@@ -385,6 +432,7 @@ contract Deploy is Script, TestnetOnly {
         }
         vm.serializeAddress(json, "hook", d.hook);
         vm.serializeAddress(json, "router", d.router);
+        vm.serializeAddress(json, "perpEngine", d.perpEngine);
         vm.serializeAddress(json, "permit2", d.permit2);
         vm.serializeAddress(json, "positionManager", d.positionManager);
         vm.serializeAddress(json, "quoter", d.quoter);
@@ -397,6 +445,10 @@ contract Deploy is Script, TestnetOnly {
         // serializeUint's return is the updated serialization; the discarded
         // return here silently dropped the key from the written file.
         out = vm.serializeUint(json, "startBlock", block.number > 0 ? block.number - 1 : 0);
+        // The record dir is gitignored and start-dev.sh expects this exact
+        // path — create it so a bare `forge script Deploy` never fails on a
+        // fresh clone.
+        vm.createDir("./deployments", true);
         vm.writeJson(out, string.concat("./deployments/", vm.toString(block.chainid), ".json"));
     }
 }

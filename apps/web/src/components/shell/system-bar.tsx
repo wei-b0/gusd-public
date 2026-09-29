@@ -47,6 +47,8 @@ function resolveCommand(raw: string): string | null {
       return target ? `/terminal/${target}` : "/";
     case "terminal":
       return target ? `/terminal/${target}` : "/terminal";
+    case "perps":
+      return target ? `/perps/${target}` : "/perps";
     case "oracle":
       // Bare `oracle` lands on the Overview; an asset argument opens that
       // benchmark's board row and panel receipt.
@@ -89,7 +91,7 @@ export function SystemBar() {
     if (!href) {
       const code = raw.trim().toUpperCase();
       setError(
-        `UNKNOWN COMMAND "${code}" — TRY MARKETS · TERMINAL · ORACLE`,
+        `UNKNOWN COMMAND "${code}" — TRY MARKETS · TERMINAL · PERPS · ORACLE`,
       );
       if (clearTimer.current) clearTimeout(clearTimer.current);
       clearTimer.current = setTimeout(() => setError(null), 3_200);

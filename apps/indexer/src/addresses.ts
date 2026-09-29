@@ -42,6 +42,7 @@ export interface IndexerAddresses {
   marketLiquidity: Address;
   poolManager: Address;
   positionManager: Address;
+  perpEngine: Address;
 }
 
 export interface CanonicalPool {
@@ -76,6 +77,7 @@ interface RawDeployment {
   marketLiquidity: string;
   poolManager: string;
   positionManager: string;
+  perpEngine: string;
 }
 
 /** Locate apps/contracts/deployments from this package's position in the
@@ -175,6 +177,7 @@ const ADDRESS_FIELDS = [
   "marketLiquidity",
   "poolManager",
   "positionManager",
+  "perpEngine",
 ] as const satisfies readonly (keyof IndexerAddresses)[];
 
 function requireAddresses(raw: RawDeployment, chainId: number): IndexerAddresses {

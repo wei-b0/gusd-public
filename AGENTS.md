@@ -21,6 +21,7 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 | `apps/contracts` | Foundry: GUSD, GPUIssuance, GPUMarketLiquidity, GPUToken, RevenueLedger, sgUSD, GPUHook, GpuRouter, GpuQuoter, StableRouter, `GpuOracle` (pull oracle). `deployments/<chainId>.json` is the one shared address record |
 | `apps/oracle` | Fastify price API: collectors → benchmark engine → `/v1/prices*`, `/v1/providers`, `/v1/health`, WS `/v1/stream`, SSE `/v1/stream/sse`. Also proxies the indexer as `/v1/protocol/*` (registered only when `INDEXER_SCHEMA` is set) |
 | `apps/attestor` | oracle → signed report loop: polls the benchmark API and serves current attestations (`@gusd/attestor-client` signs the EIP-712 reports the contracts consume) |
+| `apps/keeper` | perp executor: oracle WS candidate stream → offline evaluation against the indexer's perp entities (orders past `minOrderDelay`, triggers, liquidations) → one attestation fetch when work exists → sim-gated broadcast from a funded hot EOA. The only backend service that broadcasts |
 | `apps/indexer` | Envio HyperIndex: chain events → `gusd_index_envio_<env>_v<n>` Postgres schemas; config + ABI JSON + address constants generated at boot from the deployment record (`scripts/generate-config.ts`). Chain 4663 via HyperSync (`ENVIO_API_TOKEN` required, optional RPC fallback), 31337/46630 RPC-only; Hasura disabled, healthz/metrics on :9898. Its HTTP surface stays private to the compose network — reachable only through the oracle's `/v1/protocol` proxy |
 | `apps/web` | Next.js trading desk — the only component NOT containerized |
 | `packages/db` | Drizzle schema, migrations, append-only triggers, repos |
@@ -208,7 +209,9 @@ Default `pnpm test` is network-free and skips the gated suites. Turbo's
   integration tests, oracle e2e (replay → API → WS/SSE), and the web
   route-handler/identity integration tests.
 - `RUN_ANVIL_TESTS=1` (needs a local anvil on :8545) runs the web
-  tx-lifecycle tests and the indexer anvil e2e. The indexer e2e is
+  tx-lifecycle tests (trading, perps, tx-store — the perps/trading suites
+  also want a fresh `Deploy.full` chain, see their headers) and the indexer
+  anvil e2e. The indexer e2e is
   self-contained — it boots its own anvil on :18545 and deploys on the
   day grid itself — so it only needs foundry (`~/.foundry/bin`) on PATH
   and the `gusd-postgres` container.

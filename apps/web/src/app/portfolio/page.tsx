@@ -7,19 +7,21 @@
  * and actions are the only gated things in the product.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { pairName } from "@/domain/types";
 import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, fmtUnitsMax, isFlatPct } from "@/domain/format";
 import { isActionTerminal, type ActionRecord } from "@/domain/actions";
-import { useAccount, useActions, useEarn, useMarkets, useServices } from "@/data/services";
+import { useAccount, useActiveAction, useActions, useEarn, useMarkets, useServices, useWalletSession } from "@/data/services";
 import { useWalletActivity } from "@/data/protocol/hooks";
 import {
   basisFromVault,
   mergeActivity,
   type ActivityRow,
 } from "@/data/protocol/map";
-import { PhaseTag } from "@/components/ui/action-status";
+import { fetchIndexedPerpClaimable, fetchIndexedPerpPositions, type IndexedPerpPosition } from "@/data/web3/perps/indexed";
+import { pnl } from "@/data/web3/perps/math";
+import { ActionStatus, PhaseTag } from "@/components/ui/action-status";
 import { TuiPanel } from "@/components/ui/panel";
 
 export default function PortfolioPage() {
@@ -273,6 +275,8 @@ function PortfolioBook() {
             </dl>
           </TuiPanel>
 
+          <PerpPanel />
+
           </div>
 
         {/* 05 — activity: the indexed ledger merged with this session's
@@ -315,6 +319,196 @@ function PortfolioBook() {
         </TuiPanel>
       </div>
     </div>
+  );
+}
+
+/**
+ * 04 — perp book: the wallet's gUSD-settled perpetual positions, as the
+ * indexer projected them, marked to the same displayed price every desk
+ * stands on (uPnL is the preview-math mark, not a chain probe — the perps
+ * desk owns verified probes). The claimable counter reads the chain when a
+ * session exists and the indexer's projection otherwise; lag prints "—",
+ * never a zero. Live positions link to their perp desk.
+ */
+function PerpPanel() {
+  const session = useWalletSession();
+  const connected = session.status === "connected";
+  const markets = useMarkets();
+  const { perp } = useServices();
+  const actions = useActions();
+  const active = useActiveAction("perp-claim");
+  const [indexed, setIndexed] = useState<readonly IndexedPerpPosition[] | null>(null);
+  const [claimable, setClaimable] = useState<number | null>(null);
+  const [settled, setSettled] = useState<ActionRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Settled actions move the chain counters — refetch when the terminal
+  // count changes, then lazily on an interval.
+  const settledCount = actions.filter((a) => isActionTerminal(a.phase)).length;
+
+  useEffect(() => {
+    const owner =
+      connected && session.status === "connected" ? (session.address?.toLowerCase() ?? null) : null;
+    if (owner === null) {
+      setIndexed(null);
+      setClaimable(null);
+      return;
+    }
+    let alive = true;
+    const load = () => {
+      fetchIndexedPerpPositions(owner).then((rows) => {
+        if (alive) setIndexed(rows);
+      });
+      // The claim figure prefers chain truth (the port answers null
+      // without a session); the indexed projection fills the gap while
+      // the wallet is gone.
+      perp
+        .getClaimable()
+        .then((c) => {
+          if (alive && c !== null) setClaimable(c);
+        })
+        .catch(() => {});
+      fetchIndexedPerpClaimable(owner).then((c) => {
+        if (alive) setClaimable((prev) => prev ?? c);
+      });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [connected, session, perp, settledCount]);
+
+  const priceOf = new Map(markets.map((m) => [m.asset.id, m.marketPrice ?? m.indexPrice]));
+  const live = (indexed ?? []).filter((p) => p.sizeUsd > 0 && p.closedAtSec === null);
+
+  async function claim() {
+    if (active !== null || claimable === null || claimable <= 0) return;
+    setError(null);
+    try {
+      const record = await perp.claim(claimable);
+      setSettled(record);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The claim didn't go through. Try again in a moment.");
+    }
+  }
+
+  return (
+    <TuiPanel
+      no="04"
+      title="Perp positions"
+      meta="gUSD-settled · keeper executed"
+    >
+      {indexed === null ? (
+        <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
+          Perp positions print here once the indexer reflects them. Live figures — uPnL, equity, liquidation
+          distance — live on the{" "}
+          <Link href="/perps" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
+            perps desk
+          </Link>
+          .
+        </p>
+      ) : live.length === 0 ? (
+        <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
+          No open perp positions.{" "}
+          <Link href="/perps" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
+            Open one on the perps desk ▸
+          </Link>
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[12px]">
+            <thead>
+              <tr className="border-b border-rule text-left">
+                <th scope="col" className="slug py-2 pl-3.5 pr-4 text-dim">Market</th>
+                <th scope="col" className="slug px-2.5 py-2 text-dim">Side</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Size</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Entry</th>
+                <th scope="col" className="slug px-2.5 py-2 text-right text-dim">Mark</th>
+                <th scope="col" className="slug py-2 pr-3.5 text-right text-dim">uPnL / gUSD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {live.map((p) => {
+                const mark = priceOf.get(p.asset) ?? null;
+                const uPnlRaw =
+                  mark === null
+                    ? null
+                    : pnl(
+                        BigInt(Math.round(p.sizeUsd * 1e6)),
+                        BigInt(Math.round(p.entryPrice * 1e4)),
+                        p.side === "long",
+                        BigInt(Math.round(mark * 1e4)),
+                      );
+                const uPnl = uPnlRaw === null ? null : Number(uPnlRaw);
+                return (
+                  <tr key={`${p.asset}-${p.side}`} className="border-b border-rule last:border-b-0">
+                    <td className="py-2.5 pl-3.5 pr-4">
+                      <Link
+                        href={`/perps/${p.asset}`}
+                        className="num text-[13px] font-bold text-data transition-colors hover:text-bright"
+                      >
+                        {pairName(p.asset)}
+                      </Link>
+                    </td>
+                    <td className={`slug px-2.5 py-2.5 ${p.side === "long" ? "text-up" : "text-down"}`}>
+                      {p.side === "long" ? "▲ long" : "▼ short"}
+                    </td>
+                    <td className="num px-2.5 py-2.5 text-right text-data">{fmtUnitsMax(p.sizeUsd)}</td>
+                    <td className="num px-2.5 py-2.5 text-right text-data">{fmtGusdPrecise(p.entryPrice)}</td>
+                    <td className="num px-2.5 py-2.5 text-right text-data">
+                      {mark === null ? "—" : fmtGusdPrecise(mark)}
+                    </td>
+                    <td
+                      className={`num py-2.5 pr-3.5 text-right whitespace-nowrap ${
+                        uPnl === null ? "text-dim" : uPnl >= 0 ? "font-bold text-up" : "font-bold text-down"
+                      }`}
+                    >
+                      {uPnl === null ? "—" : `${uPnl < 0 ? "−" : "+"}${fmtNotional(Math.abs(uPnl))}`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <dl className="border-t border-rule">
+        <div className="flex items-baseline justify-between gap-2 border-b border-rule px-3.5 py-2.5">
+          <dt className="slug text-[10.5px] text-dim">Claimable settlements</dt>
+          <dd className="num text-[12px] font-bold text-bright">
+            {claimable === null ? "—" : `${fmtGusdPrecise(claimable)} gUSD`}
+          </dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-2 px-3.5 py-2.5">
+          <dt className="slug text-[10.5px] text-dim">Settle claimable</dt>
+          <dd>
+            <button
+              type="button"
+              onClick={claim}
+              disabled={active !== null || claimable === null || claimable <= 0}
+              className="slug rev-g px-3 py-1 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 hover:opacity-90"
+            >
+              {active !== null ? "Claiming…" : "Claim"}
+            </button>
+          </dd>
+        </div>
+      </dl>
+      {error && (
+        <p className="mx-3.5 mb-3.5 border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
+          {error}
+        </p>
+      )}
+      {settled && (
+        <div className="px-3.5 pb-3.5">
+          <ActionStatus record={settled} />
+        </div>
+      )}
+      <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">
+        Claims pay from the sgUSD vault; a short vault pays partially and the remainder stays claimable.
+      </p>
+    </TuiPanel>
   );
 }
 

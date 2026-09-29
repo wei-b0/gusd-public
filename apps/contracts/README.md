@@ -157,7 +157,7 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
   the stable pool below).
 - **A mock second stable** (`Mock Tether USD`, 6 decimals) deployed through
   the CREATE2 proxy with the fixed salt `gusd.mock.usdt.v1` — the address is
-  deterministic per chain (Anvil: `0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64`)
+  deterministic per chain (Anvil: `0x940C170eEFb283457454a505a35E4CEF7E1d4B1c`)
   — whitelisted on the StableRouter, and paired with the reserve in a
   hook-free fee-100/tickSpacing-1 pool at 1:1, exactly the key the web's
   funding panel quotes.

@@ -322,11 +322,15 @@ export type TableDump = Record<string, string>;
 const ENTITY_TABLES = [
   "GpuAsset", "GpuCreated", "GpuFill", "GpuIssued", "GpuOracleState", "GpuToken",
   "GusdMinted", "GusdRedeemed", "HookPoolRegistered", "HookSwap",
+  "PerpClaimable", "PerpClaimableSettled", "PerpClaimed", "PerpEngineStats",
+  "PerpFundingAccrued", "PerpMarket", "PerpOrder", "PerpOrderCancelled",
+  "PerpOrderCreated", "PerpOrderExecuted", "PerpPosition", "PerpPositionClosed",
+  "PerpPositionDecreased", "PerpPositionIncreased", "PerpPositionLiquidated",
   "PriceConsumed", "SignerAccepted", "SignerTransferStarted", "PmDonate",
   "PmLiquidityModified", "PmPoolInitialized", "PmSwap", "Pool",
   "PoolLiquidityPosition", "PoolStatsHourly", "PosmPositionModified", "ProtocolStats",
   "ProtocolStatsDaily", "RevenueDistributed", "RouterBuy", "RouterSell",
-  "SgusdDeposited", "SgusdSeeded", "SgusdVault", "SgusdWithdrawn",
+  "SgusdDeposited", "SgusdEngineWithdrawal", "SgusdSeeded", "SgusdVault", "SgusdWithdrawn",
   "StableMintViaSwap", "StableRedeemViaSwap", "TokenTransfer", "UserEvent", "Wallet",
   "WalletBalance", "WalletCostBasis", "WalletVaultPosition",
 ] as const;

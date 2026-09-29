@@ -16,6 +16,7 @@ import type {
   EarnPort,
   MarketDataPort,
   MintPort,
+  PerpPort,
   TradingPort,
 } from "@/domain/ports";
 import { InertBridgePort } from "@/data/web3/bridge/inert";
@@ -146,6 +147,7 @@ export class MockServices {
   bridge: InertBridgePort;
   tx: WalletlessTxPort;
   actions: MockActionPort;
+  perp: PerpPortImpl;
 
   constructor() {
     const world = { state: initialWorld() };
@@ -157,6 +159,58 @@ export class MockServices {
     this.bridge = new InertBridgePort();
     this.tx = new WalletlessTxPort();
     this.actions = new MockActionPort();
+    this.perp = new PerpPortImpl();
+  }
+}
+
+/**
+ * The walletless perp port — market state, quotes, and positions all read
+ * null (nothing here simulates a market); acting refuses with the build's
+ * one honest voice.
+ */
+class PerpPortImpl {
+  async describeMarket(): Promise<null> {
+    return null;
+  }
+
+  async getClaimable(): Promise<null> {
+    return null;
+  }
+
+  async getPosition(): Promise<null> {
+    return null;
+  }
+
+  async listPendingOrders(): Promise<[]> {
+    return [];
+  }
+
+  async quoteOpen(): Promise<null> {
+    return null;
+  }
+
+  async quoteClose(): Promise<null> {
+    return null;
+  }
+
+  async open(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async close(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async armTrigger(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async cancelOrder(): Promise<never> {
+    throw new Error(NO_WALLET);
+  }
+
+  async claim(): Promise<never> {
+    throw new Error(NO_WALLET);
   }
 }
 

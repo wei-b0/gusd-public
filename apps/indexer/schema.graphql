@@ -57,6 +57,257 @@ type SgusdSeeded {
   assets: BigInt!
 }
 
+type SgusdEngineWithdrawal {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  to: String! @index
+  requested: BigInt!
+  paid: BigInt!
+}
+
+type PerpOrderCreated
+  @index(fields: ["account", "blockNumber", "logIndex"])
+  @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  orderId: BigInt! @index
+  account: String! @index
+  gpuId: String! @index
+  kind: Int!
+  isLong: Boolean!
+  sizeDeltaUsd: BigInt!
+  collateralDeltaUsd: BigInt!
+  acceptablePrice: BigInt!
+  triggerPrice: BigInt!
+  executionFee: BigInt!
+}
+
+type PerpOrderExecuted
+  @index(fields: ["account", "blockNumber", "logIndex"])
+  @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  orderId: BigInt! @index
+  executor: String!
+  account: String! @index
+  gpuId: String! @index
+  kind: Int!
+  isLong: Boolean!
+  execPrice: BigInt!
+  executionFeePaid: BigInt!
+  sizeDeltaUsd: BigInt!
+  realizedPnl: BigInt!
+  feesPaid: BigInt!
+  fundingNet: BigInt!
+  claimableDelta: BigInt!
+}
+
+type PerpOrderCancelled {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  orderId: BigInt! @index
+  account: String! @index
+  kind: Int!
+  feeRefunded: BigInt!
+  collateralRefunded: BigInt!
+}
+
+type PerpPositionIncreased
+  @index(fields: ["account", "gpuId", "blockNumber"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  gpuId: String! @index
+  isLong: Boolean!
+  newSizeUsd: BigInt!
+  newCollateral: BigInt!
+  newEntryPrice: BigInt!
+  fundingFeeCheckpoint: BigInt!
+  fundingCreditCheckpoint: BigInt!
+  borrowCheckpoint: BigInt!
+}
+
+type PerpPositionDecreased
+  @index(fields: ["account", "gpuId", "blockNumber"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  gpuId: String! @index
+  isLong: Boolean!
+  sizeDeltaUsd: BigInt!
+  realizedPnl: BigInt!
+  fundingNet: BigInt!
+  closeFee: BigInt!
+  claimableDelta: BigInt!
+  remainingSizeUsd: BigInt!
+  remainingCollateral: BigInt!
+  fundingFeeCheckpoint: BigInt!
+  fundingCreditCheckpoint: BigInt!
+  borrowCheckpoint: BigInt!
+}
+
+type PerpPositionClosed {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  gpuId: String! @index
+  isLong: Boolean!
+  execPrice: BigInt!
+}
+
+type PerpPositionLiquidated {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  gpuId: String! @index
+  isLong: Boolean!
+  executor: String! @index
+  execPrice: BigInt!
+  liquidationFee: BigInt!
+  badDebt: BigInt!
+  claimableDelta: BigInt!
+}
+
+type PerpClaimableSettled {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  gpuId: String! @index
+  amount: BigInt!
+}
+
+type PerpClaimed @index(fields: ["account", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  account: String! @index
+  to: String!
+  requested: BigInt!
+  paid: BigInt!
+}
+
+type PerpFundingAccrued @index(fields: ["gpuId", "blockNumber", "logIndex"]) {
+  id: ID!
+  blockNumber: Int!
+  logIndex: Int!
+  blockTimestamp: BigInt!
+  gpuId: String! @index
+  chargePerUnitLong: BigInt!
+  chargePerUnitShort: BigInt!
+  creditPerUnitLong: BigInt!
+  creditPerUnitShort: BigInt!
+  borrowPerUnit: BigInt!
+  updatedAtSec: BigInt!
+}
+
+type PerpMarket {
+  id: ID!
+  gpuId: String! @index
+  enabled: Boolean!
+  maxLeverageBps: Int!
+  maintenanceMarginBps: Int!
+  openFeeBps: Int!
+  closeFeeBps: Int!
+  liquidationFeeBps: Int!
+  fundingRatePpmPerSec: Int!
+  borrowRatePpmPerSec: Int!
+  maxOiUsd: BigInt!
+  minCollateralUsd: BigInt!
+  maxPositionUsd: BigInt!
+  openNotionalLong: BigInt!
+  openNotionalShort: BigInt!
+  fundingChargePerUnitLong: BigInt!
+  fundingChargePerUnitShort: BigInt!
+  fundingCreditPerUnitLong: BigInt!
+  fundingCreditPerUnitShort: BigInt!
+  borrowChargePerUnit: BigInt!
+  fundingUpdatedAtSec: BigInt!
+  createdAtSec: BigInt!
+}
+
+type PerpPosition @index(fields: ["wallet", "gpuId"]) {
+  id: ID!
+  wallet: String! @index
+  gpuId: String! @index
+  isLong: Boolean!
+  sizeUsd: BigInt!
+  collateral: BigInt!
+  entryPrice: BigInt!
+  fundingFeeCheckpoint: BigInt
+  fundingCreditCheckpoint: BigInt
+  borrowCheckpoint: BigInt
+  openedAtSec: BigInt
+  lastTouchedAtSec: BigInt
+  closedAtSec: BigInt
+  liquidatedAtSec: BigInt
+  liquidator: String
+  increaseCount: BigInt!
+  decreaseCount: BigInt!
+  realizedPnlGusd: BigInt!
+}
+
+type PerpOrder @index(fields: ["account", "createdAtSec"]) {
+  id: ID!
+  orderId: BigInt! @index
+  account: String! @index
+  gpuId: String! @index
+  kind: Int!
+  status: Int!
+  isLong: Boolean!
+  sizeDeltaUsd: BigInt!
+  collateralDeltaUsd: BigInt!
+  acceptablePrice: BigInt!
+  triggerPrice: BigInt!
+  executionFee: BigInt!
+  createdAtSec: BigInt!
+  resolvedAtSec: BigInt
+  executor: String
+  execPrice: BigInt
+  realizedPnl: BigInt
+  feesPaid: BigInt
+  fundingNet: BigInt
+  claimableDelta: BigInt
+}
+
+type PerpClaimable {
+  id: ID!
+  wallet: String! @index
+  balance: BigInt!
+  totalSettled: BigInt!
+  totalClaimed: BigInt!
+  settleCount: BigInt!
+  claimCount: BigInt!
+  lastActivityAtSec: BigInt
+}
+
+type PerpEngineStats {
+  id: ID!
+  minOrderDelaySec: BigInt
+  orderCount: BigInt!
+  liquidationCount: BigInt!
+  settledGusd: BigInt!
+  claimedGusd: BigInt!
+}
+
 type GpuCreated {
   id: ID!
   blockNumber: Int!

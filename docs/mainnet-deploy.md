@@ -155,7 +155,7 @@ no route, and funding rides the mint desk directly.
 
 - `Deploy.full runFull()` / `Demo` / `IndexerDemo` / `DeployMockOracle` —
   all four now revert on 4663.
-- The mock USDT (`0x0Ad4…0C64`) and its per-chain display pins in
+- The mock USDT (`0x940C…4B1c`) and its per-chain display pins in
   `stables.ts` — Anvil/testnet posture only; 4663 lists only real issuers.
 - Public anvil keys (`0xac09…`, `0x5de4…`, `0x7c85…`) signing anything.
 - The GpuQuoter's simulation floats — not a mock, but real parked collateral:

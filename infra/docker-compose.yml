@@ -34,7 +34,7 @@ services:
       ENVIO_PG_USER: gusd
       ENVIO_PG_PASSWORD: gusd
       ENVIO_PG_DATABASE: gusd
-      ENVIO_PG_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v1}
+      ENVIO_PG_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v2}
       ENVIO_PG_SSL_MODE: "false"
       ENVIO_HASURA: "false"
       ENVIO_INDEXER_PORT: 9898
@@ -115,7 +115,7 @@ services:
       PORT: 8080
       HYPERBOLIC_API_KEY: ${HYPERBOLIC_API_KEY:-}
       PRIMEINTELLECT_API_KEY: ${PRIMEINTELLECT_API_KEY:-}
-      INDEXER_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v1}
+      INDEXER_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v2}
       INDEXER_INTERNAL_URL: http://indexer:9898
       INDEXER_STATUS_RPC_URL: ${INDEXER_STATUS_RPC_URL:-http://host.docker.internal:8545}
       INDEXER_CHAIN_ID: ${INDEXER_CHAIN_ID:-31337}
@@ -185,6 +185,51 @@ services:
         condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
+    networks:
+      - gusd-internal
+
+  # Keeper — the perp executor and the ONLY backend service that broadcasts:
+  # the oracle candidate stream → offline evaluation against the indexer's
+  # perp entities → one attestation fetch (only when work exists) → one sim →
+  # one broadcast from a funded hot EOA. Defaults mirror the attestor's local
+  # posture: anvil account #1's key — a PUBLIC dev key, funded by the dev
+  # chain, never a live-chain key. The engine address comes from the mounted
+  # deployment record at boot, so `docker compose restart keeper` re-targets
+  # a redeploy without an image rebuild. No healthcheck: no HTTP surface —
+  # restart: unless-stopped covers crash-restart, and the hot key's gas floor
+  # is alarmed in the keeper's own logs (health.ts).
+  keeper:
+    build:
+      context: ..
+      dockerfile: apps/keeper/Dockerfile
+    image: gusd-keeper:local
+    container_name: gusd-keeper
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://gusd:gusd@postgres:5432/gusd
+      INDEXER_SCHEMA: ${INDEXER_SCHEMA:-gusd_index_envio_docker_v2}
+      KEEPER_RPC_URL: ${KEEPER_RPC_URL:-http://host.docker.internal:8545}
+      KEEPER_CHAIN_ID: ${KEEPER_CHAIN_ID:-31337}
+      # Anvil account #1 — a public dev key, valid ONLY on the local test
+      # posture. Never a live-chain keeper key.
+      KEEPER_PRIVATE_KEY: ${KEEPER_PRIVATE_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}
+      ORACLE_HTTP_URL: http://oracle:8080
+      ORACLE_WS_URL: ws://oracle:8080/v1/stream
+      KEEPER_DEPLOYMENTS_DIR: /repo/apps/contracts/deployments
+    volumes:
+      - ../apps/contracts/deployments:/repo/apps/contracts/deployments:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      oracle:
+        condition: service_healthy
+      # started, NOT healthy — same reasoning as the oracle's dependency.
+      indexer:
+        condition: service_started
     networks:
       - gusd-internal
 

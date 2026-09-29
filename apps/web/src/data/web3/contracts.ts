@@ -26,6 +26,7 @@ import { V4_QUOTER_ABI } from "./abis/v4_quoter";
 import { STATE_VIEW_ABI } from "./abis/state_view";
 import { GPU_MARKET_LIQUIDITY_ABI } from "./abis/gpu_market_liquidity";
 import { GPU_TOKEN_ABI } from "./abis/gpu_token";
+import { GPU_PERP_ENGINE_ABI } from "./abis/gpu_perp_engine";
 import { ERC20_ABI } from "./abis/erc20";
 
 export type { ProtocolAddresses };
@@ -130,6 +131,12 @@ export function erc20Client(address: Address, client?: PublicClient): Erc20Contr
   return contract(address, ERC20_ABI, client);
 }
 
+/** The perp engine — gUSD-settled GPU perpetuals over the pull oracle. */
+export type PerpEngineContract = ContractFor<typeof GPU_PERP_ENGINE_ABI>;
+function perpEngineContract(client?: PublicClient): PerpEngineContract {
+  return contract(contractAddresses().perpEngine, GPU_PERP_ENGINE_ABI, client);
+}
+
 export interface ContractSet {
   gusd: GusdContract;
   /** The chain's reserve asset (the gUSD underlying). */
@@ -147,6 +154,8 @@ export interface ContractSet {
   stateView: StateViewContract;
   /** The POL inventory vault (bid/ask capacity behind the hook's fills). */
   marketLiquidity: MarketLiquidityContract;
+  /** The perp engine — gUSD-settled GPU perpetuals over the pull oracle. */
+  perpEngine: PerpEngineContract;
   /** The addresses themselves — for allowance targets and pool keys. */
   addresses: ProtocolAddresses;
 }
@@ -176,6 +185,7 @@ export function getContracts(chainId?: number): ContractSet {
     quoter: quoterContract(client),
     stateView: stateViewContract(client),
     marketLiquidity: marketLiquidityContract(client),
+    perpEngine: perpEngineContract(client),
     addresses,
   };
   sets.set(id, set);

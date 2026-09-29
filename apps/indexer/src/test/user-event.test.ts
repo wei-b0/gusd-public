@@ -37,6 +37,9 @@ const EXPECTED_NAMES = [
   "Sell",
   "Deposit",
   "Withdraw",
+  "PerpOrderCreated",
+  "PerpOrderExecuted",
+  "PerpClaimed",
 ] as const;
 
 describe("INDEXED_EVENT_NAMES", () => {
@@ -184,6 +187,67 @@ describe("projectUserEvent", () => {
     });
     expect(row.user).toBe(ALICE.toLowerCase());
     expect(row.data.receiver).toBe(BOB.toLowerCase());
+  });
+
+  it("Perp events resolve the user to `account`", () => {
+    const created = projectUserEvent({
+      keys: KEYS,
+      contract: (`0x${"pe".repeat(20)}`) as Address,
+      event: "PerpOrderCreated",
+      user: ALICE,
+      args: {
+        orderId: 1n,
+        account: ALICE,
+        gpuId: H100_GPU_ID,
+        kind: 0n,
+        isLong: true,
+        sizeDeltaUsd: 2_000_000_000n,
+        collateralDeltaUsd: 1_000_000_000n,
+        acceptablePrice: 37_500n,
+        triggerPrice: 0n,
+        executionFee: 10n,
+      },
+      txHash: TX,
+    });
+    expect(created.user).toBe(ALICE.toLowerCase());
+    expect(created.data.kind).toBe("0");
+    expect(created.data.sizeDeltaUsd).toBe("2000000000");
+
+    const executed = projectUserEvent({
+      keys: KEYS,
+      contract: (`0x${"pe".repeat(20)}`) as Address,
+      event: "PerpOrderExecuted",
+      user: ALICE,
+      args: {
+        orderId: 1n,
+        executor: BOB,
+        account: ALICE,
+        gpuId: H100_GPU_ID,
+        kind: 0n,
+        isLong: true,
+        execPrice: 30_000n,
+        executionFeePaid: 10n,
+        sizeDeltaUsd: 2_000_000_000n,
+        realizedPnl: 0n,
+        feesPaid: 2_000n,
+        fundingNet: 0n,
+        claimableDelta: 0n,
+      },
+      txHash: TX,
+    });
+    expect(executed.user).toBe(ALICE.toLowerCase());
+    expect(executed.data.execPrice).toBe("30000");
+
+    const claimed = projectUserEvent({
+      keys: KEYS,
+      contract: (`0x${"pe".repeat(20)}`) as Address,
+      event: "PerpClaimed",
+      user: ALICE,
+      args: { account: ALICE, to: BOB, requested: 500n, paid: 500n },
+      txHash: TX,
+    });
+    expect(claimed.user).toBe(ALICE.toLowerCase());
+    expect(claimed.data.paid).toBe("500");
   });
 
   it("carries the (chainId, blockNumber, logIndex, blockTimestamp) keys and lowercased txHash", () => {

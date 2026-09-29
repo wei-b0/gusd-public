@@ -135,6 +135,58 @@ const ERROR_VOICE: Record<string, { voice: string; retryable: boolean }> = {
   },
   // GPUToken
   OnlyIssuer: { voice: GENERIC_RETRY, retryable: true },
+  // GpuPerpEngine
+  UnknownMarket: {
+    voice: "No perp market exists for this asset yet — markets open when the protocol registers them.",
+    retryable: false,
+  },
+  MarketDisabled: {
+    voice: "This perp market is disabled by the protocol right now.",
+    retryable: false,
+  },
+  BelowMinCollateral: {
+    voice: "That collateral is under this market's minimum — raise the amount.",
+    retryable: true,
+  },
+  LeverageTooHigh: {
+    voice: "That leverage exceeds this market's cap — lower the leverage.",
+    retryable: true,
+  },
+  MaxOiExceeded: {
+    voice: "This market is at its open-interest cap — try again when room frees up.",
+    retryable: true,
+  },
+  PositionTooLarge: {
+    voice: "That position exceeds this market's per-position cap — size down.",
+    retryable: true,
+  },
+  ExecutionFeeTooLow: { voice: GENERIC_RETRY, retryable: true },
+  NoPosition: {
+    voice: "There's no position here to close — it may have settled already.",
+    retryable: false,
+  },
+  SizeExceedsPosition: {
+    voice: "This close is larger than the position holds — size it down.",
+    retryable: true,
+  },
+  UnacceptablePrice: {
+    voice: "The report price sat outside the order's bound — the order stays armed and the keeper retries next epoch.",
+    retryable: true,
+  },
+  TriggerNotMet: { voice: GENERIC_RETRY, retryable: true },
+  NotLiquidatable: { voice: GENERIC_RETRY, retryable: true },
+  NothingToClaim: {
+    voice: "There's nothing settled to claim right now.",
+    retryable: false,
+  },
+  OrderDelayPending: { voice: GENERIC_RETRY, retryable: true },
+  OrderNotPending: { voice: GENERIC_RETRY, retryable: true },
+  UnknownOrder: { voice: GENERIC_RETRY, retryable: true },
+  NotOrderAccount: { voice: GENERIC_RETRY, retryable: true },
+  ZeroTriggerPrice: { voice: "Enter a trigger price greater than zero.", retryable: true },
+  ZeroAcceptablePrice: { voice: GENERIC_RETRY, retryable: true },
+  UnexpectedTriggerPrice: { voice: GENERIC_RETRY, retryable: true },
+  UnexpectedAcceptablePrice: { voice: GENERIC_RETRY, retryable: true },
   // OpenZeppelin ERC-20 (from any token in the path)
   ERC20InsufficientBalance: {
     voice: "The wallet's balance is too low for this order — check the amount.",

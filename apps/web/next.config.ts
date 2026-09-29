@@ -48,6 +48,9 @@ const nextConfig: NextConfig = {
     { source: "/data", destination: "/oracle?tab=developers", permanent: true },
     { source: "/markets/:asset", destination: "/terminal/:asset", permanent: true },
     { source: "/terminal", destination: "/terminal/H100", permanent: true },
+    // `/perps` has no unbound form either — the desk is pre-bound to one
+    // market, so the bare link lands on the default perp desk.
+    { source: "/perps", destination: "/perps/H100", permanent: true },
   ],
 };
 

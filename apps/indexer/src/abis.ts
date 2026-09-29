@@ -18,12 +18,42 @@ export const gusdAbi = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ]);
 
-/** sgUSD — ERC4626 stake/unstake, vault seeding, raw transfers. */
+/** sgUSD — ERC4626 stake/unstake, vault seeding, raw transfers, and the
+ *  perp-underwriting extension (engine wiring, reservation floor, the
+ *  engine's claim payouts through perpWithdraw). */
 export const sgusdAbi = parseAbi([
   "event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)",
   "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
   "event Seeded(uint256 assets)",
   "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event PerpEngineSet(address indexed engine)",
+  "event PerpReservedUpdated(uint256 reserved)",
+  "event EngineWithdrawal(address indexed to, uint256 requested, uint256 paid)",
+  "event EngineWithdrawalCapSet(uint256 cap)",
+]);
+
+/** GpuPerpEngine — gUSD-settled GPU perpetuals. The MarketParams tuple is
+ *  passed through whole (one decoder contract for both market events); the
+ *  PositionIncreased/Decreased tail fields are the post-touch funding
+ *  checkpoints (settle() re-snapshot or fresh-position pin, clamp rewinds
+ *  included) so the keeper can compute debt offline. */
+const marketParamsTuple =
+  "(uint32 maxLeverageBps,uint32 maintenanceMarginBps,uint32 openFeeBps,uint32 closeFeeBps,uint32 liquidationFeeBps,uint32 fundingRatePpmPerSec,uint32 borrowRatePpmPerSec,uint128 maxOiUsd,uint128 minCollateralUsd,uint128 maxPositionUsd)";
+export const perpEngineAbi = parseAbi([
+  `event MarketCreated(bytes32 indexed gpuId, ${marketParamsTuple} params)`,
+  `event MarketParamsUpdated(bytes32 indexed gpuId, ${marketParamsTuple} params)`,
+  "event MarketEnabled(bytes32 indexed gpuId, bool enabled)",
+  "event MinOrderDelaySet(uint32 seconds_)",
+  "event OrderCreated(uint256 indexed orderId, address indexed account, bytes32 indexed gpuId, uint8 kind, bool isLong, uint128 sizeDeltaUsd, uint128 collateralDeltaUsd, uint128 acceptablePrice, uint128 triggerPrice, uint96 executionFee)",
+  "event OrderExecuted(uint256 indexed orderId, address indexed executor, address indexed account, bytes32 gpuId, uint8 kind, bool isLong, uint256 execPrice, uint256 executionFeePaid, uint256 sizeDeltaUsd, int256 realizedPnl, uint256 feesPaid, int256 fundingNet, uint256 claimableDelta)",
+  "event OrderCancelled(uint256 indexed orderId, address indexed account, uint8 kind, uint256 feeRefunded, uint256 collateralRefunded)",
+  "event PositionIncreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 newSizeUsd, uint256 newCollateral, uint256 newEntryPrice, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint)",
+  "event PositionDecreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 sizeDeltaUsd, int256 realizedPnl, int256 fundingNet, uint256 closeFee, uint256 claimableDelta, uint256 remainingSizeUsd, uint256 remainingCollateral, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint)",
+  "event PositionClosed(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 execPrice)",
+  "event PositionLiquidated(address indexed account, bytes32 indexed gpuId, bool isLong, address indexed executor, uint256 execPrice, uint256 liquidationFee, uint256 badDebt, uint256 claimableDelta)",
+  "event ClaimableSettled(address indexed account, bytes32 indexed gpuId, uint256 amount)",
+  "event Claimed(address indexed account, address indexed to, uint256 requested, uint256 paid)",
+  "event FundingAccrued(bytes32 indexed gpuId, uint128 chargePerUnitLong, uint128 chargePerUnitShort, uint128 creditPerUnitLong, uint128 creditPerUnitShort, uint128 borrowPerUnit, uint64 updatedAt)",
 ]);
 
 /** GPUIssuance — GPU registration, primary issuance, issuance config. */

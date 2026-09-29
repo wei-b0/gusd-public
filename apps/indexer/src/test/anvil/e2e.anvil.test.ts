@@ -129,6 +129,8 @@ d("indexer onchain suites (gated)", () => {
       // under the four-SKU universe. Recomputed each time the demo's shape
       // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, and the
       // two-phase rework (runReprice extraction) moved it to 10,397.39.
+      // The perp LP seed + alice's perp-demo stake added two more user
+      // deposits (seed, churn stake, LP seed, alice = 4).
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -136,7 +138,7 @@ d("indexer onchain suites (gated)", () => {
         [],
       );
       expect(closing).toHaveLength(1);
-      expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
+      expect(closing[0]!.deposit_count).toBe("4"); // seed + churn stake + LP seed + alice
       expect(closing[0]!.revenue_gusd).toBe("10397386590");
 
       const swaps = await schemaQuery<{ count: string }>(
@@ -193,6 +195,54 @@ d("indexer onchain suites (gated)", () => {
       expect(BigInt(vault[0]!.revenue_gusd)).toBe(BigInt(sums[0]!.revenue));
     },
     300_000,
+  );
+
+  it(
+    "projects the perp book from Deploy.full's pending demo orders",
+    async () => {
+      // runFull arms the perp demo (alice's H100 long + its TP) but the
+      // execution lives in runReprice — a second invocation this suite does
+      // not run — so the projected book is markets + pending orders and
+      // nothing else. This still exercises the MarketParams tuple decode and
+      // the order events end-to-end; the executed-side handlers get their
+      // coverage from the web anvil suite's perp lifecycle.
+      const markets = await schemaQuery<{ gpu_id: string; max_leverage_bps: string }>(
+        `select gpu_id, max_leverage_bps from "gusd_index_envio_e2e_a"."PerpMarket" order by gpu_id`,
+        [],
+      );
+      expect(markets).toHaveLength(4); // the four launch SKUs
+      for (const market of markets) {
+        expect(market.max_leverage_bps).toBe("200000"); // 20x — Deploy's default
+      }
+
+      const orders = await schemaQuery<{
+        kind: string;
+        status: string;
+        size_delta_usd: string;
+        execution_fee: string;
+      }>(
+        `select kind, status, size_delta_usd, execution_fee
+           from "gusd_index_envio_e2e_a"."PerpOrder" order by order_id`,
+        [],
+      );
+      expect(orders).toHaveLength(2); // the market increase + its TP
+      expect(Number(orders[0]!.kind)).toBe(0); // MarketIncrease
+      expect(Number(orders[1]!.kind)).toBe(3); // TakeProfit
+      expect(orders.every((o) => o.status === "1")).toBe(true); // all Pending
+
+      const positions = await schemaQuery<{ count: string }>(
+        `select count(*)::text as count from "gusd_index_envio_e2e_a"."PerpPosition"`,
+        [],
+      );
+      expect(positions[0]!.count).toBe("0");
+
+      const stats = await schemaQuery<{ order_count: string }>(
+        `select order_count from "gusd_index_envio_e2e_a"."PerpEngineStats"`,
+        [],
+      );
+      expect(stats[0]!.order_count).toBe("2");
+    },
+    120_000,
   );
 
   it(

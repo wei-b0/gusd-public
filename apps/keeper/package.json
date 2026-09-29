@@ -1,0 +1,32 @@
+{
+  "name": "@gusd/keeper",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "check-types": "tsc -p tsconfig.check.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@gusd/attestor-client": "workspace:*",
+    "@gusd/types": "workspace:*",
+    "pg": "^8.16.0",
+    "pino": "^9.7.0",
+    "viem": "^2.56.3",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@gusd/eslint-config": "workspace:*",
+    "@gusd/typescript-config": "workspace:*",
+    "@types/node": "26.4.1",
+    "@types/pg": "^8.15.4",
+    "@types/ws": "^8.18.1",
+    "eslint": "10.9.1",
+    "tsx": "^4.20.0",
+    "typescript": "7.0.2",
+    "vitest": "^3.2.7"
+  }
+}

@@ -69,6 +69,8 @@ export function spenderAddress(kind: SpenderKind): Address {
       return addresses.sgusd as Address;
     case "stableRouter":
       return addresses.stableRouter as Address;
+    case "perpEngine":
+      return addresses.perpEngine as Address;
   }
 }
 
