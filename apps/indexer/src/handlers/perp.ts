@@ -292,6 +292,11 @@ handlers.on("GpuPerpEngine:PositionIncreased", async ({ event, context }) => {
     borrowCheckpoint: a.borrowCheckpoint,
     openedAtSec: keys.blockTimestamp,
     lastTouchedAtSec: keys.blockTimestamp,
+    // Full zero defaults so a fresh insert never omits a non-null column
+    // (same discipline as bumpClaimable) — a new position has never
+    // decreased and realizes nothing yet.
+    decreaseCount: ZERO,
+    realizedPnlGusd: ZERO,
     increaseCount: (existing?.increaseCount ?? 0n) + 1n,
   };
   await context.db
@@ -339,10 +344,18 @@ handlers.on("GpuPerpEngine:PositionDecreased", async ({ event, context }) => {
     isLong: a.isLong,
     sizeUsd: a.remainingSizeUsd,
     collateral: a.remainingCollateral,
+    // The placeholder triple for the never-seen-before case (sync starting
+    // after the open): entry unknown (ZERO — the creditPositionPnl fresh-row
+    // convention), zero counts, zero realized pnl — the conflict branch on
+    // an existing row overwrites only the event's own fields and never
+    // touches entry/increaseCount.
+    entryPrice: ZERO,
     fundingFeeCheckpoint: a.fundingFeeCheckpoint,
     fundingCreditCheckpoint: a.fundingCreditCheckpoint,
     borrowCheckpoint: a.borrowCheckpoint,
     lastTouchedAtSec: keys.blockTimestamp,
+    increaseCount: ZERO,
+    realizedPnlGusd: ZERO,
     decreaseCount: (existing?.decreaseCount ?? 0n) + 1n,
   };
   await context.db

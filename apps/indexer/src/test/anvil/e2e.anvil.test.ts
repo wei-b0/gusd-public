@@ -99,6 +99,15 @@ beforeAll(async () => {
   // Deploy + Demo pair drifted apart — minimal Deploy deliberately leaves
   // the quoter floats unfunded ("Floats are funded by Deploy.full"), so
   // Demo's first quote reverts NoFloat on a fresh chain.
+  //
+  // The deploy runs on the DAY grid (AGENTS.md recipe) — the sim's report
+  // signatures stamp sim time and broadcast blocks stamp wall time, and on
+  // the 60s default grid that gap reverts UnknownGpuEpoch mid-broadcast
+  // when the attempt crosses an epoch boundary (observed flaky: green one
+  // run, Transaction Failure the next). runForgeScript spreads
+  // process.env, so these reach the forge run.
+  process.env.ORACLE_EPOCH_LENGTH = "86400";
+  process.env.ORACLE_MAX_OBSERVATION_AGE = "86400";
   await runForgeScript("script/Deploy.full.s.sol", "runFull()");
   pg = await connectPg();
   await dropScratchSchemas(pg);
@@ -127,10 +136,13 @@ d("indexer onchain suites (gated)", () => {
       // number two independent Deploy.full replays landed — the manual
       // dev-chain deploy and this suite's own) — 10,397.39 gUSD vault share
       // under the four-SKU universe. Recomputed each time the demo's shape
-      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, and the
-      // two-phase rework (runReprice extraction) moved it to 10,397.39.
-      // The perp LP seed + alice's perp-demo stake added two more user
-      // deposits (seed, churn stake, LP seed, alice = 4).
+      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, the
+      // two-phase rework (runReprice extraction) moved it to 10,397.39, and
+      // the perp LP seed's deposit at the deployer's rate seeded 5,000.00 of
+      // share-price revenue → 15,397.39. The LP seed added one more user
+      // deposit; alice's perp-demo leg became engine escrow (createOrder),
+      // not an sgUSD deposit — the two-stage order rework dropped her from
+      // this count (seed, churn stake, LP seed = 3).
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -138,8 +150,8 @@ d("indexer onchain suites (gated)", () => {
         [],
       );
       expect(closing).toHaveLength(1);
-      expect(closing[0]!.deposit_count).toBe("4"); // seed + churn stake + LP seed + alice
-      expect(closing[0]!.revenue_gusd).toBe("10397386590");
+      expect(closing[0]!.deposit_count).toBe("3"); // seed + churn stake + LP seed
+      expect(closing[0]!.revenue_gusd).toBe("15397386590"); // 10,397.39 + the LP seed's 5,000 rate-seeded revenue
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_envio_e2e_a"."PmSwap"`,
@@ -212,7 +224,10 @@ d("indexer onchain suites (gated)", () => {
       );
       expect(markets).toHaveLength(4); // the four launch SKUs
       for (const market of markets) {
-        expect(market.max_leverage_bps).toBe("200000"); // 20x — Deploy's default
+        expect(market.max_leverage_bps).toBe(200000); // 20x — Deploy's default
+        // Int! params land in int4 columns — pg returns those as numbers, so
+        // this assert compares numerically (the ::text probes below cover the
+        // int8/string grain).
       }
 
       const orders = await schemaQuery<{
@@ -225,10 +240,12 @@ d("indexer onchain suites (gated)", () => {
            from "gusd_index_envio_e2e_a"."PerpOrder" order by order_id`,
         [],
       );
-      expect(orders).toHaveLength(2); // the market increase + its TP
+      expect(orders).toHaveLength(1); // the market increase — runFull arms only
+      // the open now; the TP arm lives in runReprice (the position has to
+      // exist first), and this suite does not run runReprice.
       expect(Number(orders[0]!.kind)).toBe(0); // MarketIncrease
-      expect(Number(orders[1]!.kind)).toBe(3); // TakeProfit
-      expect(orders.every((o) => o.status === "1")).toBe(true); // all Pending
+      // status is Int! (int4 → numbers, like the Int! params above)
+      expect(orders.every((o) => Number(o.status) === 1)).toBe(true); // all Pending
 
       const positions = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_envio_e2e_a"."PerpPosition"`,
@@ -240,7 +257,7 @@ d("indexer onchain suites (gated)", () => {
         `select order_count from "gusd_index_envio_e2e_a"."PerpEngineStats"`,
         [],
       );
-      expect(stats[0]!.order_count).toBe("2");
+      expect(stats[0]!.order_count).toBe("1"); // the increase — the TP arms in runReprice
     },
     120_000,
   );

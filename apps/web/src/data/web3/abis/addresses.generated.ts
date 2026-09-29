@@ -57,8 +57,8 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
     "marketLiquidity": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
     "oracle": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     "oracleAttestor": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "oracleEpochLength": 86400,
-    "oracleMaxObservationAge": 86400,
+    "oracleEpochLength": 60,
+    "oracleMaxObservationAge": 300,
     "permit2": "0x9bd03768a7DCc129555dE410FF8E85528A4F88b5",
     "perpEngine": "0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1",
     "poolManager": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
@@ -71,7 +71,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
       "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
       "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c"
     ],
-    "startBlock": 0,
+    "startBlock": 1,
     "stateView": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
     "underlying": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
     "weth": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318"

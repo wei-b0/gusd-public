@@ -17,9 +17,11 @@ const UP_ANVIL = process.env.UP_ANVIL ?? "http://127.0.0.1:8545";
 const nextConfig: NextConfig = {
   // The dev-tools badge photobombs review rasters; the terminal ships clean.
   devIndicators: false,
-  // The stack is reviewed from phones on the LAN (192.168.0.103:3000); Next 16
-  // blocks cross-origin dev requests unless the host is allow-listed here.
-  allowedDevOrigins: ["192.168.0.103"],
+  // The stack is reviewed from phones on the LAN (192.168.0.103:3000) and
+  // from the dev VM's public IP (130.210.50.190:3000 — the remote manual-test
+  // posture); Next 16 blocks cross-origin dev requests unless the host is
+  // allow-listed here.
+  allowedDevOrigins: ["192.168.0.103", "130.210.50.190"],
   rewrites: DEV_SAME_ORIGIN
     ? async () => [
         // JSON-RPC lives at "/" on anvil — the /rpc prefix is this proxy's
