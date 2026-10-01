@@ -2,9 +2,11 @@ import type { PricingTier } from "@gusd/types";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
 
 /**
- * Methodology v0.4.0 configuration. Thresholds live in config, never in
+ * Methodology v0.4.1 configuration. Thresholds live in config, never in
  * code: a methodology change is a new config + new version, validated by the
- * exhaustive allowlist below before it can drive a computation. v0.4.0 keeps
+ * exhaustive allowlist below before it can drive a computation. v0.4.1 adds
+ * an H100 thin-panel override (akash + cudo promoted, quorum 3) after
+ * hyperbolic's H100 book went quiet; everything else is carried from v0.4.0.
  * per-panel overrides so thin panels can settle — promoted COLLECTED
  * principals on a reduced quorum, with the engine capping override panels at
  * `degraded`.
@@ -135,7 +137,7 @@ export interface PanelOverride {
 }
 
 export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
-  version: "0.4.0",
+  version: "0.4.1",
   screening: {
     minProvidersForScreen: 4,
     madScale: 1.4826,
@@ -166,10 +168,20 @@ export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
   // ±0.05% of the computed anchor (mean-reverting, deterministic). Confessed
   // on the methodology page; the anchor is never moved by it.
   movement: { allowancePct: 0.0005, slotMs: 30_000, reversion: 0.7, stepPct: 0.4 },
-  // The v0.4.0 launch universe (H100/H200/L40S/RTX 4090). H100/H200 keep the
-  // full global quorum; the two thin panels run on reduced quorums over named
-  // principals and are capped at `degraded` by the engine.
+  // The v0.4.0 launch universe (H100/H200/L40S/RTX 4090). H200 keeps the
+  // full global quorum; the three thin panels run on reduced quorums over
+  // named principals and are capped at `degraded` by the engine.
   panelOverrides: {
+    H100_PANEL_V1: {
+      // Hyperbolic's H100 book — the fourth eligible feed — went quiet on
+      // 2026-09-29, leaving vast/lium/runpod against a quorum of four and
+      // withholding the flagship panel. Akash and Cudo carry clean, live
+      // H100 rate cards ($2.56 / $1.79 flat) to restore the cushion; the
+      // executable floor stays on (vast + lium are rentable). Temporary:
+      // revert to the global gates once hyperbolic's H100 listings return.
+      additionalProviders: ["akash", "cudo"],
+      gates: { minProviders: 3 },
+    },
     L40S_PANEL_V1: {
       // Vast's verified+rentable L40S book is too thin to settle alone and
       // RunPod lists without stock; DataCrunch/Scaleway/CoreWeave carry live

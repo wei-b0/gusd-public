@@ -1,8 +1,8 @@
-# gUSD Index Methodology — v0.4.0 (four panels, per-panel quorums)
+# gUSD Index Methodology — v0.4.1 (four panels, per-panel quorums)
 
 The index is a weighted mean of capped weights over per-provider medians,
 guarded by screens and gates, published only when every gate passes. This
-document specifies v0.4.0 exactly as configured in
+document specifies v0.4.1 exactly as configured in
 `packages/pricing-engine/src/config.ts` (`DEFAULT_METHODOLOGY_CONFIG`) and
 validated by an exhaustive allowlist — thresholds live in config, never in
 code, and a methodology change is a **new version row**, never a mutation.
@@ -30,6 +30,12 @@ their historical rows, but nothing outside the four settles or publishes.
   (temporary — revert once executable L40S books deepen); RTX 4090 promotes
   Akash alongside Vast + RunPod at quorum 3 with the executable floor kept.
   H100/H200 settle under the untouched global methodology.
+- **v0.4.1** — H100 thin-panel override: hyperbolic's H100 book went quiet
+  on 2026-09-29, leaving three eligible contributors against a quorum of
+  four and withholding the flagship panel. Akash and Cudo are promoted for
+  H100 only (clean, live rate cards) and the panel quorum drops to 3 with
+  the executable floor kept. Temporary — revert to the global gates once
+  hyperbolic's H100 listings return.
 
 ## Design principles
 
@@ -55,11 +61,11 @@ their historical rows, but nothing outside the four settles or publishes.
 7. **A parser change must fail loudly.** Zero parsed rows from an HTTP 200 is
    a failure, not an empty success.
 
-## Configuration (v0.4.0)
+## Configuration (v0.4.1)
 
 ```jsonc
 {
-  "version": "0.4.0",
+  "version": "0.4.1",
   "screening": {
     "minProvidersForScreen": 4,   // MAD screen needs ≥4 contributions
     "madScale": 1.4826,           // MAD → σ-consistent scale
@@ -89,9 +95,11 @@ their historical rows, but nothing outside the four settles or publishes.
   // v0.3.0: the publishing movement allowance — ±0.05% around the anchor.
   "movement": { "allowancePct": 0.0005, "slotMs": 30_000,
                 "reversion": 0.7, "stepPct": 0.4 },
-  // v0.4.0: per-panel patches for the two thin launch panels. Only
+  // v0.4.0/0.4.1: per-panel patches for the three thin launch panels. Only
   // relaxations validate; unknown panel ids and empty patches are rejected.
   "panelOverrides": {
+    "H100_PANEL_V1":     { "additionalProviders": ["akash", "cudo"],
+                           "gates": { "minProviders": 3 } },
     "L40S_PANEL_V1":     { "additionalProviders": ["datacrunch", "scaleway", "coreweave"],
                            "gates": { "minProviders": 3, "requireExecutable": false } },
     "RTX_4090_PANEL_V1": { "additionalProviders": ["akash"],
@@ -100,15 +108,18 @@ their historical rows, but nothing outside the four settles or publishes.
 }
 ```
 
-### Per-panel overrides (v0.4.0)
+### Per-panel overrides (v0.4.1)
 
 | Panel | Promoted principals | Gates patch | Why |
 |---|---|---|---|
+| `H100_PANEL_V1` | akash, cudo | `minProviders: 3` (executable floor kept) | Hyperbolic's H100 book — the fourth eligible feed — went quiet on 2026-09-29, leaving vast/lium/runpod against a quorum of four and withholding the flagship panel. Akash ($2.56 flat) and Cudo ($1.79 flat) carry clean, live H100 rate cards to restore the cushion. **Temporary** — revert to the global gates once hyperbolic's H100 listings return. |
 | `L40S_PANEL_V1` | datacrunch, scaleway, coreweave | `minProviders: 3`, `requireExecutable: false` | Vast's verified+rentable L40S book is too thin to settle alone and RunPod lists without stock; the three principals carry live L40S rate cards. **Temporary** — revert to the global gates once executable L40S order books deepen. |
 | `RTX_4090_PANEL_V1` | akash | `minProviders: 3`, `requireExecutable: true` | Vast + RunPod are executable; Akash's `rtx4090` rate card completes the quorum without giving up the executable floor. |
 
-H100 and H200 have no override: they settle under the global gates — quorum
-4, executable required — exactly as v0.1.0 defined them.
+H200 has no override: it settles under the global gates — quorum 4,
+executable required — exactly as v0.1.0 defined it. H100's v0.4.1 override
+drops only the quorum (4 → 3) and names two promoted principals; the
+executable floor and every other gate are untouched.
 
 ## Stage 1 — per-provider aggregation (`aggregateProviderPrice`)
 
@@ -242,7 +253,7 @@ contributor range; absurd values always screened; flooding invariance; scale
 invariance; order irrelevance; weight cap holds; failed gate blocks
 publication; dispersion ≥ 0; screening monotone in its own criterion.
 
-## Known limitations (documented, not fixed, in v0.4.0)
+## Known limitations (documented, not fixed, in v0.4.1)
 
 - **Gate flicker**: a market sitting on a threshold can flip healthy ↔
   withheld between computations. Hysteresis is planned future work.

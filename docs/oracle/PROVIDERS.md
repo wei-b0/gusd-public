@@ -7,17 +7,18 @@ index), `COLLECTED` (stored for coverage, zero settlement weight),
 `WATCHDOG_ONLY` (comparison feeds only — structurally excluded from the
 index), `EXCLUDED`.
 
-## Settlement panels (v0.4.0 — the launch four)
+## Settlement panels (v0.4.1 — the launch four)
 
-| Panel | GPU id | Eligible providers | Per-panel quorum (v0.4.0) |
+| Panel | GPU id | Eligible providers | Per-panel quorum (v0.4.1) |
 |---|---|---|---|
-| H100_PANEL_V1 | H100_SXM_80GB | vast, lium, hyperbolic, runpod | global (4) |
+| H100_PANEL_V1 | H100_SXM_80GB | vast, lium, hyperbolic, runpod + akash, cudo (panel-only) | 3, executable floor kept (temporary — hyperbolic's H100 book went quiet 2026-09-29) |
 | H200_PANEL_V1 | H200_141GB | vast, lium, hyperbolic, runpod | global (4) |
 | L40S_PANEL_V1 | L40S_48GB | vast, lium, hyperbolic, runpod + datacrunch, scaleway, coreweave (panel-only) | 3, executable floor lifted (temporary) |
 | RTX_4090_PANEL_V1 | RTX_4090_24GB | vast, lium, hyperbolic, runpod + akash (panel-only) | 3, executable floor kept |
 
-The flagship SXM panels keep the full executable quorum (order-book makers
-vast/lium/hyperbolic are the only `executable` contributors). L40S's vast
+The flagship SXM panels keep the executable floor. H100's v0.4.1 override
+promotes Akash and Cudo (clean, live rate cards) and drops the quorum to 3 —
+**temporary**, to be reverted once hyperbolic's H100 listings return. L40S's vast
 verified+rentable book is too thin to settle alone and RunPod lists without
 stock, so its override promotes named rate-card principals and lifts the
 executable floor — **temporary**, to be reverted once executable L40S order

@@ -5,6 +5,7 @@ import { CATALOG } from "@gusd/gpu-catalog";
 import {
   DEFAULT_METHODOLOGY_CONFIG,
   computeIndex,
+  effectiveConfigFor,
   madScreen,
   aggregateProviderPrice,
   type AggregationObservation,
@@ -239,12 +240,15 @@ describe("pricing-engine properties", () => {
   it("P7 a failed gate always blocks publication status", () => {
     fc.assert(
       fc.property(providerSet(1, 9), (prices) => {
-        const r = computeIndex(makeInput(prices));
+        const input = makeInput(prices);
+        const r = computeIndex(input);
+        // The bar is the panel's effective quorum — override panels (H100)
+        // publish at their relaxed quorum, not the global one.
+        const quorum = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, input.panelId).gates
+          .minProviders;
         if (r.status === "healthy" || r.status === "degraded") {
           expect(r.gates.every((g) => g.passed)).toBe(true);
-          expect(r.providersContributing).toBeGreaterThanOrEqual(
-            DEFAULT_METHODOLOGY_CONFIG.gates.minProviders,
-          );
+          expect(r.providersContributing).toBeGreaterThanOrEqual(quorum);
         } else if (r.status === "withheld" && r.providersContributing > 0) {
           expect(r.gates.some((g) => !g.passed)).toBe(true);
         }
