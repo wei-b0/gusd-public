@@ -304,7 +304,6 @@ type PerpEngineStats {
   minOrderDelaySec: BigInt
   orderCount: BigInt!
   liquidationCount: BigInt!
-  settledGusd: BigInt!
   claimedGusd: BigInt!
 }
 

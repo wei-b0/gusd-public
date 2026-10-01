@@ -171,6 +171,4 @@ export const perpEngineStats = table("PerpEngineStats", () => "engine", [
   "minOrderDelaySec",
   "orderCount",
   "liquidationCount",
-  "settledGusd",
-  "claimedGusd",
 ]);

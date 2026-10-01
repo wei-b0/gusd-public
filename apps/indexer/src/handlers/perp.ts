@@ -10,12 +10,14 @@
  *    consumer) — handlers overwrite with event values, never re-derive from
  *    market cumulatives. The clamp-rewind case (uncollected funding debt kept
  *    in the checkpoint) is therefore encoded exactly.
- *  - Claimable balances accrue from exactly the deltas the engine's
- *    claimableOf grows/shrinks by: OrderExecuted.claimableDelta (market
- *    decreases, trigger fills, AND increase-time funding credits — the engine
- *    emits the earned credit there) plus ClaimableSettled (liquidations),
- *    minus Claimed.paid. PositionLiquidated.claimableDelta is deliberately
- *    NOT accumulated — ClaimableSettled fires in the same transaction.
+ *  - Claimable balances accrue from ONE source: ClaimableSettled is the
+ *    engine's single chokepoint (`_creditClaimable` emits it on every path —
+ *    decrease `due`, trigger fills, increase-time funding credits,
+ *    liquidation `due`), so the balance grows by exactly its `amount` and
+ *    shrinks by Claimed.paid. OrderExecuted/PositionLiquidated carry a
+ *    claimableDelta for the LOG row only — folding it in here would
+ *    double-count every decrease/credit (ClaimableSettled fires in the same
+ *    transaction).
  *  - realizedPnl accrues to PerpPosition.realizedPnlGusd from
  *    OrderExecuted.realizedPnl on decrease-shaped executions ONLY — both
  *    PositionDecreased and PositionLiquidated also carry the figure, and
@@ -230,15 +232,10 @@ handlers.on("GpuPerpEngine:OrderExecuted", async ({ event, context }) => {
       a.realizedPnl,
     );
   }
-  // claimableOf grew by exactly this delta in the same tx (decrease `due`,
-  // trigger `due`, or increase-time funding credit).
-  if (a.claimableDelta > 0n) {
-    await bumpClaimable(context.db, keys, account, {
-      balance: a.claimableDelta,
-      totalSettled: a.claimableDelta,
-      settleCount: 1n,
-    });
-  }
+  // claimableOf grew in this tx via _creditClaimable — but ClaimableSettled
+  // (the engine's single chokepoint, same tx) is the ONE accrual source for
+  // the PerpClaimable projection; folding this delta in too would double
+  // every decrease/credit. The delta stays on the log row above.
   await recordUserEvent(context.db, {
     keys,
     contract: event.log.address,
@@ -585,7 +582,6 @@ function zeroEngineStats(chainId: number): Record<string, any> {
     minOrderDelaySec: null,
     orderCount: ZERO,
     liquidationCount: ZERO,
-    settledGusd: ZERO,
     claimedGusd: ZERO,
   };
 }
@@ -658,6 +654,11 @@ async function creditPositionPnl(
       sizeUsd: ZERO,
       collateral: ZERO,
       entryPrice: ZERO,
+      // Full zero defaults for the never-seen-before case (sync starting
+      // after the open): the BigInt! count columns must ride the insert or
+      // the fresh row carries null counts → NaN in the positions DTO.
+      increaseCount: ZERO,
+      decreaseCount: ZERO,
       openedAtSec: keys.blockTimestamp,
       lastTouchedAtSec: keys.blockTimestamp,
       realizedPnlGusd: realizedPnl,
