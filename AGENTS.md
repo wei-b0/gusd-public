@@ -64,27 +64,34 @@ oracle engine/replay/server, the attestor's watched list, and the web app's
 - Protocol-side canon: `apps/contracts/PROTOCOL.md` §3. Offchain canon:
   `docs/oracle/METHODOLOGY.md` and `docs/oracle/PROVIDERS.md`.
 
-## Methodology (v0.4.1)
+## Methodology (v0.5.0)
 
 `DEFAULT_METHODOLOGY_CONFIG` in `packages/pricing-engine/src/config.ts`
-(version `0.4.1`) is the live methodology; `docs/oracle/METHODOLOGY.md`
+(version `0.5.0`) is the live methodology; `docs/oracle/METHODOLOGY.md`
 specifies it exactly. Thresholds live in config, never in code — a
 methodology change is a new version row, never a mutation, and configs are
 validated by an exhaustive allowlist before they can drive a computation.
 
+**Trading never halts on a gate failure (v0.5.0).** A value that failed its
+gates is never a price; instead the series *pauses* — the last gate-passing
+value is republished with an explicit `stale` flag (failed gates stay on the
+receipt; no movement offset, no confidence band), and the prior is the latest
+candidate carrying a price, so withheld rows never sever the chain. The
+attestor signs numeric candidates regardless of status, so a paused panel
+still trades. Only a panel with no published value within the 24h
+carry-forward window withholds.
+
 Thin-panel overrides (an override may only *relax* gates, and only
 `COLLECTED` providers can be promoted, per panel):
 
-- `H100_PANEL_V1` — promotes `akash`, `cudo`; `minProviders: 3`
-  (executable floor kept). Temporary until hyperbolic's H100 listings
-  return (its book went quiet 2026-09-29, withholding the flagship panel).
 - `L40S_PANEL_V1` — promotes `datacrunch`, `scaleway`, `coreweave`;
   `minProviders: 3`, `requireExecutable: false`. Temporary until executable
   L40S order books deepen.
 - `RTX_4090_PANEL_V1` — promotes `akash`; `minProviders: 3`,
   `requireExecutable: true` (executable floor kept).
-- H200 settles under the untouched global gates (quorum 4, executable
-  required).
+- H100/H200 settle under the untouched global gates (quorum 4, executable
+  required) — the v0.4.1 H100 override was retired in v0.5.0; thin-book
+  resilience lives in the pause mechanism, not per-panel patches.
 
 A panel computing below the global quorum publishes `degraded` at best,
 never `healthy`. The v0.3.0 publishing movement allowance lets the published

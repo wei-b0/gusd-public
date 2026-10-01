@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import type {
   FailureKind,
   IndexStatus,
@@ -600,6 +600,20 @@ export async function getLatestCandidate(ex: Executor, gpuId: string) {
     .select()
     .from(indexCandidates)
     .where(eq(indexCandidates.gpuId, gpuId))
+    .orderBy(desc(indexCandidates.computedAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Latest candidate carrying a price — healthy, degraded, or a stale
+ *  carry-forward (v0.5.0). A withheld row's price is null, so the newest
+ *  row is never its base: a gate failure pauses the series at the last
+ *  gate-passing value instead of severing the carry-forward chain. */
+export async function getLatestPricedCandidate(ex: Executor, gpuId: string) {
+  const rows = await ex
+    .select()
+    .from(indexCandidates)
+    .where(and(eq(indexCandidates.gpuId, gpuId), isNotNull(indexCandidates.price)))
     .orderBy(desc(indexCandidates.computedAt))
     .limit(1);
   return rows[0] ?? null;
