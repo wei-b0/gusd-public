@@ -297,7 +297,7 @@ handlers.on("GpuPerpEngine:PositionIncreased", async ({ event, context }) => {
     // decreased and realizes nothing yet.
     decreaseCount: ZERO,
     realizedPnlGusd: ZERO,
-    increaseCount: (existing?.increaseCount ?? 0n) + 1n,
+    increaseCount: (existing?.increaseCount ?? 0) + 1,
   };
   await context.db
     .insert(perpPositions)
@@ -356,7 +356,7 @@ handlers.on("GpuPerpEngine:PositionDecreased", async ({ event, context }) => {
     lastTouchedAtSec: keys.blockTimestamp,
     increaseCount: ZERO,
     realizedPnlGusd: ZERO,
-    decreaseCount: (existing?.decreaseCount ?? 0n) + 1n,
+    decreaseCount: (existing?.decreaseCount ?? 0) + 1,
   };
   await context.db
     .insert(perpPositions)

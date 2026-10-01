@@ -238,7 +238,7 @@ log "starting keeper..."
 ( export DATABASE_URL="$DATABASE_URL"
   export KEEPER_PRIVATE_KEY="$KEEPER_KEY" KEEPER_RPC_URL="$RPC_URL" KEEPER_CHAIN_ID="$CHAIN_ID"
   export INDEXER_SCHEMA="$INDEXER_SCHEMA"
-  export ORACLE_HTTP_URL="http://127.0.0.1:8080" ORACLE_WS_URL="ws://127.0.0.1:8080"
+  export ORACLE_HTTP_URL="http://127.0.0.1:8080" ORACLE_WS_URL="ws://127.0.0.1:8080/v1/stream"
   exec pnpm --filter @gusd/keeper dev ) >"$LOG_DIR/keeper.log" 2>&1 &
 echo $! >"$LOG_DIR/keeper.pid"
 

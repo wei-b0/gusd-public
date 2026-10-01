@@ -243,9 +243,13 @@ export class Executor {
       return;
     }
 
-    // The one sim: abort on revert, never pay gas to fail.
+    // The one sim: abort on revert, never pay gas to fail. The sim MUST run
+    // from the real executor EOA — an eth_call without `from` gives the engine
+    // msg.sender == address(0), and the execution fee transfer to the keeper
+    // reverts ERC20InvalidReceiver(0), which would abort every item forever.
     try {
       await this.publicClient.call({
+        account: this.account.address,
         to: this.engineAddress,
         data: this.encodeCall(item, attestation.updateData),
       });

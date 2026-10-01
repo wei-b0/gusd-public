@@ -67,6 +67,25 @@ export function positionKey(wallet: string, gpuId: string, isLong: boolean): str
   return `${wallet}|${gpuId}|${isLong}`;
 }
 
+/** One PerpOrder entity row → a KeeperOrder. The entity's market key is the
+ *  `gpu_id` column (the handler writes `gpuId`); reading anything else
+ *  silently unmatches every order in the strategy's market filter. */
+export function orderFromRow(r: Record<string, unknown>): KeeperOrder {
+  return {
+    orderId: big(r.order_id),
+    account: String(r.account),
+    kind: toNum(r.kind),
+    isLong: r.is_long === true,
+    sizeDeltaUsd: big(r.size_delta_usd),
+    collateralDeltaUsd: big(r.collateral_delta_usd),
+    acceptablePrice: big(r.acceptable_price),
+    triggerPrice: big(r.trigger_price),
+    executionFee: big(r.execution_fee),
+    createdAtSec: big(r.created_at_sec),
+    market: String(r.gpu_id),
+  };
+}
+
 function big(v: unknown): bigint {
   if (v === null || v === undefined) return 0n;
   if (typeof v === "bigint") return v;
@@ -239,19 +258,7 @@ export class Book {
   }
 
   private order(r: Record<string, unknown>): KeeperOrder {
-    return {
-      orderId: big(r.order_id),
-      account: String(r.account),
-      kind: toNum(r.kind),
-      isLong: r.is_long === true,
-      sizeDeltaUsd: big(r.size_delta_usd),
-      collateralDeltaUsd: big(r.collateral_delta_usd),
-      acceptablePrice: big(r.acceptable_price),
-      triggerPrice: big(r.trigger_price),
-      executionFee: big(r.execution_fee),
-      createdAtSec: big(r.created_at_sec),
-      market: String(r.market),
-    };
+    return orderFromRow(r);
   }
 }
 
