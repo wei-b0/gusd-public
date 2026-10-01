@@ -2,28 +2,23 @@
 
 /**
  * PerpMarketsTable — the perpetuals board. The four settlement panels as
- * leveraged, gUSD-settled markets: mark, 24h, funding/day per side, open
- * interest, and the leverage cap — one ruled board for scanning; a row
- * routes to the market's perp desk. The mark is the benchmark (the engine
- * fills at oracle reports), so it prints in wire cyan with the / GPU-hour
- * unit, exactly as the spot board's Index column does; onchain market
- * figures print "—" until the chain asserts them (and in the mock
- * universe, where no perp markets exist).
+ * leveraged, gUSD-settled markets: mark, 24h, funding/day per side in
+ * cash-flow words, open interest, and the leverage cap — one ruled board
+ * for scanning; a row routes to the market's perp desk. The mark is the
+ * benchmark (the engine fills at verified report prices), so it prints in
+ * wire cyan with the / GPU-hour unit, exactly as the spot board's Index
+ * column does; onchain market figures print "—" until the chain asserts
+ * them (and in the mock universe, where no perp markets exist).
  */
 
 import Link from "next/link";
 import { marketMove24h, pairName, type Market } from "@/domain/types";
 import type { PerpMarketState } from "@/domain/types";
 import { fmtGusdCompact, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
+import { fundingShort, num } from "./funding-voices";
 import { TickFlash } from "@/components/ui/tick-flash";
 import { useMarkets } from "@/data/services";
 import { usePerpMarketStates } from "@/data/web3/perps/use-perp-markets";
-
-/** Funding ppm/second → the per-day figure the desk speaks. */
-function perDay(ppm: number): string {
-  const pct = (ppm * 86_400) / 10_000;
-  return `${pct.toFixed(3).replace(/\.?0+$/, "")}%`;
-}
 
 export function PerpMarketsTable() {
   const markets = useMarkets();
@@ -41,7 +36,7 @@ export function PerpMarketsTable() {
               </th>
               <th scope="col" className="slug px-2.5 py-2 text-right text-dim">24h</th>
               <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
-                Funding %/day <span className="tracking-normal normal-case">long · short</span>
+                Funding %/day <span className="tracking-normal normal-case">longs · shorts</span>
               </th>
               <th scope="col" className="slug px-2.5 py-2 text-right text-dim">
                 Open interest <span className="tracking-normal normal-case">/ gUSD</span>
@@ -120,7 +115,9 @@ function PerpMarketRow({
         )}
       </td>
       <td className="num px-2.5 py-2 text-right text-data">
-        {state == null ? "—" : `${perDay(state.fundingRateLongPpmPerSec)} · ${perDay(state.fundingRateShortPpmPerSec)}`}
+        {/* pays/receives voice — positive ppm means that side pays, so the
+            words carry the sign a bare number hides. */}
+        {state == null ? "—" : `${fundingShort(state.fundingRateLongPpmPerSec)} · ${fundingShort(state.fundingRateShortPpmPerSec)}`}
       </td>
       <td className="num px-2.5 py-2 text-right text-data">
         {state == null ? (
@@ -130,7 +127,7 @@ function PerpMarketRow({
         )}
       </td>
       <td className="num py-2 pl-2.5 pr-3 text-right text-data">
-        {state == null ? "—" : `${state.maxLeverageBps / 10_000}×`}
+        {state == null ? "—" : `${num(state.maxLeverageBps / 10_000)}×`}
       </td>
     </tr>
   );

@@ -62,6 +62,23 @@ export function sizeFromCollateral(collateralRaw: bigint, leverageBps: bigint): 
   return mulDiv(collateralRaw, leverageBps, BPS, "floor");
 }
 
+/** PerpMath's funding-cumulative scale (WAD per unit notional). */
+export const FUNDING_SCALE = 10n ** 18n;
+
+/** PerpMath.fundingOwed — a funding/borrow charge accrued by `sizeUsd`
+ *  notional since `checkpoint`, rounded up (the charged side pays the dust). */
+export function fundingOwed(sizeUsd: bigint, cum: bigint, checkpoint: bigint): bigint {
+  if (cum <= checkpoint) return 0n;
+  return mulDiv(sizeUsd, cum - checkpoint, FUNDING_SCALE, "ceil");
+}
+
+/** PerpMath.fundingEarned — a funding credit accrued by `sizeUsd` notional
+ *  since `checkpoint`, rounded down (the credited side loses the dust). */
+export function fundingEarned(sizeUsd: bigint, cum: bigint, checkpoint: bigint): bigint {
+  if (cum <= checkpoint) return 0n;
+  return mulDiv(sizeUsd, cum - checkpoint, FUNDING_SCALE, "floor");
+}
+
 /** The engine's createOrder leverage check, verbatim: sizeΔ×1e4/collΔ CEIL. */
 export function leverageBpsCeil(sizeRaw: bigint, collateralRaw: bigint): bigint {
   return mulDiv(sizeRaw, BPS, collateralRaw, "ceil");

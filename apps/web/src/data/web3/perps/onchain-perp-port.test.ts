@@ -44,9 +44,22 @@ const h = vi.hoisted(() => ({
     openNotionalLong: 0n,
     openNotionalShort: 0n,
     fundingUpdatedAt: 0n,
+    fundingChargePerUnitLong: 0n,
+    fundingChargePerUnitShort: 0n,
+    fundingCreditPerUnitLong: 0n,
+    fundingCreditPerUnitShort: 0n,
+    borrowChargePerUnit: 0n,
   },
   fundingRates: { long: 0n, short: 0n, borrow: 0n },
-  position: null as { collateral: bigint; sizeUsd: bigint } | null,
+  position: null as {
+    collateral: bigint;
+    sizeUsd: bigint;
+    entryPrice: bigint;
+    fundingFeeCheckpoint: bigint;
+    fundingCreditCheckpoint: bigint;
+    borrowCheckpoint: bigint;
+  } | null,
+  rawReadFails: false,
   view: {
     position: { sizeUsd: 0n, collateral: 0n, entryPrice: 0n },
     uPnL: 0n,
@@ -100,9 +113,17 @@ vi.mock("../contracts", () => ({
             maintenanceMarginBps: h.market.params.maintenanceMarginBps,
             closeFeeBps: h.market.params.closeFeeBps,
           },
+          fundingChargePerUnitLong: h.market.fundingChargePerUnitLong,
+          fundingChargePerUnitShort: h.market.fundingChargePerUnitShort,
+          fundingCreditPerUnitLong: h.market.fundingCreditPerUnitLong,
+          fundingCreditPerUnitShort: h.market.fundingCreditPerUnitShort,
+          borrowChargePerUnit: h.market.borrowChargePerUnit,
         }),
         getPosition: async () => h.view,
-        positions: async () => h.position,
+        positions: async () => {
+          if (h.rawReadFails) throw new Error("rpc down");
+          return h.position;
+        },
         MIN_EXECUTION_FEE: async () => h.minExecutionFee,
         orderNonce: async () => h.orderNonce,
         orders: async ([id]: [bigint]) => {
@@ -174,10 +195,16 @@ beforeEach(() => {
   h.market.enabled = true;
   h.market.openNotionalLong = 0n;
   h.market.openNotionalShort = 0n;
+  h.market.fundingChargePerUnitLong = 0n;
+  h.market.fundingChargePerUnitShort = 0n;
+  h.market.fundingCreditPerUnitLong = 0n;
+  h.market.fundingCreditPerUnitShort = 0n;
+  h.market.borrowChargePerUnit = 0n;
   h.market.params.maxOiUsd = 1_000_000_000_000n;
   h.market.params.minCollateralUsd = 10_000_000n;
   h.market.params.maxPositionUsd = 100_000_000_000n;
   h.position = null;
+  h.rawReadFails = false;
   h.view = {
     position: { sizeUsd: 0n, collateral: 0n, entryPrice: 0n },
     uPnL: 0n,
@@ -258,7 +285,7 @@ describe("quoteOpen", () => {
   });
 
   it("counts an existing position's collateral against the minimum", async () => {
-    h.position = { collateral: 8_000_000n, sizeUsd: 16_000_000n };
+    h.position = { collateral: 8_000_000n, sizeUsd: 16_000_000n, entryPrice: 30_000n, fundingFeeCheckpoint: 0n, fundingCreditCheckpoint: 0n, borrowCheckpoint: 0n };
     const { port } = makePort(CONNECTED);
     // 8 locked + 6 new = 14 ≥ 10 minimum — but alone 6 < 10 would refuse.
     const q = await port.quoteOpen({ asset: "H100", side: "long", collateral: 6, leverage: 2 });
@@ -276,6 +303,16 @@ describe("quoteOpen", () => {
 describe("quoteClose", () => {
   beforeEach(() => {
     h.price = 33_000n; // the report moved up — the long is in profit
+    // The raw struct behind the view — the slice math reads its checkpoints
+    // (0 here, so the default vectors see zero accrued funding).
+    h.position = {
+      collateral: 20_000_000n,
+      sizeUsd: 200_000_000n,
+      entryPrice: 30_000n,
+      fundingFeeCheckpoint: 0n,
+      fundingCreditCheckpoint: 0n,
+      borrowCheckpoint: 0n,
+    };
     h.view = {
       position: { sizeUsd: 200_000_000n, collateral: 20_000_000n, entryPrice: 30_000n },
       uPnL: 20_000_000n,
@@ -296,6 +333,9 @@ describe("quoteClose", () => {
     expect(q!.closeFee).toBe(0.2); // feeBps(200e6, 10) = 200_000 raw
     expect(q!.executionFee).toBe(0.01);
     expect(q!.proceeds).toBe(39.8); // 20 coll + 20 pnl − 0.2 fee
+    expect(q!.shortfall).toBe(0);
+    // A long close refuses a fill below its bound — 3.3 × (1 − 0.5%) here.
+    expect(q!.acceptablePrice).toBeCloseTo(3.2835, 9);
   });
 
   it("previews a partial close pro-rata on collateral", async () => {
@@ -304,6 +344,43 @@ describe("quoteClose", () => {
     expect(q!.sizeUsd).toBe(100);
     expect(q!.pnl).toBe(10);
     expect(q!.proceeds).toBe(19.9); // 10 coll + 10 pnl − 0.1 fee
+  });
+
+  it("floors a losing close at nothing — proceeds 0, the loss a shortfall voice", async () => {
+    // Price 25.50: the long's loss (30) exceeds collateral + funding (20)
+    // even before the close fee — onchain `due = max(raw, 0)` settles
+    // nothing, so the quote must say 0 proceeds and a 10.2 shortfall.
+    h.price = 25_500n;
+    const { port } = makePort(CONNECTED);
+    const q = await port.quoteClose({ asset: "H100", side: "long", size: null, toleranceBps: 50 });
+    expect(q).not.toBeNull();
+    expect(q!.pnl).toBe(-30); // ceil(200e6 × 4500 / 30000)
+    expect(q!.proceeds).toBe(0); // 20 coll − 30 pnl − 0.2 fee < 0
+    expect(q!.shortfall).toBeCloseTo(10.2, 9);
+  });
+
+  it("attributes the closed slice's funding pro-rata — the engine's G2 shape", async () => {
+    // Cumulative deltas: 0.01 WAD owed, 0.001 WAD borrow, 0.005 WAD credit
+    // per unit notional. The whole position accrued 2.0 owed + 0.2 borrow
+    // and 1.0 earned; a half close settles only its slice (ceil charges,
+    // floor credits) — never the whole position's funding.
+    h.market.fundingChargePerUnitLong = 10_000_000_000_000_000n;
+    h.market.borrowChargePerUnit = 1_000_000_000_000_000n;
+    h.market.fundingCreditPerUnitLong = 5_000_000_000_000_000n;
+    h.price = 30_000n;
+    h.view = {
+      position: { sizeUsd: 200_000_000n, collateral: 20_000_000n, entryPrice: 30_000n },
+      uPnL: 0n,
+      equity: 20_000_000n,
+      maintenance: 1_000_000n,
+      liquidatable: false,
+      // A whole-position figure — deliberately ignored by the slice math.
+      fundingDue: -3_000_000n,
+    };
+    const { port } = makePort(CONNECTED);
+    const q = await port.quoteClose({ asset: "H100", side: "long", size: 100, toleranceBps: 50 });
+    expect(q!.fundingNet).toBeCloseTo(-0.6, 9); // 0.5 earned − 1.0 owed − 0.1 borrow
+    expect(q!.proceeds).toBe(9.3); // 10 released − 0.1 fee − 1.0 owed − 0.1 borrow + 0.5 earned
   });
 
   it("refuses without a session", async () => {
@@ -319,35 +396,86 @@ describe("quoteClose", () => {
 });
 
 describe("getPosition probe", () => {
+  const MARKED_VIEW = {
+    position: { sizeUsd: 200_000_000n, collateral: 20_000_000n, entryPrice: 30_000n },
+    uPnL: 20_000_000n,
+    equity: 40_000_000n,
+    maintenance: 1_000_000n,
+    liquidatable: false,
+    fundingDue: -500_000n,
+  };
+
   it("reads the verified view and derives the liquidation distance", async () => {
-    h.view = {
-      position: { sizeUsd: 200_000_000n, collateral: 20_000_000n, entryPrice: 30_000n },
-      uPnL: 20_000_000n,
-      equity: 40_000_000n,
-      maintenance: 1_000_000n,
-      liquidatable: false,
-      fundingDue: -500_000n,
-    };
+    h.position = { collateral: 20_000_000n, sizeUsd: 200_000_000n, entryPrice: 30_000n, fundingFeeCheckpoint: 0n, fundingCreditCheckpoint: 0n, borrowCheckpoint: 0n };
+    h.view = MARKED_VIEW;
     const { port } = makePort(CONNECTED);
     const p = await port.getPosition("H100", "long");
-    expect(p).not.toBeNull();
-    expect(p!.sizeUsd).toBe(200);
-    expect(p!.collateral).toBe(20);
-    expect(p!.uPnl).toBe(20);
-    expect(p!.equity).toBe(40);
-    expect(p!.fundingNet).toBe(-0.5); // negative → the position earns
-    expect(p!.liquidatable).toBe(false);
+    expect(p.kind).toBe("ok");
+    if (p.kind !== "ok") return;
+    const s = p.position;
+    expect(s.sizeUsd).toBe(200);
+    expect(s.collateral).toBe(20);
+    expect(s.markPrice).toBe(3); // the report the marked figures priced at
+    expect(s.uPnl).toBe(20);
+    expect(s.equity).toBe(40);
+    expect(s.fundingNet).toBe(-0.5); // negative → the position earns
+    expect(s.liquidatable).toBe(false);
     // 200 notional, 20 coll, 5% mm → maint 10 gUSD; headroom 10 gUSD = 5% of
     // notional → liq at 3.0 × 0.95 = 2.85 (the math suite's own vector).
-    expect(p!.liquidationPrice).toBeCloseTo(2.85, 9);
+    expect(s.liquidationPrice).toBeCloseTo(2.85, 9);
+    expect(s.markedAt).toEqual(expect.any(Number));
   });
 
-  it("answers null without a session or a stale attestation", async () => {
+  it("answers flat only from a raw zero-size read", async () => {
+    h.position = { collateral: 0n, sizeUsd: 0n, entryPrice: 0n, fundingFeeCheckpoint: 0n, fundingCreditCheckpoint: 0n, borrowCheckpoint: 0n };
+    const { port } = makePort(CONNECTED);
+    expect(await port.getPosition("H100", "long")).toEqual({ kind: "flat" });
+  });
+
+  it("answers flat with no session — there is genuinely nothing there", async () => {
     const { port } = makePort(null);
-    expect(await port.getPosition("H100", "long")).toBeNull();
+    expect(await port.getPosition("H100", "long")).toEqual({ kind: "flat" });
+  });
+
+  it("falls back to raw figures when the attestation is stale — never null", async () => {
+    h.position = { collateral: 20_000_000n, sizeUsd: 200_000_000n, entryPrice: 30_000n, fundingFeeCheckpoint: 0n, fundingCreditCheckpoint: 0n, borrowCheckpoint: 0n };
     h.attestationKind = "stale";
-    const { port: p2 } = makePort(CONNECTED);
-    expect(await p2.getPosition("H100", "long")).toBeNull();
+    const { port } = makePort(CONNECTED);
+    const p = await port.getPosition("H100", "long");
+    expect(p.kind).toBe("unmarked");
+    if (p.kind !== "unmarked") return;
+    const s = p.position;
+    // Existence is truth from the raw read; the marked half stays null —
+    // the desk renders the raw figures, never a masked zero or a "Flat".
+    expect(s.sizeUsd).toBe(200);
+    expect(s.collateral).toBe(20);
+    expect(s.entryPrice).toBe(3);
+    expect(s.markPrice).toBeNull();
+    expect(s.uPnl).toBeNull();
+    expect(s.equity).toBeNull();
+    expect(s.liquidationPrice).toBeNull();
+    expect(s.markedAt).toBeNull();
+  });
+
+  it("answers unknown when the raw read fails — existence unreadable", async () => {
+    h.rawReadFails = true;
+    const { port } = makePort(CONNECTED);
+    expect(await port.getPosition("H100", "long")).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("listPendingOrders", () => {
+  it("answers null when every read fails after arming — never a fabricated empty", async () => {
+    const { port } = makePort(CONNECTED);
+    await port.open({ asset: "H100", side: "long", collateral: 10, leverage: 2 });
+    // The session armed order id 6; every engine read now fails.
+    h.orders.clear();
+    expect(await port.listPendingOrders()).toBeNull();
+  });
+
+  it("answers [] without a session — an honest empty", async () => {
+    const { port } = makePort(null);
+    expect(await port.listPendingOrders()).toEqual([]);
   });
 });
 
@@ -402,7 +530,7 @@ describe("open submission", () => {
       createdAt: 0n,
       market: H100,
     });
-    const pending = await port.listPendingOrders();
+    const pending = (await port.listPendingOrders())!;
     expect(pending).toHaveLength(1);
     expect(pending[0]!.orderId).toBe(6);
     expect(pending[0]!.asset).toBe("H100");
@@ -412,7 +540,7 @@ describe("open submission", () => {
 
 describe("close / trigger submission", () => {
   beforeEach(() => {
-    h.position = { collateral: 20_000_000n, sizeUsd: 200_000_000n };
+    h.position = { collateral: 20_000_000n, sizeUsd: 200_000_000n, entryPrice: 30_000n, fundingFeeCheckpoint: 0n, fundingCreditCheckpoint: 0n, borrowCheckpoint: 0n };
   });
 
   it("refuses when no position exists", async () => {

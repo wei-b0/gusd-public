@@ -177,8 +177,8 @@ class PerpPortImpl {
     return null;
   }
 
-  async getPosition(): Promise<null> {
-    return null;
+  async getPosition(): Promise<{ kind: "flat" }> {
+    return { kind: "flat" };
   }
 
   async listPendingOrders(): Promise<[]> {

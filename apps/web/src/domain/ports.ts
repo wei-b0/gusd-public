@@ -36,7 +36,7 @@ import type {
   PerpOpenQuote,
   PerpOpenRequest,
   PerpPendingOrder,
-  PerpPositionState,
+  PerpPositionProbe,
   PerpSide,
   PerpTriggerRequest,
   QuoteFailure,
@@ -269,12 +269,14 @@ export interface PerpPort {
   /** The caller's settled claimable balance (gUSD product units); null
    *  without a session. */
   getClaimable(): Promise<number | null>;
-  /** Live position state through a verified report — uPnL, equity,
-   *  maintenance, liquidation distance. Null without a session or an open
-   *  position on that side. */
-  getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionState | null>;
-  /** The caller's pending orders (locked and awaiting the keeper). */
-  listPendingOrders(): Promise<PerpPendingOrder[]>;
+  /** One position probe: raw figures always; marked figures (uPnL, equity,
+   *  maintenance, liquidation distance) only when a current report priced
+   *  the read. `flat` only when a successful read saw zero size — a failed
+   *  read is `unknown`, never an honest-sounding empty. */
+  getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionProbe>;
+  /** The caller's pending orders (locked and awaiting the keeper). Null
+   *  when the reads fail — an unreadable book is never an empty one. */
+  listPendingOrders(): Promise<PerpPendingOrder[] | null>;
   /** Execution-identical open preview at the pinned report, or null for an
    *  invalid request (below min collateral, over leverage/OI caps). Works
    *  without a session — quoting is public, acting is not. */

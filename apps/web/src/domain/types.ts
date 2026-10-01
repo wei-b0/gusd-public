@@ -806,38 +806,64 @@ export interface PerpCloseQuote {
   pnl: number;
   closeFee: number;
   executionFee: number;
-  /** Net funding owed (<0 → the position earns), gUSD product units. */
+  /** Net funding owed since the last on-chain touch (<0 → the position
+   *  earns), gUSD product units — the whole position's, whatever closes. */
   fundingNet: number;
-  /** What settles into the claimable balance — pnl − fees + funding, floored. */
+  /** The acceptable-price bound the close arms with (product units): a long
+   *  close refuses to fill below it, a short close above it. */
+  acceptablePrice: number;
+  /** What settles into the claimable balance — never negative: when fees
+   *  and funding exceed the close, the engine settles nothing. */
   proceeds: number;
+  /** The part of the close the fees and funding ate — the shortfall the
+   *  desk voices when proceeds are zero. */
+  shortfall: number;
   quotedAtMs: number;
   blockNumber: number | null;
 }
 
-/** Live position state through a verified report — the position panel's
- *  whole world. Null fields mean "not read yet". */
+/** Live position state — raw figures always, marked figures only when a
+ *  current report priced the read. Null marked fields mean "no verified
+ *  price marked this read", not zero. */
 export interface PerpPositionState {
   asset: AssetId;
   side: PerpSide;
-  /** Notional and collateral, gUSD product units. */
+  /** Notional and collateral, gUSD product units — raw chain state. */
   sizeUsd: number;
   collateral: number;
-  /** Entry price, USD per GPU-hour product units. */
+  /** Entry price, USD per GPU-hour product units — raw chain state. */
   entryPrice: number;
-  /** Unrealized PnL at the verified report price (signed). */
-  uPnl: number;
-  /** collateral + uPnL − accrued debts. */
-  equity: number;
-  /** The maintenance margin requirement at current size. */
-  maintenance: number;
-  liquidatable: boolean;
-  /** Net funding owed since the last on-chain touch (<0 → earns). */
-  fundingNet: number;
-  /** Estimated price move from the report price that hits the maintenance
-   *  threshold (product units) — the liquidation distance the panel shows. */
+  /** The verified report price the marked figures were computed at —
+   *  null while no current report priced this read. */
+  markPrice: number | null;
+  /** Unrealized PnL at the mark price (signed). Null when unmarked. */
+  uPnl: number | null;
+  /** collateral + uPnL − accrued debts. Null when unmarked. */
+  equity: number | null;
+  /** The maintenance margin requirement at current size. Null when unmarked. */
+  maintenance: number | null;
+  liquidatable: boolean | null;
+  /** Net funding owed since the last on-chain touch (<0 → earns).
+   *  Null when unmarked. */
+  fundingNet: number | null;
+  /** Estimated price move from the mark price that hits the maintenance
+   *  threshold (product units) — the liquidation distance the panel shows.
+   *  Null when unmarked or the market carries no maintenance floor. */
   liquidationPrice: number | null;
+  /** When this state was last read onchain (raw or marked). */
   updatedAt: number;
+  /** When a current report last priced it — null while never marked. */
+  markedAt: number | null;
 }
+
+/** One position probe. `flat` only when a successful onchain read saw zero
+ *  size; an unreachable chain or a report gap is `unknown`/`unmarked` —
+ *  never an honest-sounding empty. */
+export type PerpPositionProbe =
+  | { kind: "ok"; position: PerpPositionState }
+  | { kind: "unmarked"; position: PerpPositionState }
+  | { kind: "flat" }
+  | { kind: "unknown" };
 
 /** A pending order the desk armed — the keeper executes it. */
 export interface PerpPendingOrder {

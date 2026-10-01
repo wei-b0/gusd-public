@@ -322,15 +322,15 @@ d("perps desk against the deployed protocol", () => {
     expect(await contracts.gusd.read.balanceOf([traderAddress])).toBe(FUND - 500_010_000n);
 
     // The session registry holds this order — the desk lists it pending.
-    const pending = await port.listPendingOrders();
+    const pending = (await port.listPendingOrders())!;
     expect(pending).toHaveLength(1);
     expect(pending[0]!.orderId).toBe(Number(openOrderId));
     expect(pending[0]!.kind).toBe("open");
   }, 30_000);
 
-  it("the probe stays null until the keeper executes", async () => {
-    // Nothing consumed yet — no position exists, verified at the live report.
-    expect(await port.getPosition("H100", "long")).toBeNull();
+  it("the probe reads flat before the keeper executes", async () => {
+    // Nothing consumed yet — the raw read sees zero size on the live chain.
+    expect(await port.getPosition("H100", "long")).toEqual({ kind: "flat" });
   }, 30_000);
 
   it("the keeper executes and the position goes live", async () => {
@@ -339,16 +339,19 @@ d("perps desk against the deployed protocol", () => {
     await executeAsKeeper(openOrderId);
 
     const p = await port.getPosition("H100", "long");
-    expect(p).not.toBeNull();
-    expect(p!.sizeUsd).toBe(1000);
-    expect(p!.collateral).toBe(499); // the open fee came out of the lock
-    expect(p!.entryPrice).toBe(3); // filled exactly at the report
-    expect(p!.uPnl).toBe(0);
-    expect(p!.equity).toBe(499);
-    expect(p!.fundingNet).toBe(0); // the deploy's default posture: zero rates
-    expect(p!.liquidatable).toBe(false);
+    expect(p.kind).toBe("ok");
+    if (p.kind !== "ok") return;
+    const s = p.position;
+    expect(s.sizeUsd).toBe(1000);
+    expect(s.collateral).toBe(499); // the open fee came out of the lock
+    expect(s.entryPrice).toBe(3); // filled exactly at the report
+    expect(s.markPrice).toBe(3); // marked at this report
+    expect(s.uPnl).toBe(0);
+    expect(s.equity).toBe(499);
+    expect(s.fundingNet).toBe(0); // the deploy's default posture: zero rates
+    expect(s.liquidatable).toBe(false);
     // headroom = 499 − 25 (2.5% maintenance) = 474 → entry × (1 − 474/1000).
-    expect(p!.liquidationPrice).toBeCloseTo(1.578, 9);
+    expect(s.liquidationPrice).toBeCloseTo(1.578, 9);
 
     // OI grew by exactly this position (the demo's open never executed here).
     const m = await port.describeMarket("H100");
@@ -385,7 +388,7 @@ d("perps desk against the deployed protocol", () => {
     await warp(minOrderDelay + 2);
     await executeAsKeeper(closeOrderId);
 
-    expect(await port.getPosition("H100", "long")).toBeNull();
+    expect(await port.getPosition("H100", "long")).toEqual({ kind: "flat" });
     expect(await port.getClaimable()).toBe(598);
   }, 30_000);
 

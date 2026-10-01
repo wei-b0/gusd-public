@@ -27,13 +27,13 @@ import Link from "next/link";
 import type { ActionRecord } from "@/domain/actions";
 import type {
   AssetId,
-  AssetSpec,
   ChartRange,
   PerpCloseQuote,
   PerpMarketState,
   PerpOpenQuote,
   PerpOrderKind,
   PerpPendingOrder,
+  PerpPositionProbe,
   PerpPositionState,
   PerpSide,
 } from "@/domain/types";
@@ -59,8 +59,8 @@ import {
   fmtGusdCompact,
   fmtGusdLedger,
   fmtGusdPrecise,
-  fmtNotional,
   fmtPctSigned,
+  fmtSignedGusd,
   fmtUnitsMax,
   fmtUsdPrecise,
   isFlatPct,
@@ -97,14 +97,9 @@ function priceRaw(price: number): bigint {
   return BigInt(Math.round(price * 10_000));
 }
 
-function num(x: number): string {
-  return Number.isInteger(x) ? String(x) : x.toFixed(2).replace(/\.?0+$/, "");
-}
-
-/** Funding ppm/second → the per-day figure the desk speaks. */
-function perDay(ppm: number): string {
-  return `${num((ppm * 86_400) / 10_000)}%`;
-}
+/** Funding ppm/second → the per-day figure the desk speaks. Shared with the
+ *  board and rail via ./funding-voices. */
+import { fundingCashVoice, fundingShort, fundingVoice, num, perDay } from "./funding-voices";
 
 /* ------------------------------------------------------------------ */
 /* desk shell                                                          */
@@ -127,33 +122,47 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
   const market = states[asset];
 
   const [book, setBook] = useState<{
-    long: PerpPositionState | null;
-    short: PerpPositionState | null;
+    long: PerpPositionProbe;
+    short: PerpPositionProbe;
     orders: PerpPendingOrder[] | null;
     claimable: number | null;
-  }>({ long: null, short: null, orders: null, claimable: null });
+  }>({ long: { kind: "unknown" }, short: { kind: "unknown" }, orders: null, claimable: null });
   const [refreshKey, setRefreshKey] = useState(0);
   const bump = () => setRefreshKey((k) => k + 1);
+  // Flips after the first book read resolves, so panel 07 can tell
+  // "still reading" from "the read failed".
+  const [bookLoaded, setBookLoaded] = useState(false);
 
-  // The book the desk renders from: verified position probes on both
-  // sides, pending orders, and the claimable counter — refreshed lazily.
-  // Without a wallet the whole loop stays silent (nulls are the honest
-  // empties, not zeros).
+  // The book the desk renders from: position probes on both sides (raw
+  // figures always; marked figures only when a current report priced the
+  // read), pending orders, and the claimable counter — refreshed lazily.
+  // Without a wallet the whole loop stays silent. A probe whose raw read
+  // failed (`unknown`) never overwrites the last known state — an open
+  // position must not vanish because one poll dropped.
   useEffect(() => {
     if (!connected) {
-      setBook({ long: null, short: null, orders: null, claimable: null });
+      setBook({ long: { kind: "flat" }, short: { kind: "flat" }, orders: null, claimable: null });
+      setBookLoaded(false);
       return;
     }
     let alive = true;
     const load = () => {
       Promise.all([
-        perp.getPosition(asset, "long").catch(() => null),
-        perp.getPosition(asset, "short").catch(() => null),
+        perp.getPosition(asset, "long").catch((): PerpPositionProbe => ({ kind: "unknown" })),
+        perp.getPosition(asset, "short").catch((): PerpPositionProbe => ({ kind: "unknown" })),
         perp.listPendingOrders().catch(() => null),
         perp.getClaimable().catch(() => null),
       ]).then(([long, short, pending, claim]) => {
         if (!alive) return;
-        setBook({ long, short, orders: pending ?? [], claimable: claim });
+        setBookLoaded(true);
+        setBook((prev) => ({
+          long: long.kind === "unknown" ? prev.long : carryMark(long, prev.long),
+          short: short.kind === "unknown" ? prev.short : carryMark(short, prev.short),
+          // null = the read failed — the orders panel says so, never an
+          // honest-sounding "nothing armed".
+          orders: pending,
+          claimable: claim,
+        }));
       });
     };
     load();
@@ -165,7 +174,8 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
   }, [perp, asset, connected, refreshKey]);
 
   // The mark: the venue price when a market layer exists, otherwise the
-  // API's Index — the same displayed-price doctrine every desk stands on.
+  // API's Index — the benchmark reference every desk stands on. Per-row
+  // figures mark at the probe's verified report price instead (T0-4).
   const row = markets.find((m) => m.asset.id === asset);
   const mark = row?.marketPrice ?? row?.indexPrice ?? null;
 
@@ -177,10 +187,19 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
   const cellVis = (names: string[]) =>
     (names.includes(tab) ? "" : "hidden") + " lg:block";
 
-  const equity =
-    book.long === null && book.short === null
-      ? null
-      : (book.long?.equity ?? 0) + (book.short?.equity ?? 0);
+  // Equity of this market's positions — summed only where a report has
+  // actually marked a side; all-unmarked reads as "—", never a masked zero.
+  const equity = (() => {
+    const a = positionOf(book.long);
+    const b = positionOf(book.short);
+    if (a?.equity == null && b?.equity == null) return null;
+    return (a?.equity ?? 0) + (b?.equity ?? 0);
+  })();
+
+  // Panel 07's read state: a failed read is distinct from an empty list —
+  // it never renders as "nothing armed".
+  const ordersState: "reading" | "live" | "failed" =
+    !bookLoaded ? "reading" : book.orders === null ? "failed" : "live";
 
   return (
     <div>
@@ -248,29 +267,36 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
                           {move === null ? "—" : fmtPctSigned(move)}
                         </span>
                         <span className="num text-[10.5px] text-dim">
-                          {st == null ? "—" : `fund ${perDay(st.fundingRateLongPpmPerSec)}`}
+                          {st == null ? "—" : `fund ${fundingShort(st.fundingRateLongPpmPerSec)}`}
                         </span>
                       </span>
                     </Link>
                   );
                 })}
               </div>
+              <p className="border-t border-rule px-3.5 py-2.5 text-[10.5px] leading-relaxed text-dim">
+                Trade {pairName(asset)} outright on the{" "}
+                <Link
+                  href={`/spot/${asset}`}
+                  className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright"
+                >
+                  spot desk
+                </Link>{" "}
+                — same benchmark, no leverage.
+              </p>
             </TuiPanel>
           </div>
 
           <div>
             <AccountPanel
               no="02"
+              asset={asset}
               account={account}
               connected={connected}
               equity={equity}
               claimable={book.claimable}
               onRefresh={bump}
             />
-          </div>
-
-          <div>
-            <Reference asset={m.asset} />
           </div>
         </div>
 
@@ -310,9 +336,9 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
                 </div>
               }
             >
-              {/* The mark strip — the perp-native identity row. The mark is
-                  the report the engine fills at: a market figure, bright
-                  phosphor, with the / GPU-hour unit named. */}
+              {/* The benchmark strip — the series reference: a market figure, bright
+                  phosphor, with the / GPU-hour unit named. Fills settle at the
+                  verified report price, which marks each position row. */}
               <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2 border-b border-rule px-3.5 py-2.5">
                 <span className="inline-flex items-baseline gap-1.5">
                   {mark === null ? (
@@ -351,7 +377,8 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
                   <span className="num text-[11.5px] text-dim">
                     Funding{" "}
                     <span className="text-data">
-                      {perDay(market.fundingRateLongPpmPerSec)} ln · {perDay(market.fundingRateShortPpmPerSec)} sh
+                      {fundingVoice(market.fundingRateLongPpmPerSec)} ln ·{" "}
+                      {fundingVoice(market.fundingRateShortPpmPerSec)} sh
                     </span>{" "}
                     /day
                   </span>
@@ -375,7 +402,7 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
               </div>
               <div className="border-t border-rule px-3.5 py-2">
                 <p className="slug text-dim">
-                  Benchmark series · the mark the engine fills at
+                  Benchmark series · reference prices — fills settle at the verified report price
                 </p>
               </div>
             </TuiPanel>
@@ -389,7 +416,7 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
             <TuiPanel
               no="04"
               title="Order slip"
-              meta="two-stage · keeper executes"
+              meta="orders arm · fills settle at verified reports"
               className="lg:flex lg:h-full lg:flex-col"
             >
               <div className="lg:flex-1">
@@ -418,14 +445,13 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
         <div className={`order-7 lg:order-5 lg:col-span-3 ${cellVis(["Trade"])}`}>
           <PositionsBand
             asset={asset}
-            mark={mark}
             positions={book}
             connected={connected}
             onRefresh={bump}
           />
         </div>
         <div className={`order-8 lg:order-6 lg:col-span-3 ${cellVis(["Trade"])}`}>
-          <OrdersPanel orders={book.orders} connected={connected} onRefresh={bump} />
+          <OrdersPanel orders={book.orders} ordersState={ordersState} connected={connected} onRefresh={bump} />
         </div>
         <div className={`order-9 lg:order-7 lg:col-span-3 ${cellVis(["Trade"])}`}>
           <TriggerPanel asset={asset} positions={book} connected={connected} mark={mark} onSettled={bump} />
@@ -444,6 +470,7 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
 
 function AccountPanel({
   no,
+  asset,
   account,
   connected,
   equity,
@@ -451,6 +478,7 @@ function AccountPanel({
   onRefresh,
 }: {
   no: string;
+  asset: AssetId;
   account: ReturnType<typeof useAccount>;
   connected: boolean;
   equity: number | null;
@@ -480,16 +508,16 @@ function AccountPanel({
     >
       {connected ? (
         <div className="space-y-1.5 p-3.5">
-          <Row label="gUSD balance" value={fmtGusdCompact(account.gUsdBalance)} />
+          <Row label="gUSD balance" value={fmtGusdLedger(account.gUsdBalance)} />
           <Row
-            label="Position equity"
-            value={equity === null ? "—" : `${fmtGusdCompact(equity)} gUSD`}
+            label={`Position equity · ${pairName(asset)}`}
+            value={equity === null ? "—" : `${fmtGusdLedger(equity)} gUSD`}
           />
           <div className="flex items-baseline justify-between gap-3 border-b border-rule pb-1.5">
             <dt className="slug text-dim">Claimable</dt>
             <dd className="flex items-baseline gap-2">
               <span className="num text-[12px] text-bright">
-                {claimable === null ? "—" : fmtGusdCompact(claimable)}
+                {claimable === null ? "—" : fmtGusdLedger(claimable)}
               </span>
               <button
                 type="button"
@@ -508,8 +536,8 @@ function AccountPanel({
             </p>
           )}
           <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
-            Closes and triggers settle to claimable in accounting, then pay out on claim from the sgUSD vault — a short
-            claim leaves the remainder. Full holdings on{" "}
+            Closes and triggers first settle into your claimable balance; Claim pays it out of the
+            sgUSD earning balance — a short claim leaves the remainder. Full holdings on{" "}
             <Link href="/portfolio" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
               Portfolio
             </Link>
@@ -530,11 +558,26 @@ function AccountPanel({
 /* ------------------------------------------------------------------ */
 
 type PositionBook = {
-  long: PerpPositionState | null;
-  short: PerpPositionState | null;
+  long: PerpPositionProbe;
+  short: PerpPositionProbe;
   orders: PerpPendingOrder[] | null;
   claimable: number | null;
 };
+
+/** A probe's position — raw or marked; null only for flat/unknown. */
+function positionOf(probe: PerpPositionProbe): PerpPositionState | null {
+  return probe.kind === "ok" || probe.kind === "unmarked" ? probe.position : null;
+}
+
+/** An unmarked read keeps the last mark's timestamp, so the footnote's
+ *  "last verified Xs ago" stays truthful across a report gap instead of
+ *  resetting to "no verified price yet" on every probe cycle. */
+function carryMark(next: PerpPositionProbe, prev: PerpPositionProbe): PerpPositionProbe {
+  if (next.kind !== "unmarked") return next;
+  const prevMarkedAt =
+    prev.kind === "ok" || prev.kind === "unmarked" ? prev.position.markedAt : null;
+  return { kind: "unmarked", position: { ...next.position, markedAt: prevMarkedAt } };
+}
 
 function OrderSlip({
   asset,
@@ -567,7 +610,7 @@ function OrderSlip({
   const activeClose = useActiveAction("perp-close");
   const active = mode === "open" ? activeOpen : activeClose;
 
-  const position = positions[side];
+  const position = positionOf(positions[side]);
   const coll = Number(collText);
   const validInput = mode === "open" ? Number.isFinite(coll) && coll > 0 : position !== null;
 
@@ -643,9 +686,11 @@ function OrderSlip({
   const gate: string | null =
     mode === "open"
       ? openGate
-      : position === null
-        ? "There's no position on this side to close — it may have settled already."
-        : null;
+      : positions[side].kind === "unknown"
+        ? "Can't read this position right now — try again in a moment."
+        : position === null
+          ? "There's no position on this side to close — it may have settled already."
+          : null;
 
   const quoteRefused = gate === null && validInput && mark !== null && quote === null;
   const quoteGate: string | null = !quoteRefused
@@ -771,10 +816,10 @@ function OrderSlip({
         </>
       )}
 
-      {/* tolerance — the bound the armed order refuses to fill past */}
+      {/* tolerance — the price limit the armed order refuses to fill past */}
       <div>
         <p className="slug mb-1 text-[10px] text-dim">
-          PRICE TOLERANCE · {mode === "open" ? (longActive ? "fills below" : "fills above") : longActive ? "closes above" : "closes below"} the bound
+          PRICE TOLERANCE · {mode === "open" ? (longActive ? "fills below" : "fills above") : longActive ? "closes above" : "closes below"} the limit
         </p>
         <div className="flex flex-wrap gap-px border border-rule-strong bg-rule-strong">
           {TOLERANCE_PRESETS_BPS.map((b) => (
@@ -805,7 +850,7 @@ function OrderSlip({
                 label={longActive ? "Refuses above" : "Refuses below"}
                 value={fmtGusdPrecise(quote.acceptablePrice)}
               />
-              <Row label="Report price" value={fmtGusdPrecise(quote.referencePrice)} />
+              <Row label="Settlement price" value={fmtGusdPrecise(quote.referencePrice)} />
             </>
           ) : (
             <Row label="Position size" value="—" strong />
@@ -814,29 +859,44 @@ function OrderSlip({
           <>
             <Row label="Closing" value={`${fmtGusdLedger(quote.sizeUsd)} gUSD of ${fmtGusdPrecise(quote.entryPrice)} entry`} />
             <Row
-              label="PnL at report"
-              value={`${quote.pnl < 0 ? "−" : "+"}${fmtNotional(Math.abs(quote.pnl))} gUSD`}
+              label="PnL at settlement price"
+              value={`${fmtSignedGusd(quote.pnl)} gUSD`}
               strong
               className={quote.pnl >= 0 ? "text-up" : "text-down"}
             />
             <Row label="Close fee" value={`${fmtGusdLedger(quote.closeFee)} gUSD`} />
             <Row label="Execution fee" value={`${fmtGusdLedger(quote.executionFee)} gUSD`} />
             <Row
-              label="Funding net"
-              value={`${quote.fundingNet <= 0 ? "+" : "−"}${fmtNotional(Math.abs(quote.fundingNet))} gUSD`}
+              label={
+                position !== null && quote.sizeUsd < position.sizeUsd
+                  ? "Funding net · whole position"
+                  : "Funding net"
+              }
+              value={fundingCashVoice(quote.fundingNet)}
               className={quote.fundingNet <= 0 ? "text-up" : "text-down"}
             />
             <Row
+              label={longActive ? "Refuses below" : "Refuses above"}
+              value={fmtGusdPrecise(quote.acceptablePrice)}
+            />
+            <Row
               label="Settles to claimable"
-              value={`${quote.proceeds < 0 ? "−" : "+"}${fmtNotional(Math.abs(quote.proceeds))} gUSD`}
+              value={`${fmtGusdLedger(quote.proceeds)} gUSD`}
               strong
             />
-            <Row label="Report price" value={fmtGusdPrecise(quote.referencePrice)} />
+            <Row label="Settlement price" value={fmtGusdPrecise(quote.referencePrice)} />
           </>
         ) : (
           <Row label="Settles to claimable" value="—" strong />
         )}
       </dl>
+
+      {isCloseQuote(quote) && quote.shortfall > 0 && (
+        <p className="border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
+          Funding and fees eat this close by {fmtGusdLedger(quote.shortfall)} gUSD — nothing settles
+          to claimable.
+        </p>
+      )}
 
       {market === undefined && (
         <p className="text-[11.5px] leading-relaxed text-dim">Checking the market onchain…</p>
@@ -888,7 +948,8 @@ function OrderSlip({
         )}
       </button>
       <p className="slug text-[10px] text-dim">
-        Arming locks {mode === "open" ? "collateral and" : ""} the keeper's fee — execution lands within an epoch.
+        Arming locks {mode === "open" ? "collateral and" : ""} the execution fee — the order stays
+        armed until it fills or you cancel it.
       </p>
     </div>
   );
@@ -948,8 +1009,14 @@ function Statistics({
     { label: "Low 24h", value: price(stats.low24h) },
     { label: "30d high", value: price(stats.high30d) },
     { label: "30d low", value: price(stats.low30d) },
-    { label: "Funding long", value: market == null ? "—" : `${perDay(market.fundingRateLongPpmPerSec)} /day` },
-    { label: "Funding short", value: market == null ? "—" : `${perDay(market.fundingRateShortPpmPerSec)} /day` },
+    {
+      label: "Funding · longs",
+      value: market == null ? "—" : `${fundingVoice(market.fundingRateLongPpmPerSec)} /day`,
+    },
+    {
+      label: "Funding · shorts",
+      value: market == null ? "—" : `${fundingVoice(market.fundingRateShortPpmPerSec)} /day`,
+    },
     { label: "Borrow", value: market == null ? "—" : `${perDay(market.borrowRatePpmPerSec)} /day` },
     { label: "Leverage cap", value: market == null ? "—" : `${num(market.maxLeverageBps / 10_000)}×` },
     { label: "Maintenance margin", value: market == null ? "—" : `${num(market.maintenanceMarginBps / 100)}%` },
@@ -957,6 +1024,8 @@ function Statistics({
     { label: "Close fee", value: market == null ? "—" : `${num(market.closeFeeBps / 100)}%` },
     { label: "Liquidation fee", value: market == null ? "—" : `${num(market.liquidationFeeBps / 100)}%` },
     { label: "Min collateral", value: market == null ? "—" : `${fmtGusdLedger(market.minCollateralUsd)} gUSD` },
+    { label: "Open interest long", value: market == null ? "—" : `${fmtGusdCompact(market.openInterestLong)} gUSD` },
+    { label: "Open interest short", value: market == null ? "—" : `${fmtGusdCompact(market.openInterestShort)} gUSD` },
     { label: "Max position", value: market == null ? "—" : `${fmtGusdCompact(market.maxPositionUsd)} gUSD` },
     { label: "Max open interest", value: market == null ? "—" : `${fmtGusdCompact(market.maxOiUsd)} gUSD` },
   ];
@@ -987,20 +1056,21 @@ function Statistics({
 /* ------------------------------------------------------------------ */
 
 /**
- * PositionsBand — the session's open positions as one dense board, every
- * column reading against the same mark the plate shows. The liquidation
- * distance is the risk figure: how far the mark sits from the forced-close
- * line, amber inside ten percent.
+ * PositionsBand — the session's open positions as one dense board. Every
+ * row marks at the probe's verified report price — the price the engine
+ * itself evaluates the liquidation gate at — never at the strip's
+ * benchmark reference. The liquidation distance is the risk figure: how
+ * far the mark sits from the forced-close line, amber inside ten percent.
+ * A report gap never hides a position: rows fall back to raw onchain
+ * figures with the marking voice.
  */
 function PositionsBand({
   asset,
-  mark,
   positions,
   connected,
   onRefresh,
 }: {
   asset: AssetId;
-  mark: number | null;
   positions: PositionBook;
   connected: boolean;
   onRefresh: () => void;
@@ -1010,11 +1080,15 @@ function PositionsBand({
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const sides = (["long", "short"] as const).filter((s) => positions[s] !== null);
+  const sides = (["long", "short"] as const).filter((s) => positionOf(positions[s]) !== null);
   const anyPosition = sides.length > 0;
-  // The newest touch on the book — the report-age footnote reads it.
+  // A probe whose raw read failed keeps the desk reading — existence is
+  // unresolved, never rendered as "Flat".
+  const reading =
+    !anyPosition && (positions.long.kind === "unknown" || positions.short.kind === "unknown");
+  // The first live position carries the mark-age footnote.
   const firstSide = sides[0];
-  const firstPosition = firstSide === undefined ? null : positions[firstSide];
+  const firstPosition = firstSide === undefined ? null : positionOf(positions[firstSide]);
 
   async function marketClose(side: PerpSide) {
     if (closeActive) return;
@@ -1032,14 +1106,19 @@ function PositionsBand({
     <TuiPanel
       no="06"
       title="Positions"
-      meta={connected ? (anyPosition ? `${sides.length} open` : "flat") : undefined}
+      meta={connected ? (anyPosition ? `${sides.length} open` : reading ? "reading…" : "flat") : undefined}
     >
       {!connected && (
         <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
           Connect a wallet to hold perp positions.
         </p>
       )}
-      {connected && !anyPosition && (
+      {connected && !anyPosition && reading && (
+        <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
+          Reading the book…
+        </p>
+      )}
+      {connected && !anyPosition && !reading && (
         <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
           Flat — no position on this market. Arm an open from the trade rail.
         </p>
@@ -1069,13 +1148,12 @@ function PositionsBand({
               </thead>
               <tbody>
                 {sides.map((side) => {
-                  const p = positions[side];
+                  const p = positionOf(positions[side]);
                   if (p === null) return null;
                   return (
                     <PositionRow
                       key={side}
                       state={p}
-                      mark={mark}
                       closeActive={closeActive}
                       onClose={() => marketClose(side)}
                     />
@@ -1092,8 +1170,8 @@ function PositionsBand({
         </div>
       )}
       {sides.map((side) => {
-        const p = positions[side];
-        if (p === null || !p.liquidatable) return null;
+        const p = positionOf(positions[side]);
+        if (p === null || p.liquidatable !== true) return null;
         return (
           <p
             key={side}
@@ -1106,8 +1184,11 @@ function PositionsBand({
       })}
       {anyPosition && firstPosition && (
         <p className="px-3.5 pb-3.5 pt-2 slug text-[10px] text-dim">
-          uPnL marks the verified report price ({fmtAge(firstPosition.updatedAt, Date.now())} old) — accrued funding
-          settles at the next onchain touch.
+          {firstPosition.markPrice !== null && firstPosition.markedAt !== null
+            ? `Rows mark at the verified report price (${fmtAge(firstPosition.markedAt, Date.now())} old) — accrued funding settles at the next onchain touch.`
+            : firstPosition.markedAt !== null
+              ? `Marking unavailable right now — rows show raw onchain figures; last verified ${fmtAge(firstPosition.markedAt, Date.now())}.`
+              : "Marking unavailable right now — rows show raw onchain figures until a verified price report prices them."}
         </p>
       )}
       {settled && (
@@ -1126,21 +1207,23 @@ function PositionsBand({
 
 function PositionRow({
   state,
-  mark,
   closeActive,
   onClose,
 }: {
   state: PerpPositionState;
-  mark: number | null;
   closeActive: boolean;
   onClose: () => void;
 }) {
   const long = state.side === "long";
   const liqDist =
-    state.liquidationPrice !== null && mark !== null && mark > 0
-      ? Math.abs((state.liquidationPrice - mark) / mark) * 100
+    state.liquidationPrice !== null && state.markPrice !== null && state.markPrice > 0
+      ? Math.abs((state.liquidationPrice - state.markPrice) / state.markPrice) * 100
       : null;
   const nearLiq = liqDist !== null && liqDist <= 10;
+  // Negative equity is real debt — shown signed and down-toned, amber once
+  // it sits under the maintenance floor.
+  const underWater =
+    state.equity !== null && state.maintenance !== null && state.equity < state.maintenance;
   return (
     <tr className="border-b border-rule transition-colors last:border-b-0 hover:bg-panel-deep">
       <td className={`slug py-2 pl-3.5 pr-3 ${long ? "text-up" : "text-down"}`}>
@@ -1151,14 +1234,20 @@ function PositionRow({
       <td className="num px-2.5 py-2 text-right text-data">{fmtGusdLedger(state.collateral)}</td>
       <td className="num px-2.5 py-2 text-right text-data">{fmtGusdPrecise(state.entryPrice)}</td>
       <td className="num px-2.5 py-2 text-right text-data">
-        {mark === null ? "—" : fmtGusdPrecise(mark)}
+        {state.markPrice === null ? "—" : fmtGusdPrecise(state.markPrice)}
       </td>
-      <td className={`num px-2.5 py-2 text-right font-bold ${state.uPnl >= 0 ? "text-up" : "text-down"}`}>
-        {`${state.uPnl < 0 ? "−" : "+"}${fmtNotional(Math.abs(state.uPnl))}`}
+      <td className={`num px-2.5 py-2 text-right font-bold ${state.uPnl === null ? "text-dim" : state.uPnl >= 0 ? "text-up" : "text-down"}`}>
+        {state.uPnl === null ? "—" : fmtSignedGusd(state.uPnl)}
       </td>
-      <td className="num px-2.5 py-2 text-right text-data">{fmtGusdLedger(Math.max(state.equity, 0))}</td>
-      <td className={`num px-2.5 py-2 text-right ${state.fundingNet <= 0 ? "text-up" : "text-down"}`}>
-        {`${state.fundingNet <= 0 ? "+" : "−"}${fmtNotional(Math.abs(state.fundingNet))}`}
+      <td className={`num px-2.5 py-2 text-right ${state.equity === null ? "text-dim" : underWater ? "text-amber" : state.equity < 0 ? "text-down" : "text-data"}`}>
+        {state.equity === null ? "—" : fmtSignedGusd(state.equity)}
+      </td>
+      <td className={`num px-2.5 py-2 text-right ${state.fundingNet === null ? "text-dim" : state.fundingNet <= 0 ? "text-up" : "text-down"}`}>
+        {state.fundingNet === null
+          ? "—"
+          : state.fundingNet === 0
+            ? "0.0000"
+            : `${fmtSignedGusd(-state.fundingNet)} ${state.fundingNet < 0 ? "received" : "paid"}`}
       </td>
       <td className="num px-2.5 py-2 text-right text-data">
         {state.liquidationPrice === null ? "—" : fmtGusdPrecise(state.liquidationPrice)}
@@ -1184,12 +1273,21 @@ function PositionRow({
 /* 07 — armed orders                                                   */
 /* ------------------------------------------------------------------ */
 
+/**
+ * OrdersPanel — the session's armed orders. An armed order locks its
+ * collateral and the execution fee up front, then waits for the venue:
+ * it stays armed until it fills or you cancel it — no expiry. An open
+ * whose price bound has already printed simply waits for the next
+ * settlement price inside its bound.
+ */
 function OrdersPanel({
   orders,
+  ordersState,
   connected,
   onRefresh,
 }: {
   orders: PerpPendingOrder[] | null;
+  ordersState: "reading" | "live" | "failed";
   connected: boolean;
   onRefresh: () => void;
 }) {
@@ -1211,16 +1309,33 @@ function OrdersPanel({
   }
 
   return (
-    <TuiPanel no="07" title="Armed orders" meta={orders === null ? undefined : `${orders.length} pending`}>
+    <TuiPanel
+      no="07"
+      title="Armed orders"
+      meta={ordersState === "live" ? `${orders?.length ?? 0} pending` : undefined}
+    >
       <div className="px-3.5 pb-1 pt-2.5 text-[11.5px] leading-relaxed text-dim">
-        Orders lock their collateral and the keeper's execution fee, then wait for execution against a fresh oracle
-        report — typically within one epoch. A close that prints past its price bound stays armed for the next epoch.
+        Orders lock their collateral and the execution fee up front, then fill at the next settlement price inside
+        their limit — they stay armed until they fill or you cancel them.
       </div>
       {!connected ? (
         <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">Connect a wallet to see your orders.</p>
-      ) : orders === null ? (
+      ) : ordersState === "reading" ? (
         <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">Reading orders…</p>
-      ) : orders.length === 0 ? (
+      ) : ordersState === "failed" ? (
+        <div className="flex items-center justify-between gap-3 px-3.5 pb-3.5">
+          <p className="text-[11.5px] leading-relaxed text-amber">
+            Couldn't read your armed orders — the book read failed. Your orders are unaffected.
+          </p>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="slug shrink-0 border border-rule-strong px-2.5 py-0.5 text-dim transition-colors hover:text-bright"
+          >
+            Retry
+          </button>
+        </div>
+      ) : orders === null || orders.length === 0 ? (
         <p className="px-3.5 pb-3.5 text-[11.5px] leading-relaxed text-dim">Nothing armed.</p>
       ) : (
         <ul className="border-t border-rule">
@@ -1234,12 +1349,12 @@ function OrdersPanel({
                 <span className={o.side === "long" ? "text-up" : "text-down"}>{KIND_LABEL[o.kind]}</span>{" "}
                 {o.kind === "open" ? (
                   <>
-                    {fmtGusdLedger(o.sizeUsd)} @ bound {fmtGusdPrecise(o.price)} · locked {fmtGusdLedger(o.collateral)}{" "}
+                    {fmtGusdLedger(o.sizeUsd)} @ limit {fmtGusdPrecise(o.price)} · locked {fmtGusdLedger(o.collateral)}{" "}
                     gUSD
                   </>
                 ) : o.kind === "close" ? (
                   <>
-                    close {fmtGusdLedger(o.sizeUsd)} @ bound {fmtGusdPrecise(o.price)}
+                    close {fmtGusdLedger(o.sizeUsd)} @ limit {fmtGusdPrecise(o.price)}
                   </>
                 ) : (
                   <>
@@ -1294,7 +1409,7 @@ function TriggerPanel({
   mark: number | null;
   onSettled: () => void;
 }) {
-  const sides = (["long", "short"] as const).filter((s) => positions[s] !== null);
+  const sides = (["long", "short"] as const).filter((s) => positionOf(positions[s]) !== null);
   if (!connected || sides.length === 0) {
     return (
       <TuiPanel no="08" title="Stop-loss · take-profit" meta="armed per position">
@@ -1309,7 +1424,13 @@ function TriggerPanel({
   return (
     <TuiPanel no="08" title="Stop-loss · take-profit" meta="armed per position">
       {sides.map((side) => (
-        <TriggerForm key={side} asset={asset} side={side} mark={mark} onSettled={onSettled} />
+        <TriggerForm
+          key={side}
+          asset={asset}
+          side={side}
+          mark={positionOf(positions[side])?.markPrice ?? mark}
+          onSettled={onSettled}
+        />
       ))}
     </TuiPanel>
   );
@@ -1336,14 +1457,20 @@ function TriggerForm({
   const trigger = Number(triggerText);
   const valid = Number.isFinite(trigger) && trigger > 0;
 
-  // A trigger past the mark on the firing side prints immediately —
-  // not a refusal (SL has no floor by design), just a hint before the
-  // keeper fills it within an epoch.
+  // A trigger past the mark on the firing side prints at the next
+  // verified report — not a refusal (a stop-loss has no price floor by
+  // design), just a hint before it fills.
   const wrongSideHint =
     valid && mark !== null
       ? triggerMet(kind, side === "long", priceRaw(trigger), priceRaw(mark))
-        ? "That trigger has already printed against the mark — the keeper fills it within an epoch."
+        ? "That trigger has already printed against the mark — it fills at the next verified report."
         : null
+      : null;
+
+  // A trigger set far from the mark is usually a typo — warn, don't block.
+  const farHint =
+    valid && mark !== null && mark > 0 && Math.abs(trigger - mark) / mark > 0.5
+      ? `That trigger sits ${num(Math.abs(((trigger - mark) / mark) * 100))}% ${trigger > mark ? "above" : "below"} the mark — check it before arming.`
       : null;
 
   useEffect(() => {
@@ -1408,6 +1535,17 @@ function TriggerForm({
           {wrongSideHint}
         </p>
       )}
+      {farHint && (
+        <p className="mt-2 border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
+          {farHint}
+        </p>
+      )}
+      {kind === "stop-loss" && (
+        <p className="mt-2 slug text-[10px] leading-relaxed text-dim">
+          A stop-loss fills at the settlement price — it has no price floor. In a fast move the fill can land past the
+          trigger.
+        </p>
+      )}
       {error && (
         <p className="mt-2 border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
           {error}
@@ -1463,7 +1601,7 @@ function LiquidationsBand({ asset }: { asset: AssetId }) {
   if (rows === null) return null;
 
   return (
-    <TuiPanel no="09" title="Liquidations" meta="indexer tape · newest first">
+    <TuiPanel no="09" title="Liquidations" meta="public record · newest first">
       {rows === undefined ? (
         <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">Reading the tape…</p>
       ) : rows.length === 0 ? (
@@ -1485,11 +1623,11 @@ function LiquidationsBand({ asset }: { asset: AssetId }) {
                 {liq.side === "long" ? "LONG" : "SHORT"}
               </span>
               <span className="num flex-1 whitespace-nowrap text-right text-[12px] text-data">
-                forced close @ {fmtUsdPrecise(liq.execPrice)}
+                forced close @ {fmtGusdPrecise(liq.execPrice)}
               </span>
               <span className="num w-28 shrink-0 text-right text-[11px] text-dim">
-                fee {fmtGusdCompact(liq.liquidationFee)}
-                {liq.badDebt > 0 ? ` · bad debt ${fmtGusdCompact(liq.badDebt)}` : ""} gUSD
+                fee {fmtGusdLedger(liq.liquidationFee)}
+                {liq.badDebt > 0 ? ` · bad debt ${fmtGusdLedger(liq.badDebt)}` : ""} gUSD
               </span>
               <span className="num w-24 shrink-0 text-right text-[10.5px] text-dim">
                 {liq.account.slice(0, 6)}…{liq.account.slice(-4)}
@@ -1505,30 +1643,6 @@ function LiquidationsBand({ asset }: { asset: AssetId }) {
 /* ------------------------------------------------------------------ */
 /* shared bits                                                         */
 /* ------------------------------------------------------------------ */
-
-function Reference({ asset }: { asset: AssetSpec }) {
-  return (
-    <TuiPanel title="Underlying GPU" meta="hardware reference">
-      <div className="space-y-1.5 p-3.5">
-        <Row label="Reference SKU" value={asset.referenceSku} />
-        <Row label="Vendor" value={asset.vendor === "nvidia" ? "NVIDIA" : "AMD"} />
-        <Row label="Memory" value={`${asset.vramGb} GB`} />
-        <Row label="Form factor" value={asset.formFactor} />
-        <Row
-          label="Spot desk"
-          value={
-            <Link
-              href={`/spot/${asset.id}`}
-              className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright"
-            >
-              trade {pairName(asset.id)} outright
-            </Link>
-          }
-        />
-      </div>
-    </TuiPanel>
-  );
-}
 
 function Row({
   label,

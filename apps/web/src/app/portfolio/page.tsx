@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { pairName } from "@/domain/types";
-import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtUnits, fmtUnitsMax, isFlatPct } from "@/domain/format";
+import { fmtClock, fmtFull, fmtGusd, fmtGusdPrecise, fmtNotional, fmtPctSigned, fmtSignedGusd, fmtUnits, fmtUnitsMax, isFlatPct } from "@/domain/format";
 import { isActionTerminal, type ActionRecord } from "@/domain/actions";
 import { useAccount, useActiveAction, useActions, useEarn, useMarkets, useServices, useWalletSession } from "@/data/services";
 import { useWalletActivity } from "@/data/protocol/hooks";
@@ -324,11 +324,12 @@ function PortfolioBook() {
 
 /**
  * 04 — perp book: the wallet's gUSD-settled perpetual positions, as the
- * indexer projected them, marked to the same displayed price every desk
- * stands on (uPnL is the preview-math mark, not a chain probe — the perps
- * desk owns verified probes). The claimable counter reads the chain when a
- * session exists and the indexer's projection otherwise; lag prints "—",
- * never a zero. Live positions link to their perp desk.
+ * public record projected them, re-marked at the benchmark reference every
+ * desk displays (uPnL is preview math at that reference — not the chain's
+ * settlement price; the perps desk owns the verified probes). The
+ * claimable counter reads the chain when a session exists and the public
+ * record's projection otherwise; lag prints "—", never a zero. Live
+ * positions link to their perp desk.
  */
 function PerpPanel() {
   const session = useWalletSession();
@@ -398,7 +399,7 @@ function PerpPanel() {
     <TuiPanel
       no="04"
       title="Perp positions"
-      meta="gUSD-settled · keeper executed"
+      meta="gUSD-settled · public record"
     >
       {indexed === null ? (
         <p className="px-3.5 py-3 text-[11.5px] leading-relaxed text-dim">
@@ -465,7 +466,7 @@ function PerpPanel() {
                         uPnl === null ? "text-dim" : uPnl >= 0 ? "font-bold text-up" : "font-bold text-down"
                       }`}
                     >
-                      {uPnl === null ? "—" : `${uPnl < 0 ? "−" : "+"}${fmtNotional(Math.abs(uPnl))}`}
+                      {uPnl === null ? "—" : fmtSignedGusd(uPnl)}
                     </td>
                   </tr>
                 );
@@ -473,6 +474,12 @@ function PerpPanel() {
             </tbody>
           </table>
         </div>
+      )}
+      {live.length > 0 && (
+        <p className="px-3.5 pb-3 pt-2 slug text-[10px] text-dim">
+          Rows are the public record's last touch — uPnL re-marks at the benchmark reference above, not the chain's
+          settlement price. The perps desk's verified marks are the figures to act on.
+        </p>
       )}
       <dl className="border-t border-rule">
         <div className="flex items-baseline justify-between gap-2 border-b border-rule px-3.5 py-2.5">

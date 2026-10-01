@@ -39,7 +39,7 @@ export default async function PerpsAssetPage({ params }: Props) {
       </nav>
       <div className="mb-4 mt-4 flex items-baseline justify-between gap-3 border-b border-rule-strong pb-3">
         <h1 className="disp text-[22px] leading-none text-primary">Perps</h1>
-        <p className="slug text-dim">gUSD-settled perpetual futures · keeper executed</p>
+        <p className="slug text-dim">gUSD-settled perpetual futures · fills settle at verified report prices</p>
       </div>
       <PerpsDesk asset={assetId} />
     </div>

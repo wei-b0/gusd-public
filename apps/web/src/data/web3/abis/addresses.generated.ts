@@ -71,7 +71,7 @@ export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
       "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
       "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c"
     ],
-    "startBlock": 1,
+    "startBlock": 0,
     "stateView": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
     "underlying": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
     "weth": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318"

@@ -5,10 +5,13 @@
  * a fresh attestation later), so a submit's price work is entirely preview —
  * one current attestation prices the acceptable-price bound, one simulation
  * of the exact calldata gates the signature, and there is no report to pin
- * or heal. Position state runs the other doctrine: every read is a VERIFIED
- * probe (`getPosition` with the live report — never consumes), the
- * GPUIssuance quote-doctrine, so uPnL/equity/maintenance on the panel are
- * exactly what the next execution would recompute.
+ * or heal. Position state runs the other doctrine: the raw struct reads
+ * attestation-free (existence is always truthful), and the marked figures —
+ * uPnL/equity/maintenance — attach only through a verified `getPosition`
+ * probe with the live report (never consumes), the GPUIssuance
+ * quote-doctrine, so they are exactly what the next execution would
+ * recompute; without a current report the desk shows raw figures and says
+ * so, it never invents a price.
  *
  * Money discipline mirrors the engine: fees ceil, payouts floor, entries
  * round against the trader (see ./math). Actions ride the shared action
@@ -30,11 +33,12 @@ import type {
   PerpOpenQuote,
   PerpOpenRequest,
   PerpPendingOrder,
+  PerpPositionProbe,
   PerpPositionState,
   PerpSide,
   PerpTriggerRequest,
 } from "@/domain/types";
-import { fmtGusdLedger } from "@/domain/format";
+import { fmtGusdLedger, fmtGusdPrecise } from "@/domain/format";
 import { formatGusdRaw, parseGusd } from "@/domain/units";
 import { fetchAttestation, attestedPrice, type Attestation } from "@/data/oracle/attestation";
 import { GPU_PERP_ENGINE_ABI } from "../abis/gpu_perp_engine";
@@ -47,6 +51,8 @@ import { REPORT_BRIDGE_MS, defaultSleep } from "../trading/quotes";
 import {
   acceptablePriceBound,
   feeBps,
+  fundingEarned,
+  fundingOwed,
   leverageBpsCeil,
   liquidationPriceEstimate,
   mulDiv,
@@ -95,6 +101,31 @@ const KIND_LABEL: Record<number, PerpPendingOrder["kind"]> = {
 /** Signed int256 raw (6-dec gUSD) → display number. */
 function toUsdSigned(raw: bigint): number {
   return Number(raw) / 1e6;
+}
+
+/** The engine's raw Position struct → the domain's position state with the
+ *  marked figures left null — the truthful half of a report-gap read. */
+type RawEnginePosition = NonNullable<
+  Awaited<ReturnType<PerpEngineContract["read"]["positions"]>>
+>;
+
+function rawPosition(asset: AssetId, side: PerpSide, raw: RawEnginePosition): PerpPositionState {
+  return {
+    asset,
+    side,
+    sizeUsd: formatGusdRaw(raw.sizeUsd),
+    collateral: formatGusdRaw(raw.collateral),
+    entryPrice: unscalePrice(raw.entryPrice),
+    markPrice: null,
+    uPnl: null,
+    equity: null,
+    maintenance: null,
+    liquidatable: null,
+    fundingNet: null,
+    liquidationPrice: null,
+    updatedAt: Date.now(),
+    markedAt: null,
+  };
 }
 
 /** A signed ppm/sec funding rate → a per-second number. */
@@ -183,58 +214,86 @@ export class OnChainPerpPort implements PerpPort {
   }
 
   /**
-   * The live position through a verified report — the probe the engine
-   * itself would re-execute against. One attestation prices the call; a
-   * non-current one (attestor's liveness) reads as no view, never as a
-   * stale figure.
+   * One position probe, in two stages. The raw `positions()` read is
+   * attestation-free and always truthful about existence — `flat` only
+   * when it saw zero size, never on a failure. When a current report is
+   * available the verified `getPosition` view attaches the marked figures
+   * (uPnL/equity/maintenance at that exact report price); without one the
+   * probe returns the raw figures `unmarked` — the desk says so, it never
+   * invents a price or collapses an open position into "Flat".
    */
-  async getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionState | null> {
+  async getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionProbe> {
     const session = this.session();
-    if (!session) return null;
+    if (!session) return { kind: "flat" };
     const gpuId = gpuIdForAsset(asset);
+    const isLong = side === "long";
+    // Stage 1 — the raw struct. Failure here is `unknown`: the position's
+    // existence is simply unreadable right now.
+    const raw = await this.engine().read.positions([session.owner, gpuId, isLong]).catch(() => null);
+    if (raw === null) return { kind: "unknown" };
+    if (raw.sizeUsd === 0n) return { kind: "flat" };
+    // Stage 2 — the marked figures through a verified report.
     const att = await this.attestationFor(gpuId);
-    if (att.kind !== "current") return null;
+    if (att.kind !== "current") {
+      return { kind: "unmarked", position: rawPosition(asset, side, raw) };
+    }
+    const price = attestedPrice(att);
+    if (price === null) {
+      return { kind: "unmarked", position: rawPosition(asset, side, raw) };
+    }
     try {
-      const v = await this.engine().read.getPosition([session.owner, gpuId, side === "long", att.updateData]);
-      if (v.position.sizeUsd === 0n) return null;
+      const v = await this.engine().read.getPosition([session.owner, gpuId, isLong, att.updateData]);
+      // The position closed between the two reads — the probe saw it settle.
+      if (v.position.sizeUsd === 0n) return { kind: "flat" };
       const mmBps = BigInt((await this.engine().read.markets([gpuId])).params.maintenanceMarginBps);
-      // The gate's debt is owed + borrow only (earned credits are excluded
-      // from the conservative equity): equity ≡ collateral + uPnL − debt.
+      // fundingDebt ≡ collateral + uPnL − equity = the position's NET accrued
+      // funding (owed + borrow − earned credits) — exactly what the
+      // estimator wants: a net credit widens the headroom, a net debt
+      // narrows it (the engine's equity includes credits since G1).
       const fundingDebt = v.position.collateral + v.uPnL - v.equity;
       const liqPrice = liquidationPriceEstimate(
-        v.position.sizeUsd, v.position.collateral, v.position.entryPrice, side === "long",
-        mmBps, fundingDebt > 0n ? fundingDebt : 0n,
+        v.position.sizeUsd, v.position.collateral, v.position.entryPrice, isLong,
+        mmBps, fundingDebt,
       );
+      const now = Date.now();
       return {
-        asset,
-        side,
-        sizeUsd: formatGusdRaw(v.position.sizeUsd),
-        collateral: formatGusdRaw(v.position.collateral),
-        entryPrice: unscalePrice(v.position.entryPrice),
-        uPnl: toUsdSigned(v.uPnL),
-        equity: toUsdSigned(v.equity),
-        maintenance: formatGusdRaw(v.maintenance),
-        liquidatable: v.liquidatable,
-        fundingNet: toUsdSigned(v.fundingDue),
-        liquidationPrice: liqPrice === null ? null : unscalePrice(liqPrice),
-        updatedAt: Date.now(),
+        kind: "ok",
+        position: {
+          asset,
+          side,
+          sizeUsd: formatGusdRaw(v.position.sizeUsd),
+          collateral: formatGusdRaw(v.position.collateral),
+          entryPrice: unscalePrice(v.position.entryPrice),
+          markPrice: unscalePrice(price),
+          uPnl: toUsdSigned(v.uPnL),
+          equity: toUsdSigned(v.equity),
+          maintenance: formatGusdRaw(v.maintenance),
+          liquidatable: v.liquidatable,
+          fundingNet: toUsdSigned(v.fundingDue),
+          liquidationPrice: liqPrice === null ? null : unscalePrice(liqPrice),
+          updatedAt: now,
+          markedAt: now,
+        },
       };
     } catch {
-      // UnknownMarket / probe failure — no position view.
-      return null;
+      // The verified view failed (probe revert, market read) — the raw
+      // figures stand, the marked ones don't.
+      return { kind: "unmarked", position: rawPosition(asset, side, raw) };
     }
   }
 
-  async listPendingOrders(): Promise<PerpPendingOrder[]> {
+  async listPendingOrders(): Promise<PerpPendingOrder[] | null> {
     const session = this.session();
     if (!session) return [];
     const indexed = await fetchIndexedPendingOrders(session.owner);
     if (indexed) return indexed;
     // Fallback: this session's own order ids, read off the engine. The
     // session-provenance doctrine — never a portfolio, just what this
-    // session armed.
+    // session armed. When every read fails the answer is null, never a
+    // fabricated empty list.
     const engine = this.engine();
     const out: PerpPendingOrder[] = [];
+    let anyFailure = false;
     for (const id of this.sessionOrderIds) {
       try {
         const o = await engine.read.orders([id]);
@@ -242,9 +301,10 @@ export class OnChainPerpPort implements PerpPort {
         const projected = projectOrder(id, o);
         if (projected) out.push(projected);
       } catch {
-        // dropped id — skip
+        anyFailure = true;
       }
     }
+    if (out.length === 0 && anyFailure && this.sessionOrderIds.length > 0) return null;
     return out;
   }
 
@@ -321,14 +381,30 @@ export class OnChainPerpPort implements PerpPort {
     const closeFeeBps = BigInt(
       (await this.engine().read.markets([gpuId]).catch(() => null))?.params.closeFeeBps ?? 0,
     );
-    // The engine settles the FULL position's funding into this decrease and
-    // re-snapshots the checkpoints — so the preview's funding figure is the
-    // probe's whole-position fundingDue, not a pro-rata share.
+    // Pro-rata funding attribution — the engine's G2 shape: the closed slice
+    // settles only ITS share of the accrued funding (charges ceil, credits
+    // floor at the same per-unit deltas the full settlement reads), so the
+    // preview mirrors the decrease tranche exactly. The raw position read
+    // supplies the checkpoints the verified view doesn't carry.
+    const raw = await this.engine().read.positions([session.owner, gpuId, request.side === "long"]);
+    const mk = await this.engine().read.markets([gpuId]);
+    const feeCum = request.side === "long" ? mk.fundingChargePerUnitLong : mk.fundingChargePerUnitShort;
+    const creditCum = request.side === "long" ? mk.fundingCreditPerUnitLong : mk.fundingCreditPerUnitShort;
+    const sliceOwed = fundingOwed(sizeRaw, feeCum, raw.fundingFeeCheckpoint);
+    const sliceBorrow = fundingOwed(sizeRaw, mk.borrowChargePerUnit, raw.borrowCheckpoint);
+    const sliceEarned = fundingEarned(sizeRaw, creditCum, raw.fundingCreditCheckpoint);
     const released = mulDiv(view.position.collateral, sizeRaw, held, "floor");
     const pnlShare = pnl(sizeRaw, view.position.entryPrice, request.side === "long", price);
     const closeFee = feeBps(sizeRaw, closeFeeBps);
     const executionFee = await this.engine().read.MIN_EXECUTION_FEE();
-    const proceeds = released + pnlShare + view.fundingDue - closeFee;
+    const dueRaw = released + pnlShare - closeFee - sliceOwed - sliceBorrow + sliceEarned;
+    // The engine floors the settlement at zero: a close whose fees and
+    // funding exceed its value settles nothing — the quote says so.
+    const proceeds = dueRaw > 0n ? dueRaw : 0n;
+    const shortfall = dueRaw < 0n ? -dueRaw : 0n;
+    // The bound the close arms with — longs refuse a fill below it, shorts
+    // above it (same derivation the submit pins).
+    const acceptablePrice = acceptablePriceBound(price, tolerance(request), request.side === "long", false);
 
     return {
       asset: request.asset,
@@ -339,8 +415,12 @@ export class OnChainPerpPort implements PerpPort {
       pnl: toUsdSigned(pnlShare),
       closeFee: formatGusdRaw(closeFee),
       executionFee: formatGusdRaw(executionFee),
-      fundingNet: toUsdSigned(view.fundingDue),
+      // This tranche's slice of the funding — the same pro-rata the
+      // engine's decrease settles (negative = the position earns).
+      fundingNet: toUsdSigned(sliceEarned) - toUsdSigned(sliceOwed + sliceBorrow),
+      acceptablePrice: unscalePrice(acceptablePrice),
       proceeds: toUsdSigned(proceeds),
+      shortfall: toUsdSigned(shortfall),
       quotedAtMs: Date.now(),
       blockNumber: await this.blockNumber(),
     };
@@ -519,7 +599,7 @@ export class OnChainPerpPort implements PerpPort {
       // bound, re-verified fail-closed against the fresh report at execution.
       () => 0n,
       (_full, _sizeRaw) =>
-        `${request.kind === "stop-loss" ? "Stop-loss" : "Take-profit"} ${request.side === "long" ? "long" : "short"} ${request.asset} @ ${request.triggerPrice}`,
+        `${request.kind === "stop-loss" ? "Stop-loss" : "Take-profit"} ${request.side === "long" ? "long" : "short"} ${request.asset} @ ${fmtGusdPrecise(request.triggerPrice)}`,
       { kind: "trigger", toleranceBps: 0 },
     );
   }
