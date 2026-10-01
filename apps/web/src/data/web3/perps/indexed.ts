@@ -7,7 +7,7 @@
  * chain probes instead; this file is only for the portfolio's history.
  */
 
-import { GPU_ID_TO_ASSET } from "@/data/oracle/panel-map";
+import { assetForWireGpuId } from "@/data/web3/gpu-id";
 import type { AssetId, PerpSide } from "@/domain/types";
 import { unscalePrice } from "./math";
 
@@ -54,7 +54,7 @@ export async function fetchIndexedPerpPositions(
       liquidatedAtSec: number | null;
       realizedPnlGusd: string | null;
     }[]) {
-      const asset = GPU_ID_TO_ASSET.get(dto.gpuId);
+      const asset = assetForWireGpuId(dto.gpuId);
       if (!asset) continue;
       out.push({
         asset,
@@ -135,7 +135,7 @@ export async function fetchIndexedPerpLiquidations(gpuId?: string): Promise<read
       badDebt: string;
       blockTimestamp: number;
     }[]) {
-      const asset = GPU_ID_TO_ASSET.get(dto.gpuId);
+      const asset = assetForWireGpuId(dto.gpuId);
       // Unmapped SKUs have no desk to read the row on — skip, don't invent.
       if (!asset) continue;
       out.push({

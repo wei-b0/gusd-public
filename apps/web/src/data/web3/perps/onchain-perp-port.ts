@@ -41,7 +41,7 @@ import { GPU_PERP_ENGINE_ABI } from "../abis/gpu_perp_engine";
 import { getContracts, type PerpEngineContract } from "../contracts";
 import { simulateWrite } from "../simulate";
 import { planApproval } from "../approvals";
-import { assetForGpuId, gpuIdForAsset } from "../gpu-id";
+import { assetForGpuId, assetForWireGpuId, gpuIdForAsset } from "../gpu-id";
 import { GPU_ID_TO_ASSET } from "@/data/oracle/panel-map";
 import { REPORT_BRIDGE_MS, defaultSleep } from "../trading/quotes";
 import {
@@ -735,7 +735,7 @@ async function fetchIndexedPendingOrders(owner: Address): Promise<PerpPendingOrd
       executionFee: string;
       createdAtSec: number;
     }[]) {
-      const asset = GPU_ID_TO_ASSET.get(dto.gpuId);
+      const asset = assetForWireGpuId(dto.gpuId);
       if (!asset) continue;
       out.push({
         orderId: Number(BigInt(dto.orderId)),

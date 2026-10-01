@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assetForGpuId,
+  assetForWireGpuId,
   gpuIdForAsset,
   gpuIdToString,
 } from "./gpu-id";
@@ -35,5 +36,17 @@ describe("gpu-id", () => {
     // ORACLE_PANELS is derived from the catalog; every ASSETS entry has a
     // panel today, so the refusal path is exercised via an unknown gpuId.
     expect(assetForGpuId("0x0000")).toBeNull();
+  });
+
+  it("resolves the wire form — raw bytes32 or a decoded SKU — to the asset", () => {
+    // The indexer's entities carry the raw bytes32 (0x4831…); the perp
+    // mappers must read it without silently skipping every row — the
+    // "Armed orders shows nothing" regression.
+    for (const asset of ASSETS) {
+      expect(assetForWireGpuId(gpuIdForAsset(asset))).toBe(asset);
+      expect(assetForWireGpuId(gpuIdToString(gpuIdForAsset(asset)))).toBe(asset);
+    }
+    expect(assetForWireGpuId("0xdeadbeef")).toBeNull();
+    expect(assetForWireGpuId("NOT_A_SKU")).toBeNull();
   });
 });
