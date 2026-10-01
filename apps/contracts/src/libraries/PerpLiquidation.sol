@@ -53,7 +53,11 @@ library PerpLiquidation {
 
         int256 uPnl = PerpMath.pnl(pos.sizeUsd, pos.entryPrice, isLong, price);
         uint256 debts = s.owed + s.borrow;
-        int256 equity = int256(uint256(pos.collateral)) + uPnl - int256(debts);
+        // Same equity shape as the decrease path (GpuPerpEngine._executeDecrease):
+        // collateral + uPnL + accrued funding credits − debts. Excluding the
+        // credits would forfeit a receiver-side position's earned funding at
+        // liquidation AND understate the gate's equity.
+        int256 equity = int256(uint256(pos.collateral)) + uPnl + int256(s.earned) - int256(debts);
         uint256 maintenance = PerpMath.maintenance(pos.sizeUsd, m.params.maintenanceMarginBps);
         if (equity >= int256(maintenance)) revert IGpuPerpEngine.NotLiquidatable(equity, maintenance);
 

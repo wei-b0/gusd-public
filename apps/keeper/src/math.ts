@@ -188,9 +188,11 @@ export function settle(m: MarketFunding, adv: AdvancedFunding, p: PositionFundin
   };
 }
 
-/** Equity at `price`: collateral + uPnL − (funding owed + borrow). */
+/** Equity at `price`: collateral + uPnL + accrued funding credits −
+ *  (funding owed + borrow) — the same shape as the engine's decrease,
+ *  liquidation gate, and getPosition view (G1 lockstep). */
 export function equity(p: PositionFunding, s: Settlement, price: bigint): bigint {
-  return p.collateral + pnl(p.sizeUsd, p.entryPrice, p.isLong, price) - (s.owed + s.borrow);
+  return p.collateral + pnl(p.sizeUsd, p.entryPrice, p.isLong, price) + s.earned - (s.owed + s.borrow);
 }
 
 /**

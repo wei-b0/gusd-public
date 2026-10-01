@@ -229,7 +229,7 @@ describe("scalePrice", () => {
 });
 
 describe("equity", () => {
-  it("is collateral + uPnL − debts", () => {
+  it("is collateral + uPnL + earned credits − debts (the engine's G1 shape)", () => {
     const pos = {
       sizeUsd: 1_000_000n,
       collateral: 100_000n,
@@ -240,7 +240,7 @@ describe("equity", () => {
       isLong: false,
     };
     const s = { owed: 500n, earned: 200n, borrow: 300n };
-    // short at price 27_000 → uPnL +100_000; equity = 100_000 + 100_000 − 800.
-    expect(equity(pos, s, 27_000n)).toBe(199_200n);
+    // short at price 27_000 → uPnL +100_000; equity = 100_000 + 100_000 + 200 − 800.
+    expect(equity(pos, s, 27_000n)).toBe(199_400n);
   });
 });

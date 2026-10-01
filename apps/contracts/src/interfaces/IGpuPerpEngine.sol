@@ -173,6 +173,7 @@ interface IGpuPerpEngine {
     error UnknownOrder(uint256 orderId);
     error OrderNotPending(uint256 orderId, OrderStatus status);
     error OrderDelayPending(uint256 orderId, uint64 readyAt);
+    error OrderDelayTooHigh(uint256 requested, uint256 cap);
     error NotOrderAccount(address caller, address account);
     error NoPosition(address account, bytes32 gpuId, bool isLong);
     error PositionTooLarge(uint256 requested, uint256 cap);

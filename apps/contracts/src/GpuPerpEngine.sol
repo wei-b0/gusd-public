@@ -134,7 +134,12 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
     function setMarketParams(bytes32 gpuId, MarketParams calldata params) external onlyOwner {
         if (!_marketExists[gpuId]) revert UnknownMarket(gpuId);
         _validateParams(gpuId, params);
-        _markets[gpuId].params = params;
+        Market storage m = _markets[gpuId];
+        // Accrue under the OLD rates first — a rate change must never apply
+        // retroactively to the un-accrued window (lazy accrual otherwise
+        // charges the whole idle gap at the new rate).
+        PerpFunding.accrue(m, gpuId, uint64(block.timestamp));
+        m.params = params;
         emit MarketParamsUpdated(gpuId, params);
     }
 
@@ -144,7 +149,13 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         emit MarketEnabled(gpuId, enabled);
     }
 
+    /// @notice Upper cap on the order delay — permissionless execution must
+    ///         never be locked out for more than an hour (a delay of 0 stays
+    ///         legal: the dev posture uses instant execution).
+    uint32 public constant MAX_ORDER_DELAY = 3600;
+
     function setMinOrderDelay(uint32 seconds_) external onlyOwner {
+        if (seconds_ > MAX_ORDER_DELAY) revert OrderDelayTooHigh(seconds_, MAX_ORDER_DELAY);
         minOrderDelay = seconds_;
         emit MinOrderDelaySet(seconds_);
     }
@@ -279,7 +290,12 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         }
     }
 
-    function claim(uint256 amount, address to) external whenNotPaused nonReentrant returns (uint256 paid) {
+    /// @notice Claim — exempt from the pause (it pays the trader what the
+    ///         protocol already owes; the same risk-reducing class as
+    ///         liquidation and cancel). Clamped to the counter and to the
+    ///         vault's per-block payout capacity; the remainder stays
+    ///         claimable.
+    function claim(uint256 amount, address to) external nonReentrant returns (uint256 paid) {
         if (to == address(0)) revert ZeroAddress();
         uint256 want = amount < claimableOf[msg.sender] ? amount : claimableOf[msg.sender];
         if (want == 0) revert NothingToClaim();
@@ -427,11 +443,32 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
             _checkTrigger(o.kind, o.isLong, price, o.triggerPrice);
         }
 
+        // Snapshot the checkpoints BEFORE settle — the closed slice's funding
+        // share must be computed at the same per-unit deltas the full
+        // settlement reads (settle re-snapshots the checkpoints to the
+        // current cumulatives).
+        uint128 feeCkpt = pos.fundingFeeCheckpoint;
+        uint128 creditCkpt = pos.fundingCreditCheckpoint;
+        uint128 borrowCkpt = pos.borrowCheckpoint;
         PerpFunding.Settlement memory s = PerpFunding.settle(m, pos, o.isLong);
         uint256 released = uint256(pos.collateral).mulDiv(sizeDelta, pos.sizeUsd, Math.Rounding.Floor);
         int256 pnlShare = PerpMath.pnl(sizeDelta, pos.entryPrice, o.isLong, price);
         uint256 closeFee = PerpMath.feeBps(sizeDelta, m.params.closeFeeBps);
-        int256 raw = int256(released) + pnlShare - int256(closeFee) - int256(s.owed + s.borrow) + int256(s.earned);
+        // Pro-rata funding attribution: the closed slice settles only ITS
+        // share of the position's accrued funding — charges ceil, credits
+        // floor (the same per-unit rounding doctrine everywhere else). The
+        // remainder's unattributed share rewinds into its checkpoints below,
+        // so a partial close neither forgives the remainder's debt nor
+        // forfeits its credits (full closes attribute everything anyway).
+        uint256 sliceOwed = PerpMath.fundingOwed(
+            sizeDelta, o.isLong ? m.fundingChargePerUnitLong : m.fundingChargePerUnitShort, feeCkpt
+        );
+        uint256 sliceBorrow = PerpMath.fundingOwed(sizeDelta, m.borrowChargePerUnit, borrowCkpt);
+        uint256 sliceEarned = PerpMath.fundingEarned(
+            sizeDelta, o.isLong ? m.fundingCreditPerUnitLong : m.fundingCreditPerUnitShort, creditCkpt
+        );
+        int256 raw = int256(released) + pnlShare - int256(closeFee)
+            - int256(sliceOwed + sliceBorrow) + int256(sliceEarned);
         uint256 due = raw > 0 ? uint256(raw) : 0;
 
         if (due > 0) _creditClaimable(o.account, o.market, due);
@@ -467,9 +504,18 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         } else {
             pos.sizeUsd = uint128(remaining);
             pos.collateral -= uint128(released);
+            // The remainder keeps its unattributed funding: uncollected debt
+            // AND uncredited earnings rewind into the fresh checkpoints
+            // (floor, clamped at the cumulative's own delta — the same
+            // clamp pattern _chargeFunding uses).
+            _rewindFunding(
+                pos, m, o.isLong, remaining, feeCkpt, creditCkpt, borrowCkpt,
+                s.owed - sliceOwed, s.borrow - sliceBorrow, s.earned - sliceEarned
+            );
             _setReserveShare(pos, PerpMath.pnl(remaining, pos.entryPrice, o.isLong, price));
             emit PositionDecreased(
-                o.account, o.market, o.isLong, sizeDelta, pnlShare, s.net, paidLedger, due,
+                o.account, o.market, o.isLong, sizeDelta, pnlShare,
+                int256(sliceEarned) - int256(sliceOwed + sliceBorrow), paidLedger, due,
                 remaining, uint256(pos.collateral),
                 pos.fundingFeeCheckpoint, pos.fundingCreditCheckpoint, pos.borrowCheckpoint
             );
@@ -477,7 +523,8 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         _pushReservation();
         emit OrderExecuted(
             orderId, msg.sender, o.account, o.market, o.kind, o.isLong, price, o.executionFee,
-            sizeDelta, pnlShare, paidLedger, s.net, due
+            sizeDelta, pnlShare, paidLedger,
+            int256(sliceEarned) - int256(sliceOwed + sliceBorrow), due
         );
     }
 
@@ -525,6 +572,44 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
             if (rewind > delta) rewind = delta;
             pos.borrowCheckpoint = m.borrowChargePerUnit - uint128(rewind);
         }
+    }
+
+    /// @dev After a partial decrease, rewinds the remainder's share of the
+    ///      settled funding into the freshly re-snapshotted checkpoints —
+    ///      uncollected debt AND uncredited earnings — floor-rounded and
+    ///      clamped at the cumulative delta the settlement actually read.
+    ///      The clamp reads the PRE-settle checkpoints (`*Ckpt0`): settle has
+    ///      already re-snapshotted the position's, so its own delta is zero.
+    ///      The amount inputs are the FULL-size settlement's minus the
+    ///      closed slice's attributed share.
+    function _rewindFunding(
+        Position storage pos,
+        Market storage m,
+        bool isLong,
+        uint256 remaining,
+        uint128 feeCkpt0,
+        uint128 creditCkpt0,
+        uint128 borrowCkpt0,
+        uint256 owedRem,
+        uint256 borrowRem,
+        uint256 earnedRem
+    ) internal {
+        uint128 feeCum = isLong ? m.fundingChargePerUnitLong : m.fundingChargePerUnitShort;
+        uint256 delta = feeCum - feeCkpt0;
+        uint256 rewind = owedRem.mulDiv(PerpMath.FUNDING_SCALE, remaining, Math.Rounding.Floor);
+        if (rewind > delta) rewind = delta;
+        pos.fundingFeeCheckpoint = feeCum - uint128(rewind);
+
+        delta = m.borrowChargePerUnit - borrowCkpt0;
+        rewind = borrowRem.mulDiv(PerpMath.FUNDING_SCALE, remaining, Math.Rounding.Floor);
+        if (rewind > delta) rewind = delta;
+        pos.borrowCheckpoint = m.borrowChargePerUnit - uint128(rewind);
+
+        uint128 creditCum = isLong ? m.fundingCreditPerUnitLong : m.fundingCreditPerUnitShort;
+        delta = creditCum - creditCkpt0;
+        rewind = earnedRem.mulDiv(PerpMath.FUNDING_SCALE, remaining, Math.Rounding.Floor);
+        if (rewind > delta) rewind = delta;
+        pos.fundingCreditCheckpoint = creditCum - uint128(rewind);
     }
 
     function _creditClaimable(address account, bytes32 gpuId, uint256 amount) internal {

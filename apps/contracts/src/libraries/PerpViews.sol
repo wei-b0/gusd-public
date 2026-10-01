@@ -45,7 +45,9 @@ library PerpViews {
         uint256 borrow = PerpMath.fundingOwed(pos.sizeUsd, m.borrowChargePerUnit, pos.borrowCheckpoint);
         v.uPnL = uPnl;
         v.fundingDue = int256(earned) - int256(owed + borrow);
-        v.equity = int256(uint256(pos.collateral)) + uPnl - int256(owed + borrow);
+        // Same equity shape as the decrease/liquidation paths: collateral +
+        // uPnL + accrued funding credits − debts — the gate's own figure.
+        v.equity = int256(uint256(pos.collateral)) + uPnl + v.fundingDue;
         v.maintenance = PerpMath.maintenance(pos.sizeUsd, m.params.maintenanceMarginBps);
         v.liquidatable = pos.sizeUsd > 0 && v.equity < int256(v.maintenance);
     }
@@ -89,8 +91,9 @@ library PerpViews {
         v.borrowRatePpmPerSec = int256(uint256(m.params.borrowRatePpmPerSec));
     }
 
-    /// @dev Equity at `price` including accrued funding/borrow debt (the
-    ///      funding view without accruing — see getPosition).
+    /// @dev Equity at `price` including accrued funding — charges AND earned
+    ///      credits (the funding view without accruing — see getPosition);
+    ///      the exact figure `liquidate`'s gate evaluates.
     function _equityOf(
         IGpuPerpEngine.Market storage m,
         IGpuPerpEngine.Position storage pos,
@@ -99,9 +102,11 @@ library PerpViews {
     ) internal view returns (int256) {
         int256 uPnl = PerpMath.pnl(pos.sizeUsd, pos.entryPrice, isLong, price);
         uint128 feeCum = isLong ? m.fundingChargePerUnitLong : m.fundingChargePerUnitShort;
+        uint128 creditCum = isLong ? m.fundingCreditPerUnitLong : m.fundingCreditPerUnitShort;
         uint256 owed = PerpMath.fundingOwed(pos.sizeUsd, feeCum, pos.fundingFeeCheckpoint);
+        uint256 earned = PerpMath.fundingEarned(pos.sizeUsd, creditCum, pos.fundingCreditCheckpoint);
         uint256 borrow = PerpMath.fundingOwed(pos.sizeUsd, m.borrowChargePerUnit, pos.borrowCheckpoint);
-        return int256(uint256(pos.collateral)) + uPnl - int256(owed + borrow);
+        return int256(uint256(pos.collateral)) + uPnl + int256(earned) - int256(owed + borrow);
     }
 
     function _positionKey(address account, bytes32 gpuId, bool isLong) internal pure returns (bytes32) {

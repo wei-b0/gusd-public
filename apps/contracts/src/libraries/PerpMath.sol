@@ -17,10 +17,10 @@ library PerpMath {
     uint256 internal constant FUNDING_SCALE = 1e18;
     /// @notice Parts-per-million denominator for per-second rates.
     uint256 internal constant PPM = 1_000_000;
-    /// @notice PPM rate expressed in WAD-per-second directly.
-    uint256 internal constant PPM_TO_WAD = 1e12;
     /// @notice Hard clamp on owner-set funding/borrow rates (ppm of notional
-    ///         per second): 0.1%/s = 8.6%/hour — the anti-warehousing bound.
+    ///         per second): 100_000 ppm/s = 10%/s — the anti-warehousing
+    ///         bound (a rate this high clears a 10x position's margin in
+    ///         seconds; owner tooling must sanity-check the scale).
     uint32 internal constant MAX_RATE_PPM_PER_SEC = 100_000;
     /// @notice Fee caps (bps): open/close/liquidation fees ≤ 10%.
     uint32 internal constant MAX_FEE_BPS = 1_000;

@@ -1362,6 +1362,9 @@ funding zeroes out in balanced markets).
 - funding charges clamp at the payer's collateral; credits never clamp
 - one-sided markets: the exposed side pays into the vault with settlement
   (no receiver to warehouse it)
+- a partial close settles only its pro-rata share of the accrued funding —
+  the carried remainder keeps its unattributed debt AND credit in its
+  checkpoints (nothing is forgiven or forfeited at the slice boundary)
 - increase-time charges sweep to the vault in-transaction; credits settle
   into the claimable counter
 - UI rates are pro-forma views at the current OI — never stored rates

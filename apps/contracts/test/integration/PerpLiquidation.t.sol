@@ -139,4 +139,86 @@ contract PerpLiquidationTest is PerpBase {
         assertEq(engine.markets(H100).openNotionalShort, 0);
         assertEq(engine.claimableOf(alice), 0); // fully wiped
     }
+
+    // ------------------------------------------------- funding-aware gate (G1)
+
+    /// @dev bob longs 20k @ 2.0 (5x) — the paying side; alice shorts 10k @ 2.0
+    ///      (10x) — the receiver whose liquidation we probe. Rates: funding
+    ///      100 ppm/s, borrow off. Timeline (60s epochs): bob's window is 20s
+    ///      with no OI; alice's is 60s one-sided long (long charge 6e15 WAD,
+    ///      her checkpoints pin here at zero); the liquidation probe then
+    ///      idles 600s, accruing 100×600×⅓-skew/1e6 ≈ 2e16 WAD to the long
+    ///      charge and 2× that per short unit to alice's credit index —
+    ///      earned ≈ 399_999_999 (floor) on her 10k notional.
+    function _fundedRig() internal {
+        IGpuPerpEngine.MarketParams memory p = _defaultParams();
+        p.fundingRatePpmPerSec = 100; // 0.01%/s
+        engine.setMarketParams(H100, p);
+        _mintGusd(bob, 100_000e6);
+        _createAndExecute(
+            bob, _order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, 20_000e6, 4_000e6, 2_0000, 0), 2_0000
+        );
+        _createAndExecute(
+            alice, _order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, false, 10_000e6, 1_000e6, 2_0000, 0), 2_0000
+        );
+    }
+
+    /// The receiver's earned funding pays at liquidation. At $2.2380 the
+    /// short's uPnL is −1_190e6 and her earned credits 399_999_999 — equity
+    /// 199_999_999 crosses the 250e6 maintenance line only as
+    /// collateral − uPnL-loss + credits, and 99_999_999 of it settles to
+    /// claimable after the 1% liqFee. Without the credits the equity is
+    /// −200_000_001 and nothing settles.
+    function test_liquidationPaysAccruedFundingCredit() public {
+        _fundedRig();
+        vm.warp(vm.getBlockTimestamp() + 600);
+        vm.prank(bob);
+        engine.liquidate(alice, H100, false, _updateData(H100, 2_2380));
+        assertEq(engine.markets(H100).fundingCreditPerUnitShort, 39_999_999_999_999_998);
+        assertEq(engine.claimableOf(alice), 99_999_999);
+        assertEq(engine.totalClaimable(), 99_999_999);
+        assertEq(engine.positions(alice, H100, false).sizeUsd, 0);
+    }
+
+    /// The gate counts the credits too. At $2.2180 the uPnL-only equity is
+    /// −100_000_001 (a pre-G1 gate would have liquidated), but with the
+    /// credits it is 339_999_999 — above the 250e6 line, so the gate refuses.
+    /// A benign touch first: the verified view does NOT accrue, so its credit
+    /// index still reads zero until the cumulatives are advanced onchain.
+    function test_liquidationGateCountsCredit() public {
+        _fundedRig();
+        vm.warp(vm.getBlockTimestamp() + 600);
+        vm.startPrank(bob);
+        gusd.approve(address(engine), type(uint256).max);
+        uint256 topUp =
+            engine.createOrder(_order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, 1_000e6, 100e6, 2_2180, 0));
+        vm.stopPrank();
+        _nextEpoch();
+        vm.prank(alice);
+        engine.executeOrder(topUp, _updateData(H100, 2_2180));
+        // uPnL −1_090e6, earned 439_999_999 (660s to this touch), coll 990e6
+        // → equity 339_999_999.
+        IGpuPerpEngine.PositionView memory v = engine.getPosition(alice, H100, false, _updateData(H100, 2_2180));
+        assertEq(v.equity, 339_999_999);
+        assertFalse(v.liquidatable);
+        // The gate agrees.
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(IGpuPerpEngine.NotLiquidatable.selector, 339_999_999, 250_000_000));
+        engine.liquidate(alice, H100, false, _updateData(H100, 2_2180));
+    }
+
+    /// Claims pay the trader what the protocol already owes — the same
+    /// risk-reducing class as liquidation, so the pause must not freeze them.
+    function test_claimWorksWhilePaused() public {
+        _openTenX();
+        engine.pause();
+        _nextEpoch();
+        vm.prank(bob);
+        engine.liquidate(alice, H100, true, _updateData(H100, 1_8500));
+        assertEq(engine.claimableOf(alice), 140_000_000);
+        vm.prank(alice);
+        engine.claim(type(uint256).max, alice);
+        assertEq(gusd.balanceOf(alice), 100_000e6 - 1_000e6 - 10_000 + 140_000_000);
+        assertEq(engine.claimableOf(alice), 0);
+    }
 }

@@ -169,6 +169,18 @@ contract PerpLifecycleTest is PerpBase {
         engine.createOrder(p);
     }
 
+    /// The permissionless-execution delay: 0 stays legal (the dev posture
+    /// executes instantly) and the cap can never lock a trader's armed order
+    /// out for more than an hour.
+    function test_minOrderDelayCap() public {
+        engine.setMinOrderDelay(0);
+        assertEq(engine.minOrderDelay(), 0);
+        engine.setMinOrderDelay(3600);
+        assertEq(engine.minOrderDelay(), 3600);
+        vm.expectRevert(abi.encodeWithSelector(IGpuPerpEngine.OrderDelayTooHigh.selector, 3601, 3600));
+        engine.setMinOrderDelay(3601);
+    }
+
     function test_unknownMarketReverts() public {
         gusd.approve(address(engine), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(IGpuPerpEngine.UnknownMarket.selector, bytes32(bytes("L40S_48GB"))));
