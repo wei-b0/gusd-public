@@ -30,6 +30,8 @@ import {GpuRouter} from "../src/GpuRouter.sol";
 import {GpuQuoter} from "../src/lens/GpuQuoter.sol";
 import {IGPUIssuance} from "../src/interfaces/IGPUIssuance.sol";
 import {StableRouter} from "../src/StableRouter.sol";
+import {GpuPerpEngine} from "../src/GpuPerpEngine.sol";
+import {IGpuPerpEngine} from "../src/interfaces/IGpuPerpEngine.sol";
 import {GpuPoolKey} from "../src/libraries/GpuPoolKey.sol";
 import {GpuOracle} from "../src/oracle/GpuOracle.sol";
 import {IGpuOracle} from "../src/oracle/IGpuOracle.sol";
@@ -128,6 +130,11 @@ contract DeployFull is Deploy {
     // acceptance set — it exists to bind reports to a methodology offchain)
     bytes32 constant DEMO_CALC_HASH = keccak256("gusd.demo.report.v1");
 
+    // perp LP capacity: the sgUSD-vault counterparty capital the perp book
+    // starts with (deposited into sgUSD at the deployer's rate — pure LP
+    // capital, no share-price distortion beyond the normal 1:1 seed line)
+    uint256 constant PERP_LP_SEED = 2_000_000e6;
+
     constructor() {
         CATALOGUE.push(H100);
         CATALOGUE.push(H200);
@@ -200,16 +207,25 @@ contract DeployFull is Deploy {
         // payout through this balance and the reserve, so it must clear both.
         _fundReserve(d.underlying, deployer, 16_000_000e6, deployer);
         IERC20(d.underlying).approve(d.gusd, type(uint256).max);
-        // Covers the quoter float (2M) + the genesis backstop buys across the
-        // catalogue (~0.07M incl. fees) + slack; the mock reserve mints freely.
-        gusd.mint(4_000_000e6, deployer);
+        // Covers the quoter float (2M) + the perp LP seed (2M) + the genesis
+        // backstop buys across the catalogue (~0.07M incl. fees) + slack; the
+        // mock reserve mints freely.
+        gusd.mint(6_000_000e6, deployer);
         gusd.approve(d.router, type(uint256).max);
+        gusd.approve(d.sgusd, type(uint256).max);
 
         // ------------------------------------------- 2.5) quoter float
         // One owner funding backs every quote in this pass: each quote ends
         // in a reverted unlock, so the float is never actually consumed.
         gusd.approve(d.gpuQuoter, type(uint256).max);
         gq.setGusdFloat(QUOTER_FLOAT);
+
+        // ------------------------------------- 2.6) perp LP capacity seed
+        // The perp book's counterparty capital lives in the sgUSD vault (the
+        // engine deposits losses into it and pays claims out of it). Seeding
+        // it here gives the dev posture a vault that can absorb the demo
+        // position and pay its claim without a crunch.
+        sg.deposit(PERP_LP_SEED, deployer);
 
         // --------------------- 3) genesis inventory: in-swap backstop per SKU
         // Pools are registered but carry nothing: no LP, no vault inventory.
@@ -374,6 +390,21 @@ contract DeployFull is Deploy {
         stableRouter.mint(usdt, 10_000e6, (swapOut * 995) / 1_000, skey, alice);
         gusd.approve(d.stableRouter, type(uint256).max);
         stableRouter.redeem(usdt, 5_000e6, (5_000e6 * 990) / 1_000, skey, alice);
+        // --------------------- perp demo: ARM a H100 long (2x, 2k notional)
+        // Orders are two-stage: this pass only creates the order (collateral
+        // + execution fee escrow). Execution is runReprice()'s job — its
+        // invocation epoch is past minOrderDelay by construction, while this
+        // pass's sim clock is frozen at sim start. The acceptable-price bound
+        // carries 50% headroom so the reprice's $3.00 report (1.2x the seed)
+        // stays inside it.
+        gusd.approve(d.perpEngine, type(uint256).max);
+        GpuPerpEngine perp = GpuPerpEngine(d.perpEngine);
+        uint256 seedH100 = _priceOf(H100);
+        uint256 openOrderId = perp.createOrder(_perpOrder(
+            H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, uint128(2_000e6), uint128(1_000e6),
+            uint128(Math.mulDiv(seedH100, 15_000, 10_000)), 0, perp.MIN_EXECUTION_FEE()
+        ));
+        require(openOrderId == 1, "demo perp open is the first order");
         vm.stopBroadcast();
 
         // ----------------------------------------------------- bob leg
@@ -481,6 +512,7 @@ contract DeployFull is Deploy {
         console2.log("mock USDT (pin in apps/web/src/data/web3/stables.ts):", usdt);
         console2.log("stable pool", vm.toString(Currency.unwrap(skey.currency0)), "/", vm.toString(Currency.unwrap(skey.currency1)));
         console2.log("gpuQuoter (float-funded):", d.gpuQuoter);
+        console2.log("perpEngine", d.perpEngine);
         console2.log("sgUSD assets", gusd.balanceOf(address(sg)));
         console2.log("vault revenue to date", ledger.totalToVault());
     }
@@ -543,6 +575,7 @@ contract DeployFull is Deploy {
         GpuQuoter gq = GpuQuoter(quoterAddr);
         GPUMarketLiquidity vault = GPUMarketLiquidity(polAddr);
         RevenueLedger ledger = RevenueLedger(ledgerAddr);
+        address alice = vm.addr(ALICE_PK);
         address bob = vm.addr(BOB_PK);
 
         // ------------------- report reprice: this epoch, attestor-signed
@@ -592,8 +625,48 @@ contract DeployFull is Deploy {
                 hook.polState(H100, rr6, _sigFor(oracle, attestorPk, rr6));
             require(live6, "pol live post-reprice");
             require(askPrice6 == 30_150 && bidPrice6 == 29_850, "edges repriced in-swap");
+
+            // ------------------- perp demo: execute alice's armed open
+            // Permissionless: bob executes it and takes the escrowed fee.
+            // Same-epoch report reuse: byte-identical to the buy's updateData.
+            address perpAddr = vm.parseJsonAddress(json, ".perpEngine");
+            GpuPerpEngine perp = GpuPerpEngine(perpAddr);
+            IGpuPerpEngine.Order memory o = perp.orders(1);
+            require(
+                o.status == IGpuPerpEngine.OrderStatus.Pending
+                    && o.kind == IGpuPerpEngine.OrderKind.MarketIncrease && o.account == alice,
+                "demo perp open pending"
+            );
+            perp.executeOrder(1, _updateData(oracleAddr, attestorPk, H100, 30_000));
+            IGpuPerpEngine.Position memory pos = perp.positions(alice, H100, true);
+            require(pos.sizeUsd == 2_000e6, "demo perp open size");
+            require(pos.entryPrice == 30_000, "demo perp entry");
         }
         vm.stopBroadcast();
+
+        // alice arms the TP on her live position (runFull couldn't — the
+        // position only exists once the open executes). trigger = seed × 1.1
+        // = $2.75 < $3.00: the condition is ALREADY met at the repriced tape,
+        // so the keeper executes it on its first candidate tick — arming only
+        // here keeps the runReprice sim's frozen clock honest (a same-block
+        // create+execute would revert OrderDelayPending).
+        vm.startBroadcast(ALICE_PK);
+        address perpAddr = vm.parseJsonAddress(json, ".perpEngine");
+        gusd.approve(perpAddr, type(uint256).max);
+        uint256 tpId = GpuPerpEngine(perpAddr).createOrder(
+            _perpOrder(
+                H100, IGpuPerpEngine.OrderKind.TakeProfit, true, 0, 0, 0,
+                uint128(Math.mulDiv(_priceOf(H100), 11_000, 10_000)),
+                GpuPerpEngine(perpAddr).MIN_EXECUTION_FEE()
+            )
+        );
+        vm.stopBroadcast();
+        require(
+            GpuPerpEngine(perpAddr).activeTrigger(
+                vm.addr(ALICE_PK), H100, true, uint8(IGpuPerpEngine.OrderKind.TakeProfit)
+            ) == tpId,
+            "demo tp armed"
+        );
 
         // The reprice trades left their fees in the ledger — distribute them
         // too, so the record ends drained.
@@ -668,6 +741,32 @@ contract DeployFull is Deploy {
 
     function _buy(GpuRouter router, GpuRouter.BuyParams memory p) internal returns (uint256 paid) {
         paid = router.buy(p);
+    }
+
+    /// @dev The demo's perp OrderParams — same shape as the engine's
+    ///      createOrder input. The execution fee comes in from the caller
+    ///      (the engine's public getter): solc rejects type-level constant
+    ///      access on the engine inside this script's compile unit.
+    function _perpOrder(
+        bytes32 gpuId,
+        IGpuPerpEngine.OrderKind kind,
+        bool isLong,
+        uint128 size,
+        uint128 collateral,
+        uint128 acceptable,
+        uint128 trigger,
+        uint96 executionFee
+    ) internal pure returns (IGpuPerpEngine.OrderParams memory) {
+        return IGpuPerpEngine.OrderParams({
+            market: gpuId,
+            kind: kind,
+            isLong: isLong,
+            sizeDeltaUsd: size,
+            collateralDeltaUsd: collateral,
+            acceptablePrice: acceptable,
+            triggerPrice: trigger,
+            executionFee: executionFee
+        });
     }
 
     function _canonicalKey(Deployment memory d, bytes32 gpuId) internal view returns (PoolKey memory key) {
@@ -754,6 +853,7 @@ contract DeployFull is Deploy {
         } catch {}
         vm.serializeAddress(obj, "hook", d.hook);
         vm.serializeAddress(obj, "router", d.router);
+        vm.serializeAddress(obj, "perpEngine", d.perpEngine);
         vm.serializeAddress(obj, "gpuQuoter", d.gpuQuoter);
         vm.serializeAddress(obj, "permit2", d.permit2);
         vm.serializeAddress(obj, "positionManager", d.positionManager);

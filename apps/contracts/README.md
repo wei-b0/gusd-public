@@ -56,8 +56,8 @@ Deploy variables (env; see `script/Deploy.s.sol`):
 | Variable | Meaning |
 |---|---|
 | `PRIVATE_KEY` | Deployer key (required) |
-| `ORACLE` | Wire an external `IGPUPriceOracle` verbatim; unset deploys `GPUPriceOracle` |
-| `PUBLISHER` | Publisher EOA for the deployed oracle (default: deployer) |
+| `ORACLE` | Wire an external `IGpuOracle` verbatim; unset deploys the pull oracle `GpuOracle` |
+| `ORACLE_ATTESTOR` | The deployed pull oracle's report signer — required on mainnet (default: deployer; a separate key is the production posture) |
 | `ORACLE_MAX_DEVIATION_BPS` | Onchain per-publish deviation bound, 0 = disabled (default) |
 | `TREASURY` | RevenueLedger treasury (default: deployer) |
 | `UNDERLYING` | Existing reserve-asset token (gUSD's `underlying`; default: deploys a mock) |
@@ -143,7 +143,7 @@ $ PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
 Works on Anvil or any testnet with a funded deployer key (same env
-passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
+passthrough as `Deploy`: `ORACLE`, `ORACLE_ATTESTOR`, `TREASURY`, `UNDERLYING`, …
 — the inner production deploy reads them). What it adds beyond
 `Deploy.run()`:
 
@@ -157,7 +157,7 @@ passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
   the stable pool below).
 - **A mock second stable** (`Mock Tether USD`, 6 decimals) deployed through
   the CREATE2 proxy with the fixed salt `gusd.mock.usdt.v1` — the address is
-  deterministic per chain (Anvil: `0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64`)
+  deterministic per chain (Anvil: `0x940C170eEFb283457454a505a35E4CEF7E1d4B1c`)
   — whitelisted on the StableRouter, and paired with the reserve in a
   hook-free fee-100/tickSpacing-1 pool at 1:1, exactly the key the web's
   funding panel quotes.

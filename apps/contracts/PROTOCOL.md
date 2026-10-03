@@ -827,7 +827,18 @@ Uniswap liquidity (third-party)
 gUSD deposits
 +
 protocol revenue
++
+net perp settlement flow
 ```
+
+Perp settlements ride the vault (§29): trader losses net of fees arrive as
+bare gUSD transfers and raise `totalAssets`; trader winnings settle into a
+claimable balance in the perp engine and are paid out of vault liquidity
+under a reservation floor — a floor that also reserves the engine's carried
+earned-funding balances ahead of their close. sgUSD capital therefore
+carries the perp system's directional risk by design — it is the
+counterparty capital, and the funding and borrow fees are what charge that
+risk to the traders who create it.
 
 ## Treasury
 
@@ -936,6 +947,16 @@ Pay with gUSD
 
 while internally routing through the secondary market.
 
+The perps desk exposes leveraged exposure the same way:
+
+```text
+LONG H100 10x
+Collateral: gUSD
+```
+
+with execution pending on the keeper, TP/SL and liquidation state visible,
+and settled PnL claimable from the portfolio.
+
 ## Stable routing
 
 The mint desk offers every funding stable the deployment whitelists:
@@ -1037,6 +1058,24 @@ There is no withdrawal path.
 
 ---
 
+## Perp engine custody
+
+```text
+the perp engine holds nothing at rest except
+open-position collateral and escrowed execution
+fees — its gUSD balance equals Σ open collateral
++ Σ pending order fees. Settlements are
+accounting-first: wins and losses land in a
+claimable counter and `claim` pays from the
+sgUSD vault, partially when the vault is short.
+Claimable receives close proceeds only — earned
+funding accrues into the position's own balance
+(engine-accounting liabilities outside the
+engine's gUSD balance).
+```
+
+---
+
 ## Oracle-fresh placement
 
 ```text
@@ -1118,8 +1157,10 @@ The initial protocol does not require:
 - GPU liquidations,
 - GPU-token oracle-NAV redemption,
 - LP underwriting of GPU appreciation,
-- perpetuals,
-- user short positions,
+- user short positions in the spot GPU markets
+  (shorts exist only in the perp system, where
+  sgUSD capital — not LP inventory — is the
+  counterparty, §29),
 - lending markets,
 - custom AMM curves,
 - reserve yield deployment,
@@ -1140,6 +1181,19 @@ around a moving reference). Contract-upgrade migration is not: the
 protocol ships as an immutable V1.
 
 These may become future products but are not foundational requirements.
+
+Perp non-goals (§29 in scope, these deliberately not):
+
+- cross-margin (isolated margin only — one position per
+  (account, gpuId, side)),
+- position NFTs or transferable perp positions,
+- an order book or operator-matched fills — every fill price is a consumed
+  oracle report,
+- a keeper accrual loop — funding accrues lazily inside executions,
+- auto-deleveraging (ADL): a liquidation's shortfall lands in the vault,
+  it is never socialized to winners,
+- auto-flipping a decreased-to-zero position,
+- perp LP tokens or a dedicated perp vault — sgUSD IS the perp capital.
 
 ---
 
@@ -1224,6 +1278,150 @@ optional additional liquidity providers
 Primary Issuance
 =
 GPU supply creation against gUSD
+
+
+GpuPerpEngine
+=
+leveraged GPU exposure, sgUSD as counterparty
 ```
 
 The Solidity implementation should preserve these boundaries.
+
+---
+
+# 29. GPU Perpetual Futures
+
+The pull oracle that prices issuance and spot markets also prices leveraged
+derivatives: gUSD-settled perpetual futures, one market per launch-catalogue
+GPU id. The design is deliberately conventional — GMX v2 conventions adapted
+to a pull oracle — with one deliberate novelty at the capital layer: **sgUSD
+is the counterparty capital.** The vault that pays savings yield also takes
+the other side of every perp trade.
+
+The economics: leveraged long/short GPU-hour exposure settled in gUSD, no
+new Uniswap pools, no synthetic GPU tokens, no oracle-NAV redemption.
+
+## Capital flow
+
+```text
+gUSD (trader collateral, engine custody)
+  ↓ oracle-priced executions
+wins → claimable balance → paid from the sgUSD vault
+losses + fees → remainder → the sgUSD vault
+```
+
+Trader collateral never enters the vault — the engine custodies it while the
+position is open, so LP capital stays exactly the vault balance. At
+settlement the non-fee remainder flows to the vault as a bare gUSD transfer
+(the RevenueLedger pattern: it raises `totalAssets`, never a depositor's
+claim), and trader winnings become a claimable counter the vault pays under
+a reservation floor.
+
+## Markets
+
+Per-market risk parameters (owner-set, per gpuId):
+
+```text
+max leverage · maintenance margin · open/close fees
+liquidation fee · skew funding rate · borrow rate
+per-side open-interest cap · min collateral · max position
+```
+
+- collateral and settlement are gUSD only
+- one **isolated** position per (account, gpuId, side)
+- size is USD notional at 6-dec; every fill price is an oracle report price
+- decrease-only on the short side of the book: no auto-flip — close to zero,
+  then open the other way as a fresh increase
+
+## Two-stage oracle execution
+
+Every order is two-stage, mirroring the pull-oracle posture — nothing
+broadcasts against a stored price:
+
+```text
+1. createOrder — locks collateral + execution fee into the engine,
+   emits the full order for the indexer (no follow-up reads)
+2. executeOrder — anyone (normally the keeper) supplies a FRESH
+   attestation (updateData); the oracle consumes it and the fill
+   price IS that report's price, re-checked against the order's
+   acceptable-price bound on-chain
+```
+
+- orders execute permissionlessly after a `minOrderDelay`; the account
+  cancels exempt from the delay
+- unexecutable orders are never auto-cancelled — they stay armed and retry
+  in a later epoch (the keeper guards its gas with a mandatory sim)
+- TP/SL are trigger orders in the same two-stage shape: the trigger
+  condition is re-verified against the fresh report at execution
+  (fail-closed), and the fill price is that same report price — the
+  condition is itself the price bound. Stop-loss has no floor: a floored
+  stop would stall and hand the position to liquidation.
+
+## Funding and borrow fees (GMX v2 two-cumulative model)
+
+Funding accrues lazily at the start of every execution — **no keeper accrual
+transactions**. A paying side's cumulative grows with the skew; the receiving
+side's credit cumulative grows pro-rata. A borrow fee charges both sides
+every second (it is what actually prices warehoused open interest — skew
+funding zeroes out in balanced markets).
+
+- funding charges clamp at the payer's collateral; credits never clamp
+- one-sided markets: the exposed side pays into the vault with settlement
+  (no receiver to warehouse it)
+- earned funding accrues INTO the position: every touch folds the
+  settlement's earned output into a per-position `earnedFunding` balance
+  (equity-inclusive — it widens the liquidation gate's equity exactly like
+  un-accrued credits do). The balance monetizes only at close/liquidation:
+  a close slices the whole balance pro-rata (floor — the slice exits into
+  the settlement, the remainder keeps the rest), so `claimableOf` receives
+  **close proceeds only**
+- a partial close settles only its pro-rata share of the accrued funding —
+  the carried remainder keeps its unattributed debt in its checkpoints and
+  its earned credit in the balance field (nothing is forgiven or forfeited
+  at the slice boundary)
+- increase-time charges sweep to the vault in-transaction; earned credits
+  accrue into the position's balance, never into the claimable counter
+- UI rates are pro-forma views at the current OI — never stored rates
+
+## Liquidation and claims
+
+- liquidation is permissionless with a fresh attestation; the gate is
+  fail-closed (`equity < maintenance`, computed on-chain at the report
+  price) — liquidating a healthy position reverts
+- full close only in v1; the executor earns the liquidation fee, the
+  trader's floored equity settles into the claimable counter, any bad debt
+  is absorbed by the vault (never socialized to winners)
+- every close settles atomically in accounting first (PnL, funding, fees →
+  `claimableOf`), then `claim(amount, to)` pays `min(want, vault
+  liquidity subject to the per-block cap)` — **partial payment is the
+  designed crunch behavior**, the remainder stays claimable
+- a reservation floor (`totalClaimable + Σ positive uPnL at the last touch
+  price + Σ carried earnedFunding balances`) blocks ordinary sgUSD
+  redemptions from draining the vault ahead of settled claims — it is an
+  LP-fairness floor, not a solvency guarantee; uPnL can grow between touches
+  and partial claims absorb the gap. The earned-funding balances are
+  engine-accounting liabilities outside its gUSD balance — accounting
+  entries that become vault liabilities when their position closes
+
+## Execution infrastructure
+
+A dedicated keeper (`apps/keeper`) is the only backend service that
+broadcasts. It reads the indexer's Postgres entities (the whole book in a
+few queries — no chain polling), subscribes to the oracle's WS candidate
+stream, evaluates orders/triggers/liquidations offline with math that
+mirrors the engine bit-for-bit, fetches an attestation **only when work
+exists**, and gates every broadcast behind an `eth_call` sim. Liquidations
+outrank order executions in its work queue; a hot-key gas floor is alarmed.
+
+## The counterparty question
+
+sgUSD taking the long side's short side is an intentional extension of its
+risk profile beyond pure revenue yield — stated plainly, not hidden:
+
+- the vault is the counterparty of last resort for both directions
+- funding and borrow fees charge warehoused directional risk to the
+  positions that create it
+- liquidation bad debt and one-sided funding drift land in the vault;
+  trader wins are paid under the reservation floor and the per-block cap
+- what this is NOT: LP inventory shorting (the spot LP semantics of §15 are
+  untouched), an insurance fund, or a socialized-loss mechanism

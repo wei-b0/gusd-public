@@ -30,6 +30,15 @@ import type {
   MarketTrade,
   MintDirection,
   MintQuote,
+  PerpCloseQuote,
+  PerpCloseRequest,
+  PerpMarketState,
+  PerpOpenQuote,
+  PerpOpenRequest,
+  PerpPendingOrder,
+  PerpPositionProbe,
+  PerpSide,
+  PerpTriggerRequest,
   QuoteFailure,
   TradeAvailability,
   TradeQuote,
@@ -242,6 +251,62 @@ export interface BridgePort {
   execute(quote: BridgeQuote): AsyncIterable<BridgeProgress>;
 }
 
+/**
+ * The perp layer — gUSD-settled GPU perpetual futures on GpuPerpEngine.
+ * Every fill price is a consumed oracle report; orders are two-stage
+ * (create locks collateral + execution fee, the keeper executes with a
+ * fresh attestation). Previews pin one report and compute against exactly
+ * what execution will consume — the same attestation→pin→sim→self-heal
+ * doctrine the trading desk runs — and actions resolve to the action
+ * record the desk renders. sgUSD is the counterparty capital: settlements
+ * flow through the claimable counter, paid from the vault.
+ */
+export interface PerpPort {
+  /** Per-market risk parameters, OI, and pro-forma funding rates. Null for
+   *  an asset with no oracle settlement panel registered onchain. Works
+   *  without a session — market state is public. */
+  describeMarket(asset: AssetId): Promise<PerpMarketState | null>;
+  /** The caller's settled claimable balance (gUSD product units); null
+   *  without a session. */
+  getClaimable(): Promise<number | null>;
+  /** Whether ANY open perp position exists across every oracle-settled
+   *  market, either side — the claim gate: `claimableOf` is a wallet-global
+   *  counter, so one open position anywhere holds the Claim button. Null
+   *  when the reads fail — unreadable is never flat; false without a
+   *  session (nothing of the caller's can be open). */
+  hasOpenPosition(): Promise<boolean | null>;
+  /** One position probe: raw figures always; marked figures (uPnL, equity,
+   *  maintenance, liquidation distance) only when a current report priced
+   *  the read. `flat` only when a successful read saw zero size — a failed
+   *  read is `unknown`, never an honest-sounding empty. */
+  getPosition(asset: AssetId, side: PerpSide): Promise<PerpPositionProbe>;
+  /** The caller's pending orders (locked and awaiting the keeper). Null
+   *  when the reads fail — an unreadable book is never an empty one. */
+  listPendingOrders(): Promise<PerpPendingOrder[] | null>;
+  /** Execution-identical open preview at the pinned report, or null for an
+   *  invalid request (below min collateral, over leverage/OI caps). Works
+   *  without a session — quoting is public, acting is not. */
+  quoteOpen(request: PerpOpenRequest): Promise<PerpOpenQuote | null>;
+  /** Execution-identical close preview at the pinned report, or null when
+   *  there is no position and the request would close more than it holds. */
+  quoteClose(request: PerpCloseRequest): Promise<PerpCloseQuote | null>;
+  /** Arm an open (MarketIncrease). Requires a connected wallet; locks
+   *  collateral + execution fee in the engine. */
+  open(request: PerpOpenRequest): Promise<ActionRecord>;
+  /** Arm a close (MarketDecrease) — reduceOnly, keeper-executed. Requires
+   *  a connected wallet; locks the execution fee only. */
+  close(request: PerpCloseRequest): Promise<ActionRecord>;
+  /** Arm a TP/SL trigger order (create-with-replace). Requires a connected
+   *  wallet; locks the execution fee only. */
+  armTrigger(request: PerpTriggerRequest): Promise<ActionRecord>;
+  /** Cancel a pending order — refunds its escrowed fee (and locked
+   *  collateral on increases). Account-only, exempt from the delay. */
+  cancelOrder(orderId: number): Promise<ActionRecord>;
+  /** Settle claimable gUSD out of the sgUSD vault. Approval-free; pays
+   *  partially when the vault is short — the remainder stays claimable. */
+  claim(amount: number): Promise<ActionRecord>;
+}
+
 export interface Services {
   marketData: MarketDataPort;
   trading: TradingPort;
@@ -249,6 +314,7 @@ export interface Services {
   earn: EarnPort;
   mint: MintPort;
   bridge: BridgePort;
+  perp: PerpPort;
   tx: TxPort;
   actions: ActionPort;
 }

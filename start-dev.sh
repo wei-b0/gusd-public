@@ -60,7 +60,7 @@ env_var() { # env_var NAME DEFAULT
 }
 ORACLE_PORT="$(env_var ORACLE_PORT 8080)"
 export ORACLE_PORT
-INDEXER_SCHEMA="$(env_var INDEXER_SCHEMA gusd_index_envio_docker_v1)"
+INDEXER_SCHEMA="$(env_var INDEXER_SCHEMA gusd_index_envio_docker_v2)"
 
 wait_until() { # wait_until DESC TIMEOUT_S CMD... — poll every 2s
   local desc="$1" timeout="$2" start
@@ -152,7 +152,7 @@ command -v forge >/dev/null 2>&1 || die "forge not on PATH — install Foundry" 
 command -v anvil >/dev/null 2>&1 || die "anvil not on PATH — install Foundry" 1
 
 missing=""
-for img in gusd-indexer:local gusd-oracle:local gusd-attestor:local; do
+for img in gusd-indexer:local gusd-oracle:local gusd-attestor:local gusd-keeper:local; do
   docker image inspect "$img" >/dev/null 2>&1 || missing="$missing $img"
 done
 if [ -n "$missing" ] && [ "$BUILD" = 0 ]; then
@@ -310,8 +310,8 @@ fi
 
 # --- 7. optional image build, then the stack ----------------------------------------------
 if [ "$BUILD" = 1 ]; then
-  log "building images indexer/oracle/attestor (db-migrate rides the oracle image)..."
-  if ! docker compose -f "$COMPOSE" build indexer oracle attestor >"$LOG_DIR/build.log" 2>&1; then
+  log "building images indexer/oracle/attestor/keeper (db-migrate rides the oracle image)..."
+  if ! docker compose -f "$COMPOSE" build indexer oracle attestor keeper >"$LOG_DIR/build.log" 2>&1; then
     echo "[start-dev] image build failed — last 40 lines of $LOG_DIR/build.log:" >&2
     tail -n 40 "$LOG_DIR/build.log" >&2 || true
     exit 6
@@ -354,6 +354,15 @@ fi
 log "attestor tail:"
 docker logs --tail 3 gusd-attestor 2>&1 | sed 's/^/  | /' || true
 
+# --- 10.5 keeper sanity ------------------------------------------------------------------------------
+keeper_state=$(docker inspect -f '{{.State.Status}}' gusd-keeper 2>/dev/null || echo missing)
+if [ "$keeper_state" != "running" ]; then
+  docker logs --tail 20 gusd-keeper >&2 || true
+  die "keeper not running (state: $keeper_state) — crash-looping on a bad record/RPC?" 7
+fi
+log "keeper tail:"
+docker logs --tail 3 gusd-keeper 2>&1 | sed 's/^/  | /' || true
+
 # --- 11. summary -----------------------------------------------------------------------------------------
 echo
 log "dev stack is up:"
@@ -362,6 +371,7 @@ echo "  oracle API  : http://127.0.0.1:$ORACLE_PORT  (/v1/health, /v1/protocol/*
 if [ "$ORACLE_PORT" != "8080" ]; then echo "  (non-default ORACLE_PORT=$ORACLE_PORT from $ENV_FILE)"; fi
 echo "  chain       : anvil $RPC_URL (chain-id $CHAIN_ID, pid $(cat "$PID_FILE"))"
 echo "  clockkeeper : pid $(cat "$LOG_DIR/clockkeeper.pid" 2>/dev/null || echo '-') keeps the head timestamp at wall clock"
+echo "  keeper      : perp executor (orders + liquidations; hot key = anvil acct #1)"
 echo "  record      : $RECORD"
 echo "  mock USDT   : $USDT_ADDR (record stables[1]; pinned in web stables.ts)"
 echo "  logs        : $LOG_DIR"

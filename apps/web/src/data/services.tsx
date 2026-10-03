@@ -75,6 +75,7 @@ export function ServicesProvider({
       earn: current.earn,
       mint: current.mint,
       bridge: current.bridge,
+      perp: current.perp,
       tx: current.tx,
       actions: current.actions,
     }));

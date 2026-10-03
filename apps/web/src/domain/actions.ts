@@ -21,8 +21,20 @@
 import type { Address } from "viem";
 import type { TxSpec } from "./types";
 
-/** Product surface an action belongs to — groups session ledgers. */
-export type ActionOrigin = "trade" | "mint" | "redeem" | "earn" | "unearn";
+/** Product surface an action belongs to — groups session ledgers. The perp
+ *  surfaces split so the duplicate-submit gate never blocks a close while an
+ *  open is in flight — they are independent orders. */
+export type ActionOrigin =
+  | "trade"
+  | "mint"
+  | "redeem"
+  | "earn"
+  | "unearn"
+  | "perp-open"
+  | "perp-close"
+  | "perp-trigger"
+  | "perp-cancel"
+  | "perp-claim";
 
 export type ActionPhase =
   | "validating"
@@ -51,7 +63,7 @@ export function isActionTerminal(phase: ActionPhase): boolean {
 }
 
 /** Which protocol face an approval grants — display vocabulary only. */
-export type SpenderKind = "router" | "gusd" | "sgusd" | "stableRouter";
+export type SpenderKind = "router" | "gusd" | "sgusd" | "stableRouter" | "perpEngine";
 
 /** One spend permission an action needs before it can execute. The runner
  *  turns each need into its own approval transaction (exact amount, never

@@ -18,6 +18,10 @@ export interface ProtocolAddresses {
    *  deployment also deployed the oracle (an external ORACLE keeps the field
    *  absent). Its EIP-712 signatures are the only consumable oracle input. */
   oracleAttestor?: Address;
+  /** The perp engine (GpuPerpEngine) — gUSD-settled GPU perpetuals over
+   *  the same pull oracle. Present on every deployment since the perp
+   *  wiring; the /perps desk and the keeper both read it from here. */
+  perpEngine: Address;
   permit2: Address;
   poolManager: Address;
   positionManager: Address;
@@ -45,54 +49,59 @@ export interface ProtocolAddresses {
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
   "4663": {
     "chainId": 4663,
-    "gpuQuoter": "0x1Ea1b604fDae3339fe1c27f6F8731994EeE8C92D",
-    "gusd": "0x5F165706BA448632902177056B2ecD3cbbA95a3f",
-    "hook": "0xb317901Bc835b0151C3619790279824E03fC50Cc",
-    "issuance": "0xB906Bd45ff28Ad2039E8d223215b6B9c5D9E3189",
-    "ledger": "0x5c41bbcB0a0D00888228698A651b569B04953890",
-    "marketLiquidity": "0xAca4fE999Aa1162A38aaEB35Be3A52B5a5823196",
-    "oracle": "0x01C8F64a67c4770963850cd13ab9a9eCba25aF17",
+    "gpuQuoter": "0xA7D430F47E6099AA06FDf4833C6E437af27E578e",
+    "gusd": "0x906B202B1033b04E22C290a5e5BaDaE073f93Fe1",
+    "hook": "0x0694b81B8b8D4C797cca925D4767920a9E76D0cC",
+    "issuance": "0x4eCb3663CC9B72E1e17bB8771B7e19DA44d69f45",
+    "ledger": "0x3657d1Fe6f5Ba6C503455FDf04d5dc4B1e0d377b",
+    "marketLiquidity": "0x3892CbCa36792F7020BEb8e4cF84C11b67fB1F85",
+    "oracle": "0x13904Eee2e7F1E21192f78b42ec88F8bA3985c55",
     "oracleAttestor": "0xfEed079814cB1fFd2E7aECd3A991A78309e0b5e8",
     "oracleEpochLength": 60,
     "oracleMaxObservationAge": 300,
     "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+    "perpEngine": "0xAe8a661F3E204b3e2D9386EB45b19104C2af7D27",
     "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     "positionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
     "quoter": "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
-    "router": "0xD864C94c6a5Be800b9ebBFb1f23d8D38AE185426",
-    "sgusd": "0x3667b9b362fcA246b8bd3aE3d7270E5E36905b9C",
-    "stableRouter": "0x83899D7dD2A91fa72A4601a4ac51F375295b8678",
+    "router": "0xE7D78Da540619eB730E175e58F5328FD3a8131d2",
+    "sgusd": "0x7EC86A9f676DAB3F6da3F4B0B00A14D7ac0C46A3",
+    "stableRouter": "0xC73f555b9C1E76A7cFE158357715fB02A8e547a0",
     "stables": [
       "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
     ],
-    "startBlock": 74993448,
+    "startBlock": 79006795,
     "stateView": "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
     "underlying": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
     "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
   },
   "31337": {
     "chainId": 31337,
-    "gpuQuoter": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
-    "gusd": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "hook": "0x2B720ace6F9368416cA6B1A1aE73FCE2847490Cc",
-    "issuance": "0x9A676e781A523b5d0C0e43731313A708CB607508",
-    "ledger": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
-    "marketLiquidity": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
-    "oracle": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-    "permit2": "0x61c36a8d610163660E21a8b7359e1Cac0C9133e1",
-    "poolManager": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-    "positionManager": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
-    "quoter": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-    "router": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
-    "sgusd": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
-    "stableRouter": "0x3Aa5ebB10DC797CAC828524e59A333d0A371443c",
+    "gpuQuoter": "0x7a2088a1bFc9d81c55368AE168C2C02570cB814F",
+    "gusd": "0x68B1D87F95878fE05B998F19b66F4baba5De1aed",
+    "hook": "0x1eb3E1B68D21F4a8139573828Df175D3b2E850CC",
+    "issuance": "0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1",
+    "ledger": "0xc6e7DF5E7b4f2A278906862b61205850344D4e7d",
+    "marketLiquidity": "0x59b670e9fA9D0A427751Af201D676719a970857b",
+    "oracle": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
+    "oracleAttestor": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "oracleEpochLength": 86400,
+    "oracleMaxObservationAge": 86400,
+    "permit2": "0x32467b43BFa67273FC7dDda0999Ee9A12F2AaA08",
+    "perpEngine": "0xc5a5C42992dECbae36851359345FE25997F5C42d",
+    "poolManager": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+    "positionManager": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
+    "quoter": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
+    "router": "0x4A679253410272dd5232B3Ff7cF5dbB88f295319",
+    "sgusd": "0x3Aa5ebB10DC797CAC828524e59A333d0A371443c",
+    "stableRouter": "0x09635F643e140090A9A8Dcd712eD6285858ceBef",
     "stables": [
-      "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-      "0xAd8F7921738819152FFA371c984D736842ed8AFE"
+      "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+      "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c"
     ],
-    "startBlock": 0,
-    "stateView": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
-    "underlying": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    "weth": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"
+    "startBlock": 230,
+    "stateView": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
+    "underlying": "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+    "weth": "0x0B306BF915C4d645ff596e518fAf3F9669b97016"
   }
 };

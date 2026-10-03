@@ -14,6 +14,7 @@ function record(underlying: string, stables: string[]): ProtocolAddresses {
     ledger: "0x0000000000000000000000000000000000000003",
     marketLiquidity: "0x000000000000000000000000000000000000000e",
     oracle: "0x0000000000000000000000000000000000000004",
+    perpEngine: "0x00000000000000000000000000000000000000f1" as Address,
     permit2: "0x0000000000000000000000000000000000000005",
     poolManager: "0x0000000000000000000000000000000000000006",
     positionManager: "0x0000000000000000000000000000000000000007",
@@ -117,11 +118,11 @@ describe("stableConfig — the real wiring (deployment record + table)", () => {
     // re-pin intentionally.
     expect(cfg.others).toHaveLength(1);
     expect(cfg.others[0]).toEqual({
-      address: "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64",
+      address: "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c",
       symbol: "USDT",
       name: "Mock Tether USD",
     });
-    expect(stableMetaOf("0x0ad4a493ea649e4a2c31d6128dd35995d51a0c64", 31337)).toEqual(cfg.others[0]);
+    expect(stableMetaOf("0x940c170eefb283457454a505a35e4cef7e1d4b1c", 31337)).toEqual(cfg.others[0]);
   });
 });
 

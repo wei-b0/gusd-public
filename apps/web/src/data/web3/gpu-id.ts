@@ -9,7 +9,7 @@
 
 import { padHex, toHex, type Hex } from "viem";
 import type { AssetId } from "@/domain/types";
-import { ORACLE_PANELS } from "@/data/oracle/panel-map";
+import { GPU_ID_TO_ASSET, ORACLE_PANELS } from "@/data/oracle/panel-map";
 
 /** bytes32 key for an AssetId's settlement SKU. The contract form is
  *  `bytes32(bytes(sku))` — ASCII first, zero padding after. */
@@ -38,4 +38,13 @@ export function assetForGpuId(gpuId: Hex): AssetId | null {
     if (ref.gpuId === sku) return asset as AssetId;
   }
   return null;
+}
+
+/** Resolve a wire gpuId — the indexer's entities carry the raw bytes32
+ *  (`0x4831…`), some surfaces speak the decoded SKU — to the product
+ *  AssetId it settles, or null when unregistered. Never invents: an
+ *  unmapped gpuId has no desk to read it on. */
+export function assetForWireGpuId(gpuId: string): AssetId | null {
+  const sku = gpuId.startsWith("0x") ? gpuIdToString(gpuId as Hex) : gpuId;
+  return GPU_ID_TO_ASSET.get(sku) ?? null;
 }

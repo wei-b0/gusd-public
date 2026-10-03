@@ -1,13 +1,14 @@
 "use client";
 
 /**
- * TerminalDesk — the one roof: analyse and execute a market in a single
- * dense composition. The desk is deliberately the only surface with depth
- * and a trade ticket: the chart, statistics, the Index feed, both tapes,
- * the GPU reference, and the order slip. There is no unbound desk:
- * `/terminal` 308s to the default desk (H100), and the markets rail
+ * SpotDesk — the spot desk: analyse and execute a GPU asset market in a
+ * single dense composition. The desk is deliberately the only spot surface
+ * with depth and a trade ticket: the chart, statistics, the Index feed,
+ * both tapes, the GPU reference, and the order slip. There is no unbound
+ * desk: `/spot` 308s to the default desk (H100), and the markets rail
  * navigates, so every desk has the market's own URL. Desktop is spatial;
- * mobile is sequential tasks via the tab strip.
+ * mobile is sequential tasks via the tab strip. Leveraged exposure lives on
+ * the perps desk (`/perps/[asset]`) — the sibling composition.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -55,7 +56,7 @@ import { TuiPanel } from "@/components/ui/panel";
 const RANGES = CHART_RANGES;
 const TABS = ["Overview", "Chart", "Trade", "Activity"] as const;
 
-export function TerminalDesk({ asset }: { asset: AssetId }) {
+export function SpotDesk({ asset, initialSide }: { asset: AssetId; initialSide?: "buy" | "sell" }) {
   // The bound market comes from the route — the rail's links are the switch.
   const [range, setRange] = useState<ChartRange>("1h");
   const [tab, setTab] = useState<string>("Overview");
@@ -82,7 +83,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
     <div>
       {/* Mobile task switcher — desktop stays spatial */}
       <div className="mb-5 lg:hidden">
-        <TabBar tabs={TABS.map((id) => ({ id, label: id }))} active={tab} onChange={setTab} label="Terminal sections" />
+        <TabBar tabs={TABS.map((id) => ({ id, label: id }))} active={tab} onChange={setTab} label="Spot desk sections" />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[230px_minmax(0,1fr)_310px]">
@@ -111,7 +112,7 @@ export function TerminalDesk({ asset }: { asset: AssetId }) {
                   return (
                     <Link
                       key={mk.asset.id}
-                      href={`/terminal/${mk.asset.id}`}
+                      href={`/spot/${mk.asset.id}`}
                       aria-current={active ? "page" : undefined}
                       className={`flex w-full items-baseline justify-between gap-2 border-b border-rule px-3 py-2 text-left transition-colors last:border-b-0 ${active ? "bg-panel-deep" : "hover:bg-panel-deep"
                         }`}
@@ -589,6 +590,17 @@ function Reference({ asset }: { asset: AssetSpec }) {
         <Row label="Vendor" value={asset.vendor === "nvidia" ? "NVIDIA" : "AMD"} />
         <Row label="Memory" value={`${asset.vramGb} GB`} />
         <Row label="Form factor" value={asset.formFactor} />
+        <Row
+          label="Perp desk"
+          value={
+            <Link
+              href={`/perps/${asset.id}`}
+              className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright"
+            >
+              trade {pairName(asset.id)} leveraged
+            </Link>
+          }
+        />
       </div>
     </TuiPanel>
   );

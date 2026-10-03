@@ -62,6 +62,25 @@ export const pmDonate = event("PmDonate");
 export const posmPositionModified = event("PosmPositionModified");
 export const tokenTransfer = event("TokenTransfer");
 
+// ---------------------------------------------------------------------------
+// Perp engine (GpuPerpEngine) — log rows + state
+// ---------------------------------------------------------------------------
+
+export const sgusdEngineWithdrawal = event("SgusdEngineWithdrawal");
+export const perpOrderCreated = event("PerpOrderCreated");
+export const perpOrderExecuted = event("PerpOrderExecuted");
+export const perpOrderCancelled = event("PerpOrderCancelled");
+export const perpPositionIncreased = event("PerpPositionIncreased");
+export const perpPositionDecreased = event("PerpPositionDecreased");
+export const perpPositionClosed = event("PerpPositionClosed");
+export const perpPositionLiquidated = event("PerpPositionLiquidated");
+export const perpClaimableSettled = event("PerpClaimableSettled");
+export const perpClaimed = event("PerpClaimed");
+export const perpFundingAccrued = event("PerpFundingAccrued", [
+  "blockTimestamp",
+  "updatedAtSec",
+]);
+
 export const pools = table(
   "Pool",
   (value) => String(value.poolId),
@@ -125,4 +144,31 @@ export const protocolStatsDaily = table("ProtocolStatsDaily", (value) => String(
   "issuedCount",
   "buyCount",
   "sellCount",
+]);
+export const perpMarkets = table("PerpMarket", (value) => String(value.gpuId), [
+  "fundingUpdatedAtSec",
+  "createdAtSec",
+], ["maxLeverageBps", "maintenanceMarginBps", "openFeeBps", "closeFeeBps", "liquidationFeeBps", "fundingRatePpmPerSec", "borrowRatePpmPerSec"]);
+export const perpPositions = table(
+  "PerpPosition",
+  (value) => `${value.wallet}_${value.gpuId}_${value.isLong}`,
+  // Counts/timestamps round-trip as Numbers (JS-comparable, wallets.eventCount
+  // precedent); money columns (size/collateral/entry/checkpoints/realizedPnl)
+  // stay native BigInt through the read-back so the delta math is exact.
+  ["openedAtSec", "lastTouchedAtSec", "closedAtSec", "liquidatedAtSec", "increaseCount", "decreaseCount"],
+);
+export const perpOrders = table("PerpOrder", (value) => String(value.orderId), [
+  "orderId",
+  "createdAtSec",
+  "resolvedAtSec",
+], ["kind", "status"]);
+export const perpClaimable = table("PerpClaimable", (value) => String(value.wallet), [
+  "settleCount",
+  "claimCount",
+  "lastActivityAtSec",
+]);
+export const perpEngineStats = table("PerpEngineStats", () => "engine", [
+  "minOrderDelaySec",
+  "orderCount",
+  "liquidationCount",
 ]);

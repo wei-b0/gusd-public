@@ -99,6 +99,15 @@ beforeAll(async () => {
   // Deploy + Demo pair drifted apart — minimal Deploy deliberately leaves
   // the quoter floats unfunded ("Floats are funded by Deploy.full"), so
   // Demo's first quote reverts NoFloat on a fresh chain.
+  //
+  // The deploy runs on the DAY grid (AGENTS.md recipe) — the sim's report
+  // signatures stamp sim time and broadcast blocks stamp wall time, and on
+  // the 60s default grid that gap reverts UnknownGpuEpoch mid-broadcast
+  // when the attempt crosses an epoch boundary (observed flaky: green one
+  // run, Transaction Failure the next). runForgeScript spreads
+  // process.env, so these reach the forge run.
+  process.env.ORACLE_EPOCH_LENGTH = "86400";
+  process.env.ORACLE_MAX_OBSERVATION_AGE = "86400";
   await runForgeScript("script/Deploy.full.s.sol", "runFull()");
   pg = await connectPg();
   await dropScratchSchemas(pg);
@@ -127,8 +136,13 @@ d("indexer onchain suites (gated)", () => {
       // number two independent Deploy.full replays landed — the manual
       // dev-chain deploy and this suite's own) — 10,397.39 gUSD vault share
       // under the four-SKU universe. Recomputed each time the demo's shape
-      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, and the
-      // two-phase rework (runReprice extraction) moved it to 10,397.39.
+      // changed: the seven-SKU cut moved 12,014.37 → 10,397.45, the
+      // two-phase rework (runReprice extraction) moved it to 10,397.39, and
+      // the perp LP seed's deposit at the deployer's rate seeded 5,000.00 of
+      // share-price revenue → 15,397.39. The LP seed added one more user
+      // deposit; alice's perp-demo leg became engine escrow (createOrder),
+      // not an sgUSD deposit — the two-stage order rework dropped her from
+      // this count (seed, churn stake, LP seed = 3).
       // Raw pg reads bypass drizzle's int8 mode:number mapping — counts
       // arrive as strings (same grain as the count(*)::text probes below).
       const closing = await schemaQuery<{ revenue_gusd: string; deposit_count: string }>(
@@ -136,8 +150,8 @@ d("indexer onchain suites (gated)", () => {
         [],
       );
       expect(closing).toHaveLength(1);
-      expect(closing[0]!.deposit_count).toBe("2"); // the seed's Deposit + the churn's stake
-      expect(closing[0]!.revenue_gusd).toBe("10397386590");
+      expect(closing[0]!.deposit_count).toBe("3"); // seed + churn stake + LP seed
+      expect(closing[0]!.revenue_gusd).toBe("15397386590"); // 10,397.39 + the LP seed's 5,000 rate-seeded revenue
 
       const swaps = await schemaQuery<{ count: string }>(
         `select count(*)::text as count from "gusd_index_envio_e2e_a"."PmSwap"`,
@@ -193,6 +207,78 @@ d("indexer onchain suites (gated)", () => {
       expect(BigInt(vault[0]!.revenue_gusd)).toBe(BigInt(sums[0]!.revenue));
     },
     300_000,
+  );
+
+  it(
+    "projects the perp book from Deploy.full's pending demo orders",
+    async () => {
+      // runFull arms the perp demo (alice's H100 long + its TP) but the
+      // execution lives in runReprice — a second invocation this suite does
+      // not run — so the projected book is markets + pending orders and
+      // nothing else. This still exercises the MarketParams tuple decode and
+      // the order events end-to-end; the executed-side handlers get their
+      // coverage from the web anvil suite's perp lifecycle.
+      const markets = await schemaQuery<{ gpu_id: string; max_leverage_bps: string }>(
+        `select gpu_id, max_leverage_bps from "gusd_index_envio_e2e_a"."PerpMarket" order by gpu_id`,
+        [],
+      );
+      expect(markets).toHaveLength(4); // the four launch SKUs
+      for (const market of markets) {
+        expect(market.max_leverage_bps).toBe(200000); // 20x — Deploy's default
+        // Int! params land in int4 columns — pg returns those as numbers, so
+        // this assert compares numerically (the ::text probes below cover the
+        // int8/string grain).
+      }
+
+      const orders = await schemaQuery<{
+        kind: string;
+        status: string;
+        size_delta_usd: string;
+        execution_fee: string;
+      }>(
+        `select kind, status, size_delta_usd, execution_fee
+           from "gusd_index_envio_e2e_a"."PerpOrder" order by order_id`,
+        [],
+      );
+      expect(orders).toHaveLength(1); // the market increase — runFull arms only
+      // the open now; the TP arm lives in runReprice (the position has to
+      // exist first), and this suite does not run runReprice.
+      expect(Number(orders[0]!.kind)).toBe(0); // MarketIncrease
+      // status is Int! (int4 → numbers, like the Int! params above)
+      expect(orders.every((o) => Number(o.status) === 1)).toBe(true); // all Pending
+
+      const positions = await schemaQuery<{ count: string }>(
+        `select count(*)::text as count from "gusd_index_envio_e2e_a"."PerpPosition"`,
+        [],
+      );
+      expect(positions[0]!.count).toBe("0");
+
+      const stats = await schemaQuery<{ order_count: string }>(
+        `select order_count from "gusd_index_envio_e2e_a"."PerpEngineStats"`,
+        [],
+      );
+      expect(stats[0]!.order_count).toBe("1"); // the increase — the TP arms in runReprice
+
+      // Entity-schema guard: envio derives table columns from schema.graphql,
+      // NOT from handler insert values — a field added to a handler without a
+      // matching entity is silently dropped at decode (the mock-DB network
+      // suites can't see it). Pin the settlement-redesign columns here.
+      const columns = await schemaQuery<{ table_name: string; column_name: string }>(
+        `select table_name, column_name from information_schema.columns
+           where table_schema = 'gusd_index_envio_e2e_a'
+             and ((table_name = 'PerpPositionIncreased' and column_name = 'new_earned_funding')
+               or (table_name = 'PerpPositionDecreased' and column_name = 'remaining_earned_funding')
+               or (table_name = 'PerpPosition' and column_name = 'earned_funding'))
+           order by table_name`,
+        [],
+      );
+      expect(columns.map((c) => `${c.table_name}.${c.column_name}`)).toEqual([
+        "PerpPosition.earned_funding",
+        "PerpPositionDecreased.remaining_earned_funding",
+        "PerpPositionIncreased.new_earned_funding",
+      ]);
+    },
+    120_000,
   );
 
   it(

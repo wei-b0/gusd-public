@@ -29,6 +29,7 @@ import { ActionRunner } from "@/data/web3/action-runner";
 import { OnChainMintPort } from "@/data/web3/gusd/onchain-mint-port";
 import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
 import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
+import { OnChainPerpPort } from "@/data/web3/perps/onchain-perp-port";
 import { InertBridgePort } from "@/data/web3/bridge/inert";
 import { disposeAvailabilityCache } from "@/data/web3/trading/quotes";
 import { WalletlessAuthPort, WalletlessTxPort } from "@/data/web3/walletless";
@@ -40,6 +41,7 @@ export class OracleServices implements Services {
   readonly earn: OnChainEarnPort;
   readonly mint: OnChainMintPort;
   readonly bridge: InertBridgePort;
+  readonly perp: OnChainPerpPort;
   readonly tx: WalletlessTxPort;
   readonly actions: ActionPort;
   /** The onchain user-state store the trading port projects. */
@@ -96,5 +98,8 @@ export class OracleServices implements Services {
       reconcile,
     });
     this.bridge = new InertBridgePort();
+    // The perp layer runs on the same walletless base: quotes and market
+    // state are public; acting refuses without a session.
+    this.perp = new OnChainPerpPort({ getSession: session, actions: this.actions, reconcile });
   }
 }

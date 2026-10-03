@@ -95,7 +95,7 @@ function MarketRow({ market: m, hasVenue }: { market: Market; hasVenue: boolean 
   return (
     <tr className="group border-b border-rule transition-colors last:border-b-0 hover:bg-panel-deep">
       <td className="py-2 pl-3 pr-4">
-        <Link href={`/terminal/${m.asset.id}`} className="block outline-none">
+        <Link href={`/spot/${m.asset.id}`} className="block outline-none">
           <span className="num block whitespace-nowrap text-[14px] font-bold leading-tight text-data transition-colors group-hover:text-bright">
             {pairName(m.asset.id)}
           </span>

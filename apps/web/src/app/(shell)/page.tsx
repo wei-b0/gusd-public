@@ -48,7 +48,7 @@ export default function HomePage() {
               Earn &gt;
             </Link>
             <Link
-              href="/terminal/H100"
+              href="/spot/H100"
               className="slug text-[13px] text-amber transition-colors hover:text-bright"
             >
               Trade &gt;
@@ -87,7 +87,7 @@ export default function HomePage() {
               detail="Deposit gUSD, hold sgUSD, earn from market activity. Experimental — the share price is the yield."
             />
             <RoadmapRow
-              status="next"
+              status="live"
               title="GPU perpetual markets"
               detail="Levered exposure to GPU compute rates, settled in gUSD against the same index benchmarks."
             />

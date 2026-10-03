@@ -125,14 +125,31 @@ export function isFlatPct(value: number | null): boolean {
   return value === null || Math.abs(value) < 0.005;
 }
 
+/** Signed gUSD at ledger grain with one minus glyph: +20.0000 / −0.2000.
+ *  The desk's signed-money voice — every signed figure routes through here
+ *  so the glyph system never splits across a panel. */
+export function fmtSignedGusd(value: number): string {
+  const abs = fmtGusdLedger(Math.abs(value));
+  return `${value < 0 ? "−" : "+"}${abs}`;
+}
+
+/** Percent with adaptive precision — a nonzero figure never prints as 0%:
+ *  3.29 / 0.212 / 0.0123 / 0.0012. Rates and small percentages. */
+export function fmtPctAdaptive(value: number): string {
+  const abs = Math.abs(value);
+  if (abs === 0) return "0%";
+  const digits = abs >= 100 ? 1 : abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4;
+  return `${value.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "")}%`;
+}
+
 /** Unsigned percent: 3.29 */
 export function fmtPct(value: number): string {
   return `${value.toFixed(2)}%`;
 }
 
-/** Order-level gUSD amounts: compact once past 1K gUSD, instrument-grade below. */
+/** Order-level gUSD amounts at ledger grain — the figure parses back
+ *  exactly, so a signed PnL never loses the digits a trader acts on. */
 export function fmtNotional(value: number): string {
-  if (value >= 1_000) return fmtGusdCompact(value);
   return fmtGusdPrecise(value);
 }
 

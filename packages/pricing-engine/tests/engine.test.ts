@@ -505,7 +505,8 @@ describe("computeIndex", () => {
     expect(big.weightAfterCap).toBeCloseTo((0.35 * 1.2) / 0.65, 10);
   });
 
-  it("withholds below minProviders", () => {
+  it("withholds below minProviders with no prior to carry", () => {
+    // H100/H200 keep the global quorum (v0.4.1's H100 override is retired).
     const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0));
     const r = computeIndex(makeInput(prices));
     expect(r.status).toBe("withheld");
@@ -693,6 +694,7 @@ describe("panelOverrides", () => {
   });
 
   it("effectiveConfigFor merges the patch and is identity without one", () => {
+    // v0.5.0 retired the H100 override — both flagships are identity again.
     const h100 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H100_PANEL_V1");
     expect(h100).toBe(DEFAULT_METHODOLOGY_CONFIG);
     const h200 = effectiveConfigFor(DEFAULT_METHODOLOGY_CONFIG, "H200_PANEL_V1");
@@ -727,9 +729,52 @@ describe("panelOverrides", () => {
   });
 
   it("a panel without an override still withholds below the global quorum", () => {
-    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0, { panelId: "H100_PANEL_V1" }));
+    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0, { panelId: "H200_PANEL_V1" }));
+    const r = computeIndex(makeInput(prices, { panelId: "H200_PANEL_V1" }));
+    expect(r.status).toBe("withheld");
+  });
+
+  it("a failed gate pauses the series at the last gate-passing value (v0.5.0)", () => {
+    // The live H100 shape since hyperbolic's book went quiet: three
+    // contributors against the global quorum of four. The computed figure
+    // never publishes; within the carry-forward window the prior value is
+    // republished with an explicit `stale` flag and the failed gates stay
+    // on the receipt — trading continues, the provenance says STALE.
+    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0));
+    const prior = {
+      price: 2.3186,
+      computedAt: new Date(T0.getTime() - 60_000),
+      candidateId: "prior-carry",
+    };
+    const r = computeIndex(makeInput(prices, { prior }));
+    expect(r.status).toBe("stale");
+    expect(r.price).toBe(2.3186); // the prior, never the gate-failed anchor
+    expect(r.calcParams.priorCandidateId).toBe("prior-carry");
+    expect(r.calcParams.priceSource).toBe("prior");
+    expect(r.calcParams.carriedAnchor).toBe(2.0); // the rejected computation, kept for audit
+    expect(r.confidenceLow).toBeNull(); // the band belongs to the failed computation
+    expect(r.gates.find((g) => g.name === "min_providers")?.passed).toBe(false);
+    // Carry-forward never drifts — no movement offset on a carried row.
+    expect(r.calcParams.movementOffset).toBeNull();
+  });
+
+  it("a failed gate withholds beyond the carry-forward window", () => {
+    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0));
+    const prior = {
+      price: 2.3186,
+      computedAt: new Date(T0.getTime() - DEFAULT_METHODOLOGY_CONFIG.stale.carryForwardWindowMs - 1),
+      candidateId: "prior-old",
+    };
+    const r = computeIndex(makeInput(prices, { prior }));
+    expect(r.status).toBe("withheld");
+    expect(r.price).not.toBeNull(); // the computation is stored with its receipt
+  });
+
+  it("a failed gate withholds when no prior has ever published", () => {
+    const prices = ["a", "b", "c"].map((id) => providerPrice(id, 2.0));
     const r = computeIndex(makeInput(prices));
     expect(r.status).toBe("withheld");
+    expect(r.price).not.toBeNull();
   });
 
   it("an executable-backed thin panel keeps the require_executable floor and still caps at degraded", () => {

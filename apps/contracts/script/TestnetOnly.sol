@@ -6,8 +6,8 @@ pragma solidity ^0.8.26;
 ///         never reach a production chain; the production Deploy uses the
 ///         predicate to refuse its own mock postures there. The live path
 ///         is script/Deploy.s.sol run with real assets via env: UNDERLYING,
-///         PUBLISHER, TREASURY, STABLES and the SEED_PRICE_* launch prices
-///         (see docs/mainnet-deploy.md).
+///         ORACLE_ATTESTOR, TREASURY, STABLES and the SEED_PRICE_* launch
+///         prices (see docs/mainnet-deploy.md).
 abstract contract TestnetOnly {
     /// @dev Chain ids the product registry treats as production mainnets,
     ///     plus the majors so an accidental `--rpc-url` at an unrelated

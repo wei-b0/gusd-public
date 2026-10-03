@@ -8,6 +8,7 @@
     "db:migrate": "turbo run db:migrate --filter=@gusd/db",
     "dev": "turbo run dev",
     "dev:attestor": "turbo run dev --filter=@gusd/attestor",
+    "dev:keeper": "turbo run dev --filter=@gusd/keeper",
     "dev:indexer": "turbo run dev --filter=@gusd/indexer",
     "dev:oracle": "turbo run dev --filter=@gusd/oracle",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
@@ -15,7 +16,7 @@
     "replay": "ORACLE_REPLAY_FIXTURES=1 turbo run build --filter=@gusd/oracle... && ORACLE_REPLAY_FIXTURES=1 node apps/oracle/dist/main.js",
     "replay:verify": "node apps/oracle/dist/replay-candidate.js",
     "stack:down": "docker compose -f infra/docker-compose.yml down",
-    "stack:up": "o=$(node -e 'try{process.stdout.write(require(\"./apps/contracts/deployments/31337.json\").oracle||\"\")}catch{}' 2>/dev/null); [ -n \"$o\" ] && export ATTESTOR_ORACLE_ADDRESS=\"$o\"; docker compose -f infra/docker-compose.yml up -d",
+    "stack:up": "grep -qE '^ATTESTOR_ORACLE_ADDRESS=.+' infra/.env 2>/dev/null || { o=$(node -e 'try{process.stdout.write(require(\"./apps/contracts/deployments/31337.json\").oracle||\"\")}catch{}' 2>/dev/null); [ -n \"$o\" ] && export ATTESTOR_ORACLE_ADDRESS=\"$o\"; }; docker compose -f infra/docker-compose.yml up -d",
     "test": "turbo run test",
     "test:indexer": "turbo run test --filter=@gusd/indexer",
     "web:fixture": "node apps/web/scripts/mock-oracle.mjs"

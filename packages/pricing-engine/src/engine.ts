@@ -176,32 +176,54 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
   let status: IndexStatus;
   let finalPrice: number | null;
   let priorCandidateId: string | null = null;
+  /** True when this row republishes the last gate-passing value instead of a
+   *  fresh computation — zero contributors, or a failed gate (v0.5.0). */
+  let carriedPrior = false;
+  const prior = input.prior;
+  const carryable =
+    prior !== null &&
+    input.now.getTime() - prior.computedAt.getTime() <= config.stale.carryForwardWindowMs;
   if (!hasContributors) {
-    const prior = input.prior;
-    if (
-      prior !== null &&
-      input.now.getTime() - prior.computedAt.getTime() <= config.stale.carryForwardWindowMs
-    ) {
+    if (carryable && prior !== null) {
       status = "stale";
       finalPrice = round4(prior.price);
       priorCandidateId = prior.candidateId;
+      carriedPrior = true;
     } else {
       status = "withheld";
       finalPrice = null;
     }
   } else {
-    finalPrice = price;
     const gatesPassed = gates.every((g) => g.passed);
     if (!gatesPassed) {
-      status = "withheld";
+      // v0.5.0: a failed gate no longer halts the series — it pauses it.
+      // The computed figure never publishes (a value that failed its gates
+      // is never a price); within the carry-forward window the last
+      // gate-passing value is republished with an explicit `stale` flag,
+      // the failed gates staying on the receipt. Beyond the window — or
+      // with no prior at all — the panel withholds as before.
+      if (carryable && prior !== null) {
+        status = "stale";
+        finalPrice = round4(prior.price);
+        priorCandidateId = prior.candidateId;
+        carriedPrior = true;
+      } else {
+        // Beyond the window the computation still stores — with its full
+        // receipt — exactly as before; it just never becomes a price.
+        status = "withheld";
+        finalPrice = price;
+      }
     } else if (dispersion > config.dispersion.warn) {
+      finalPrice = price;
       status = "degraded";
     } else if (contributors.length < input.config.gates.minProviders) {
       // A panel computing on a relaxed quorum (panelOverrides) may pass its
       // own gates, but it has not met the full settlement quorum — it can
       // never claim `healthy`. This is the honesty ceiling for thin SKUs.
+      finalPrice = price;
       status = "degraded";
     } else {
+      finalPrice = price;
       status = "healthy";
     }
   }
@@ -218,6 +240,7 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
   if (
     movement !== undefined &&
     movement.allowancePct > 0 &&
+    !carriedPrior &&
     price !== null &&
     hasContributors &&
     input.prior !== null
@@ -235,7 +258,10 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
   const calcParams: Record<string, unknown> = {
     config,
     priorCandidateId,
-    priceSource: hasContributors ? "computed" : priorCandidateId !== null ? "prior" : "none",
+    priceSource: priorCandidateId !== null ? "prior" : hasContributors ? "computed" : "none",
+    // The v0.5.0 carry-forward's audit trail: the anchor the engine computed
+    // (and rejected at the gates) beside the prior value it republished.
+    carriedAnchor: carriedPrior ? price : null,
     // The allowance's own audit trail: the exact offset the published figure
     // carries over the anchor, so any reader can subtract it back out.
     movementOffset: movementOffset === null ? null : movementOffset.toFixed(8),
@@ -246,8 +272,10 @@ export function computeIndex(input: IndexInput): import("@gusd/types").IndexResu
     gpuId: input.gpu.id,
     panelId: input.panelId,
     price: finalPrice,
-    confidenceLow: status === "withheld" ? null : band?.low ?? null,
-    confidenceHigh: status === "withheld" ? null : band?.high ?? null,
+    // A carried figure carries no band — the band describes the fresh
+    // (gate-failed) computation, not the republished prior value.
+    confidenceLow: status === "withheld" || carriedPrior ? null : band?.low ?? null,
+    confidenceHigh: status === "withheld" || carriedPrior ? null : band?.high ?? null,
     dispersion,
     status,
     gates,

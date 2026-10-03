@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * FnKeys — the navigation rail, split by audience. Four function keys carry
- * the user's operating modes — Markets, Terminal, gUSD, Portfolio — each
+ * FnKeys — the navigation rail, split by audience. Five function keys carry
+ * the user's operating modes — Markets, Spot, Perps, gUSD, Portfolio — each
  * with the full product name, the active route reversed amber. Oracle — the
  * pricing/benchmark/data infrastructure the modes run on — sits apart at the
  * rail's far end, behind a rule, in wire cyan with no F-key: accessible
- * system reference, not a fifth operating mode. Protocol is intentionally
+ * system reference, not a sixth operating mode. Protocol is intentionally
  * absent (it lives behind the Oracle access panel and the command line).
  * Click routes; the command line accepts the same names. The rail never
  * hides.
@@ -18,9 +18,10 @@ import { Gusd } from "@/components/ui/pair";
 
 const KEYS = [
   { f: "F1", name: "Markets", href: "/" },
-  { f: "F2", name: "Terminal", href: "/terminal" },
-  { f: "F3", name: "gUSD", href: "/gusd" },
-  { f: "F4", name: "Portfolio", href: "/portfolio" },
+  { f: "F2", name: "Spot", href: "/spot" },
+  { f: "F3", name: "Perps", href: "/perps" },
+  { f: "F4", name: "gUSD", href: "/gusd" },
+  { f: "F5", name: "Portfolio", href: "/portfolio" },
 ] as const;
 
 export function FnKeys() {

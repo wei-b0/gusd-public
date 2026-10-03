@@ -53,19 +53,19 @@ const CHAIN_STABLES: Record<number, ChainStableTableEntry> = {
    *  on every chain the script touches. */
   31337: {
     underlying: { symbol: "USDG", name: "Global Dollar" },
-    others: { "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64": { symbol: "USDT", name: "Mock Tether USD" } },
+    others: { "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c": { symbol: "USDT", name: "Mock Tether USD" } },
   },
   /** Base Sepolia — testnet deploys of the full posture (Deploy.full);
    *  same mock-reserve display posture as Anvil. */
   84532: {
     underlying: { symbol: "USDG", name: "Global Dollar" },
-    others: { "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64": { symbol: "USDT", name: "Mock Tether USD" } },
+    others: { "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c": { symbol: "USDT", name: "Mock Tether USD" } },
   },
   /** Robinhood Chain testnet — Paxos USDG (Global Dollar), 6 decimals;
    *  the mock USDT rides the StableRouter as a second funding stable. */
   46630: {
     underlying: { symbol: "USDG", name: "Global Dollar" },
-    others: { "0x0Ad4a493eA649E4A2c31d6128dd35995D51a0C64": { symbol: "USDT", name: "Mock Tether USD" } },
+    others: { "0x940C170eEFb283457454a505a35E4CEF7E1d4B1c": { symbol: "USDT", name: "Mock Tether USD" } },
   },
   /** Robinhood Chain mainnet — Paxos USDG, the chain's canonical stable. */
   4663: { underlying: { symbol: "USDG", name: "Global Dollar" } },

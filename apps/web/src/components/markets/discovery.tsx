@@ -4,16 +4,20 @@
  * MarketsDiscovery — the front door and the Markets surface. Discovery,
  * scanning, comparison: what GPU markets exist, what they trade at, how
  * they moved, where the Index stands, and whether each market carries a
- * premium or discount. Execution lives on the Terminal — one roof for depth
- * and the trade ticket; this page deliberately has none.
+ * premium or discount — the spot pairs and, since perps arrived, the
+ * perpetual markets beneath them on the same board. Execution lives on the
+ * desks (spot / perps) — one roof for depth and the trade ticket; this page
+ * deliberately has none.
  */
 
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { marketMove24h, pairName } from "@/domain/types";
 import { useMarkets } from "@/data/services";
-import { fmtGusdCompact, fmtPctSigned, isFlatPct } from "@/domain/format";
+import { fmtGusdCompact, fmtPctSigned, fmtUsdPrecise, isFlatPct } from "@/domain/format";
 import { Gusd } from "@/components/ui/pair";
 import { MarketsTable } from "@/components/markets/markets-table";
+import { PerpMarketsTable } from "@/components/perps/perp-markets-table";
 import { TuiPanel } from "@/components/ui/panel";
 
 export function MarketsDiscovery() {
@@ -41,10 +45,11 @@ export function MarketsDiscovery() {
 
   return (
     <div>
+      {/* The board's slug line: the front door's h1 owns the page head —
+          discovery carries the section's own caption only. */}
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3 border-b border-rule-strong pb-3">
-        <h1 className="disp text-[22px] leading-none text-primary">Markets</h1>
         <p className="slug text-dim">
-          GPU asset markets · priced in <Gusd />
+          GPU asset markets & perpetuals · priced in <Gusd />
         </p>
       </div>
 
@@ -78,15 +83,32 @@ export function MarketsDiscovery() {
       </TuiPanel>
 
       {/* 02 — the discovery table: identity, the last-48h shape, and the
-          figures on one ruled board — the whole class on one screen */}
+          figures on one ruled board — the whole spot class on one screen */}
       <div className="mt-5">
         <TuiPanel no="02" title="GPU markets" meta={`${markets.length} markets`}>
           <MarketsTable markets={markets} />
         </TuiPanel>
       </div>
 
+      {/* 03 — the perpetuals board: the same four panels as leveraged,
+          gUSD-settled markets — mark, 24h, funding, open interest, leverage
+          cap — routing to each perp desk. The perp's mark IS the benchmark
+          (the engine fills at oracle reports), so it prints in wire cyan
+          with the / GPU-hour unit, exactly as the spot board's Index does. */}
+      <div className="mt-5">
+        <TuiPanel
+          no="03"
+          title="Perpetual markets"
+          meta="gUSD-settled · keeper executed"
+        >
+          <PerpMarketsTable />
+        </TuiPanel>
+      </div>
+
       <p className="mt-3 max-w-prose text-[11.5px] leading-relaxed text-dim">
-        Trade exposure to GPU compute rates across H100, H200, L40S, and RTX 4090. Prices are derived from live rental markets and settle onchain through gUSD.
+        Trade exposure to GPU compute rates across H100, H200, L40S, and RTX 4090 — outright on the spot
+        desks, leveraged long or short on the perp desks. Prices are derived from live rental markets and
+        settle onchain through gUSD.
       </p>
     </div>
   );

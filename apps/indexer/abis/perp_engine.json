@@ -1,0 +1,535 @@
+[
+  {
+    "name": "MarketCreated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "tuple",
+        "name": "params",
+        "components": [
+          {
+            "type": "uint32",
+            "name": "maxLeverageBps"
+          },
+          {
+            "type": "uint32",
+            "name": "maintenanceMarginBps"
+          },
+          {
+            "type": "uint32",
+            "name": "openFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "closeFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "liquidationFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "fundingRatePpmPerSec"
+          },
+          {
+            "type": "uint32",
+            "name": "borrowRatePpmPerSec"
+          },
+          {
+            "type": "uint128",
+            "name": "maxOiUsd"
+          },
+          {
+            "type": "uint128",
+            "name": "minCollateralUsd"
+          },
+          {
+            "type": "uint128",
+            "name": "maxPositionUsd"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "MarketParamsUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "tuple",
+        "name": "params",
+        "components": [
+          {
+            "type": "uint32",
+            "name": "maxLeverageBps"
+          },
+          {
+            "type": "uint32",
+            "name": "maintenanceMarginBps"
+          },
+          {
+            "type": "uint32",
+            "name": "openFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "closeFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "liquidationFeeBps"
+          },
+          {
+            "type": "uint32",
+            "name": "fundingRatePpmPerSec"
+          },
+          {
+            "type": "uint32",
+            "name": "borrowRatePpmPerSec"
+          },
+          {
+            "type": "uint128",
+            "name": "maxOiUsd"
+          },
+          {
+            "type": "uint128",
+            "name": "minCollateralUsd"
+          },
+          {
+            "type": "uint128",
+            "name": "maxPositionUsd"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "MarketEnabled",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "enabled"
+      }
+    ]
+  },
+  {
+    "name": "MinOrderDelaySet",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint32",
+        "name": "seconds_"
+      }
+    ]
+  },
+  {
+    "name": "OrderCreated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "orderId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint8",
+        "name": "kind"
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "uint128",
+        "name": "sizeDeltaUsd"
+      },
+      {
+        "type": "uint128",
+        "name": "collateralDeltaUsd"
+      },
+      {
+        "type": "uint128",
+        "name": "acceptablePrice"
+      },
+      {
+        "type": "uint128",
+        "name": "triggerPrice"
+      },
+      {
+        "type": "uint96",
+        "name": "executionFee"
+      }
+    ]
+  },
+  {
+    "name": "OrderExecuted",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "orderId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "executor",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId"
+      },
+      {
+        "type": "uint8",
+        "name": "kind"
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "uint256",
+        "name": "execPrice"
+      },
+      {
+        "type": "uint256",
+        "name": "executionFeePaid"
+      },
+      {
+        "type": "uint256",
+        "name": "sizeDeltaUsd"
+      },
+      {
+        "type": "int256",
+        "name": "realizedPnl"
+      },
+      {
+        "type": "uint256",
+        "name": "feesPaid"
+      },
+      {
+        "type": "int256",
+        "name": "fundingNet"
+      },
+      {
+        "type": "uint256",
+        "name": "claimableDelta"
+      }
+    ]
+  },
+  {
+    "name": "OrderCancelled",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "orderId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "uint8",
+        "name": "kind"
+      },
+      {
+        "type": "uint256",
+        "name": "feeRefunded"
+      },
+      {
+        "type": "uint256",
+        "name": "collateralRefunded"
+      }
+    ]
+  },
+  {
+    "name": "PositionIncreased",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "uint256",
+        "name": "newSizeUsd"
+      },
+      {
+        "type": "uint256",
+        "name": "newCollateral"
+      },
+      {
+        "type": "uint256",
+        "name": "newEntryPrice"
+      },
+      {
+        "type": "uint128",
+        "name": "fundingFeeCheckpoint"
+      },
+      {
+        "type": "uint128",
+        "name": "fundingCreditCheckpoint"
+      },
+      {
+        "type": "uint128",
+        "name": "borrowCheckpoint"
+      },
+      {
+        "type": "uint256",
+        "name": "newEarnedFunding"
+      }
+    ]
+  },
+  {
+    "name": "PositionDecreased",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "uint256",
+        "name": "sizeDeltaUsd"
+      },
+      {
+        "type": "int256",
+        "name": "realizedPnl"
+      },
+      {
+        "type": "int256",
+        "name": "fundingNet"
+      },
+      {
+        "type": "uint256",
+        "name": "closeFee"
+      },
+      {
+        "type": "uint256",
+        "name": "claimableDelta"
+      },
+      {
+        "type": "uint256",
+        "name": "remainingSizeUsd"
+      },
+      {
+        "type": "uint256",
+        "name": "remainingCollateral"
+      },
+      {
+        "type": "uint128",
+        "name": "fundingFeeCheckpoint"
+      },
+      {
+        "type": "uint128",
+        "name": "fundingCreditCheckpoint"
+      },
+      {
+        "type": "uint128",
+        "name": "borrowCheckpoint"
+      },
+      {
+        "type": "uint256",
+        "name": "remainingEarnedFunding"
+      }
+    ]
+  },
+  {
+    "name": "PositionClosed",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "uint256",
+        "name": "execPrice"
+      }
+    ]
+  },
+  {
+    "name": "PositionLiquidated",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "bool",
+        "name": "isLong"
+      },
+      {
+        "type": "address",
+        "name": "executor",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "execPrice"
+      },
+      {
+        "type": "uint256",
+        "name": "liquidationFee"
+      },
+      {
+        "type": "uint256",
+        "name": "badDebt"
+      },
+      {
+        "type": "uint256",
+        "name": "claimableDelta"
+      }
+    ]
+  },
+  {
+    "name": "ClaimableSettled",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount"
+      }
+    ]
+  },
+  {
+    "name": "Claimed",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "address",
+        "name": "account",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "requested"
+      },
+      {
+        "type": "uint256",
+        "name": "paid"
+      }
+    ]
+  },
+  {
+    "name": "FundingAccrued",
+    "type": "event",
+    "inputs": [
+      {
+        "type": "bytes32",
+        "name": "gpuId",
+        "indexed": true
+      },
+      {
+        "type": "uint128",
+        "name": "chargePerUnitLong"
+      },
+      {
+        "type": "uint128",
+        "name": "chargePerUnitShort"
+      },
+      {
+        "type": "uint128",
+        "name": "creditPerUnitLong"
+      },
+      {
+        "type": "uint128",
+        "name": "creditPerUnitShort"
+      },
+      {
+        "type": "uint128",
+        "name": "borrowPerUnit"
+      },
+      {
+        "type": "uint64",
+        "name": "updatedAt"
+      }
+    ]
+  }
+]

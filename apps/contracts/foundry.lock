@@ -7,5 +7,8 @@
   },
   "lib/v4-core": {
     "rev": "59d3ecf53afa9264a16bba0e38f4c5d2231f80bc"
+  },
+  "lib/v4-periphery": {
+    "rev": "dce236d4e2057422d0791d9a973a58765eb46f65"
   }
 }

@@ -51,6 +51,9 @@ export interface OrderSlipProps {
   assetId: string;
   /** The displayed price — the slip goes dormant without it. */
   referencePrice: number | null;
+  /** Server-passed side prefill (?side=sell). Server render and client
+   *  initial state agree — no hydration flicker. */
+  initialSide?: TradeSide;
 }
 
 /** Debounce for the async quote calls — one per settled input, not one per keystroke. */
@@ -69,12 +72,17 @@ function isQuote(q: TradeQuote | QuoteFailure | null | undefined): q is TradeQuo
   return q !== null && q !== undefined && !("unavailable" in q);
 }
 
-export function OrderSlip({ assetId, referencePrice }: OrderSlipProps) {
+export function OrderSlip({ assetId, referencePrice, initialSide }: OrderSlipProps) {
   const { trading } = useServices();
   const account = useAccount();
   const session = useWalletSession();
   const active = useActiveAction("trade");
-  const [side, setSide] = useState<TradeSide>("buy");
+  const [side, setSide] = useState<TradeSide>(initialSide ?? "buy");
+  // A later navigation with a different prefill re-lands the side (e.g.
+  // the portfolio's Sell link while the desk is already open).
+  useEffect(() => {
+    if (initialSide !== undefined) setSide(initialSide);
+  }, [initialSide]);
   const [mode, setMode] = useState<"gusd" | "units">("gusd");
   const [unitsText, setUnitsText] = useState("1");
   const [gusdText, setGusdText] = useState("10");

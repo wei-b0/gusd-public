@@ -1,8 +1,8 @@
-# gUSD Index Methodology — v0.4.0 (four panels, per-panel quorums)
+# gUSD Index Methodology — v0.5.0 (four panels, carry-forward pauses)
 
 The index is a weighted mean of capped weights over per-provider medians,
 guarded by screens and gates, published only when every gate passes. This
-document specifies v0.4.0 exactly as configured in
+document specifies v0.5.0 exactly as configured in
 `packages/pricing-engine/src/config.ts` (`DEFAULT_METHODOLOGY_CONFIG`) and
 validated by an exhaustive allowlist — thresholds live in config, never in
 code, and a methodology change is a **new version row**, never a mutation.
@@ -30,6 +30,21 @@ their historical rows, but nothing outside the four settles or publishes.
   (temporary — revert once executable L40S books deepen); RTX 4090 promotes
   Akash alongside Vast + RunPod at quorum 3 with the executable floor kept.
   H100/H200 settle under the untouched global methodology.
+- **v0.4.1** — H100 thin-panel override: hyperbolic's H100 book went quiet
+  on 2026-09-29, leaving three eligible contributors against a quorum of
+  four and withholding the flagship panel. Akash and Cudo are promoted for
+  H100 only (clean, live rate cards) and the panel quorum drops to 3 with
+  the executable floor kept. **Retired in v0.5.0** — a per-catalog patch was
+  the wrong lever; the pause mechanism below is global.
+- **v0.5.0** — a failed gate no longer halts the series; it pauses it. When
+  a computation fails any gate, the last gate-passing value is republished
+  with an explicit `stale` flag (failed gates kept on the receipt, no
+  movement offset, no confidence band) for up to the 24h carry-forward
+  window — re-stamped each computation, so the pause lasts as long as the
+  oracle itself runs. The prior is the latest candidate *carrying a price*,
+  so withheld rows never sever the chain. Beyond the window — or with no
+  prior at all — the panel withholds as before. The v0.4.1 H100 override is
+  retired; both flagship panels settle under the global gates again.
 
 ## Design principles
 
@@ -48,18 +63,23 @@ their historical rows, but nothing outside the four settles or publishes.
 4. **Missing data is not zero; empty is not "no capacity".** Held-out
    providers are recorded (`thin_book_holdout`, price null), never silently
    absent.
-5. **Never interpolate.** A stale index carries forward the prior value with
-   an explicit `stale` flag and a link to the prior candidate — or withholds.
+5. **Never interpolate — but never halt either.** A value that failed its
+   gates is never a price. When a computation fails (or a panel has no kept
+   contributors), the series *pauses*: the last gate-passing value is
+   republished with an explicit `stale` flag and a link to the prior
+   candidate, for as long as the carry-forward window allows — and the
+   failed gates stay on the receipt. Beyond the window (or with no prior at
+   all) the panel withholds.
 6. **Withheld is safer than fabricated.** Every gate failure publishes
    `withheld` with the failed gate recorded, not a fallback number.
 7. **A parser change must fail loudly.** Zero parsed rows from an HTTP 200 is
    a failure, not an empty success.
 
-## Configuration (v0.4.0)
+## Configuration (v0.5.0)
 
 ```jsonc
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "screening": {
     "minProvidersForScreen": 4,   // MAD screen needs ≥4 contributions
     "madScale": 1.4826,           // MAD → σ-consistent scale
@@ -100,7 +120,7 @@ their historical rows, but nothing outside the four settles or publishes.
 }
 ```
 
-### Per-panel overrides (v0.4.0)
+### Per-panel overrides (v0.5.0)
 
 | Panel | Promoted principals | Gates patch | Why |
 |---|---|---|---|
@@ -108,7 +128,12 @@ their historical rows, but nothing outside the four settles or publishes.
 | `RTX_4090_PANEL_V1` | akash | `minProviders: 3`, `requireExecutable: true` | Vast + RunPod are executable; Akash's `rtx4090` rate card completes the quorum without giving up the executable floor. |
 
 H100 and H200 have no override: they settle under the global gates — quorum
-4, executable required — exactly as v0.1.0 defined them.
+4, executable required — exactly as v0.1.0 defined them. (v0.4.1 briefly ran
+an H100 thin-panel override; v0.5.0 retired it in favor of the global
+gate-failure pause.) When a flagship panel's book thins below quorum — as
+H100's did when hyperbolic's H100 listings went quiet on 2026-09-29 — the
+series pauses at its last gate-passing value with an explicit `stale` flag
+instead of halting; see the status rules below.
 
 ## Stage 1 — per-provider aggregation (`aggregateProviderPrice`)
 
@@ -187,13 +212,20 @@ only) → median. Plausible-band check applies equally.
    - no kept contributors + fresh prior ≤ 24h → `stale` (carry-forward:
      prior price, `prior_candidate_id` link, flagged — never presented as
      fresh)
-   - no kept contributors, no fresh prior → `withheld`
+   - **any failed gate + fresh prior ≤ 24h → `stale`** (v0.5.0): the
+     computation is stored with its full receipt and the failed gates, but
+     the published figure is the *prior* gate-passing value — the series
+     pauses, trading continues. The computed anchor is recorded
+     (`calcParams.carriedAnchor`); no movement offset and no confidence
+     band ride on a carried row.
+   - no kept contributors, or a failed gate with no fresh prior →
+     `withheld`
 
 ## Movement allowance
 
 Rate-card-settled panels (L40S today) have no dynamic source — their computed
 anchor is genuinely static for days, which reads as a dead tape. The
-publishing movement allowance (introduced v0.3.0, carried into v0.4.0) lets
+publishing movement allowance (introduced v0.3.0, carried into v0.5.0) lets
 the *published* figure carry a bounded, deterministic, mean-reverting offset
 around the computed anchor:
 
@@ -242,7 +274,7 @@ contributor range; absurd values always screened; flooding invariance; scale
 invariance; order irrelevance; weight cap holds; failed gate blocks
 publication; dispersion ≥ 0; screening monotone in its own criterion.
 
-## Known limitations (documented, not fixed, in v0.4.0)
+## Known limitations (documented, not fixed, in v0.5.0)
 
 - **Gate flicker**: a market sitting on a threshold can flip healthy ↔
   withheld between computations. Hysteresis is planned future work.

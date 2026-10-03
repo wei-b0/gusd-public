@@ -70,10 +70,22 @@ abstract contract OracleReports is Test {
         );
     }
 
+    /// @dev The chain clock, read through the VM. NEVER read `block.timestamp`
+    ///      here directly: solc 0.8.26's via-ir optimizer CSE-merges two
+    ///      `timestamp()` reads across a `vm.warp` cheatcode call when the
+    ///      first result is not externally observed, so a report built after
+    ///      a warp can silently carry the PREVIOUS epoch (observed in
+    ///      PerpLiquidation). `vm.getBlockTimestamp()` is an external call —
+    ///      its return value cannot be merged — and cheatcode calls never
+    ///      consume an armed `vm.prank`.
+    function _now() internal view returns (uint64 ts) {
+        ts = uint64(vm.getBlockTimestamp());
+    }
+
     /// @dev A report for the CURRENT epoch, observed 5s ago — the healthy
     ///      default every happy-path test signs.
     function _report(bytes32 gpuId, uint256 price) internal view returns (IGpuOracle.Report memory r) {
-        r = _reportAt(gpuId, price, uint64(block.timestamp - 5));
+        r = _reportAt(gpuId, price, _now() - 5);
     }
 
     /// @dev Full control: epoch is derived from the chain clock, observation
@@ -83,7 +95,7 @@ abstract contract OracleReports is Test {
         view
         returns (IGpuOracle.Report memory r)
     {
-        uint64 epoch = uint64(block.timestamp / EPOCH_LENGTH);
+        uint64 epoch = _now() / EPOCH_LENGTH;
         r = IGpuOracle.Report({
             version: 1,
             gpuId: gpuId,
@@ -113,6 +125,6 @@ abstract contract OracleReports is Test {
 
     /// @dev Advance into the next epoch — every per-epoch binding resets.
     function _nextEpoch() internal {
-        vm.warp((block.timestamp / EPOCH_LENGTH + 1) * EPOCH_LENGTH);
+        vm.warp((_now() / EPOCH_LENGTH + 1) * EPOCH_LENGTH);
     }
 }

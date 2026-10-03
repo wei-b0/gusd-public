@@ -3,6 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createDb } from "@gusd/db";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
 import { parseAttestorEnv } from "./env.js";
+import { checkOraclePosture } from "./oracle-check.js";
 import { DrizzleAttestorStore } from "./store.js";
 import { AttestorPoller } from "./poller.js";
 import { fetchBreakerMap } from "./health.js";
@@ -51,6 +52,36 @@ async function main(): Promise<void> {
     logger,
     fetchBreakers: () => fetchBreakerMap(env.oracleUrl, fetch),
   });
+
+  // Boot-time posture cross-check: a wrong key, chain id, or epoch grid
+  // boots cleanly and only fails at trade time (the contract reverts on the
+  // first consumed report), so the check runs against the DEPLOYED oracle
+  // when an RPC is configured, and the drift is named loudly when it is not
+  // (docs/mainnet-deploy.md §4).
+  if (env.rpcUrl !== undefined) {
+    const report = await checkOraclePosture({
+      rpcUrl: env.rpcUrl,
+      oracleAddress: env.oracleAddress,
+      attestorAddress: account.address,
+      chainId: env.chainId,
+      epochLength: env.epochLength,
+      maxObservationAge: env.maxObservationAge,
+    });
+    if (report.mismatches.length > 0) {
+      throw new Error(
+        `attestor posture does not match the deployed GpuOracle — refusing to start:\n  ${report.mismatches.join("\n  ")}`,
+      );
+    }
+    logger.info("attestor posture verified against the deployed GpuOracle", {
+      chainId: env.chainId,
+      signer: account.address,
+      oracle: env.oracleAddress,
+    });
+  } else {
+    logger.warn(
+      "ATTESTOR_RPC_URL unset — skipping the boot-time cross-check against the deployed GpuOracle; a wrong key/chain/epoch would only surface as un-consumable signatures",
+    );
+  }
 
   const shutdown = (signal: string): void => {
     logger.info("attestor shutting down", { signal });

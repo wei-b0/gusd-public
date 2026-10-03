@@ -704,3 +704,209 @@ export interface MintQuote {
    *  Null on the reserve-asset path, where the preview itself is exact. */
   minOutput: number | null;
 }
+
+/* ---------------------------------------------------------------------------
+ * Perp layer — gUSD-settled GPU perpetual futures over the pull oracle
+ * (GpuPerpEngine). Collateral is gUSD; every fill price is a consumed
+ * oracle report; orders are two-stage (create locks collateral + fee, a
+ * keeper executes with a fresh attestation). sgUSD is the counterparty
+ * capital — losses settle into the vault, wins settle into a claimable
+ * balance paid from it.
+ * ------------------------------------------------------------------------- */
+
+/** Which way a perp position points. */
+export type PerpSide = "long" | "short";
+
+/** Order kinds on the engine, as the desk names them. */
+export type PerpOrderKind = "open" | "close" | "stop-loss" | "take-profit";
+
+/** The desk's open-order request: collateral × leverage on one side of one
+ *  GPU market. `toleranceBps` bounds the acceptable price the order arms
+ *  with (default 50 — 0.5%): the fill price is the report the keeper
+ *  executes with, which may be a later epoch's. */
+export interface PerpOpenRequest {
+  asset: AssetId;
+  side: PerpSide;
+  /** Collateral in gUSD product units. */
+  collateral: number;
+  /** Leverage multiplier, 1..maxLeverageBps/10000. */
+  leverage: number;
+  toleranceBps?: number;
+}
+
+/** The desk's close request: a partial or full decrease. `size` is the
+ *  notional to close in gUSD product units; null closes the whole position. */
+export interface PerpCloseRequest {
+  asset: AssetId;
+  side: PerpSide;
+  size: number | null;
+  toleranceBps?: number;
+}
+
+/** Live per-market facts — risk parameters, OI, pro-forma funding rates.
+ *  Null figures mean "not read yet", not zero. Rates are ppm per second
+ *  (signed for funding: >0 the named side pays, <0 it receives). */
+export interface PerpMarketState {
+  asset: AssetId;
+  enabled: boolean;
+  /** Max notional/collateral, 1x = 10000. */
+  maxLeverageBps: number;
+  /** Liquidation threshold, bps of notional. */
+  maintenanceMarginBps: number;
+  openFeeBps: number;
+  closeFeeBps: number;
+  liquidationFeeBps: number;
+  fundingRateLongPpmPerSec: number;
+  fundingRateShortPpmPerSec: number;
+  borrowRatePpmPerSec: number;
+  /** Per-side open interest and caps, gUSD product units. */
+  openInterestLong: number;
+  openInterestShort: number;
+  maxOiUsd: number;
+  minCollateralUsd: number;
+  maxPositionUsd: number;
+  updatedAt: number;
+}
+
+/** One execution-identical open preview at the pinned report price — what
+ *  `createOrder` would lock and the bound the order arms with. */
+export interface PerpOpenQuote {
+  asset: AssetId;
+  side: PerpSide;
+  /** Collateral the order locks (in), gUSD product units. */
+  collateral: number;
+  /** Notional the position opens with, gUSD product units. */
+  sizeUsd: number;
+  /** The open fee (ceiled onchain), gUSD product units — sits inside the
+   *  locked collateral, not on top. */
+  openFee: number;
+  /** The keeper's execution fee — escrowed at create, paid to the executor. */
+  executionFee: number;
+  /** The acceptable-price bound the order arms with (product units, USD
+   *  per GPU-hour): a long increase refuses to fill above it, a short
+   *  increase below it. */
+  acceptablePrice: number;
+  /** Liquidation-price estimate for the position this order opens — the
+   *  delta standalone (an increase into an existing position merges on
+   *  chain with a weighted entry and accrued funding, which this preview
+   *  doesn't re-derive). Null when no maintenance floor applies. */
+  estLiquidationPrice: number | null;
+  /** The pinned report price the quote was computed at. */
+  referencePrice: number;
+  quotedAtMs: number;
+  blockNumber: number | null;
+}
+
+/** One close preview at the pinned report price — proceeds, fees, funding. */
+export interface PerpCloseQuote {
+  asset: AssetId;
+  side: PerpSide;
+  /** Notional closing, gUSD product units. */
+  sizeUsd: number;
+  /** Position entry price (product units, USD per GPU-hour). */
+  entryPrice: number;
+  /** The pinned report price the preview was computed at. */
+  referencePrice: number;
+  /** Realized PnL at the reference price (signed, gUSD product units). */
+  pnl: number;
+  closeFee: number;
+  executionFee: number;
+  /** Net funding owed on the closed slice since the last on-chain touch
+   *  (<0 → the slice earns), gUSD product units — the slice's share of the
+   *  whole earned state (the position's carried balance plus the un-accrued
+   *  credit, sliced pro-rata) minus its debt share, i.e. what this close
+   *  actually settles; the remainder keeps its unattributed debt in its
+   *  checkpoints and its earned share in the carried balance on chain. */
+  fundingNet: number;
+  /** The acceptable-price bound the close arms with (product units): a long
+   *  close refuses to fill below it, a short close above it. */
+  acceptablePrice: number;
+  /** Liquidation-price estimate for the position that REMAINS after this
+   *  close — null when the close empties the position. */
+  estLiquidationPrice: number | null;
+  /** What settles into the claimable balance — never negative: when fees
+   *  and funding exceed the close, the engine settles nothing. */
+  proceeds: number;
+  /** The part of the close the fees and funding ate — the shortfall the
+   *  desk voices when proceeds are zero. */
+  shortfall: number;
+  quotedAtMs: number;
+  blockNumber: number | null;
+}
+
+/** Live position state — raw figures always, marked figures only when a
+ *  current report priced the read. Null marked fields mean "no verified
+ *  price marked this read", not zero. */
+export interface PerpPositionState {
+  asset: AssetId;
+  side: PerpSide;
+  /** Notional and collateral, gUSD product units — raw chain state. */
+  sizeUsd: number;
+  collateral: number;
+  /** Entry price, USD per GPU-hour product units — raw chain state. */
+  entryPrice: number;
+  /** Carried earned-funding credits, gUSD product units — accrues at every
+   *  onchain touch, folds into equity, and monetizes only at close or
+   *  liquidation (never claimable while the position is open). */
+  earnedFunding: number;
+  /** The verified report price the marked figures were computed at —
+   *  null while no current report priced this read. */
+  markPrice: number | null;
+  /** Unrealized PnL at the mark price (signed). Null when unmarked. */
+  uPnl: number | null;
+  /** collateral + uPnL + carried earned funding − accrued debts. Null when
+ *  unmarked. */
+  equity: number | null;
+  /** The maintenance margin requirement at current size. Null when unmarked. */
+  maintenance: number | null;
+  liquidatable: boolean | null;
+  /** Net funding owed since the last on-chain touch (<0 → earns).
+   *  Null when unmarked. */
+  fundingNet: number | null;
+  /** Estimated price move from the mark price that hits the maintenance
+   *  threshold (product units) — the liquidation distance the panel shows.
+   *  Null when unmarked or the market carries no maintenance floor. */
+  liquidationPrice: number | null;
+  /** When this state was last read onchain (raw or marked). */
+  updatedAt: number;
+  /** When a current report last priced it — null while never marked. */
+  markedAt: number | null;
+}
+
+/** One position probe. `flat` only when a successful onchain read saw zero
+ *  size; an unreachable chain or a report gap is `unknown`/`unmarked` —
+ *  never an honest-sounding empty. */
+export type PerpPositionProbe =
+  | { kind: "ok"; position: PerpPositionState }
+  | { kind: "unmarked"; position: PerpPositionState }
+  | { kind: "flat" }
+  | { kind: "unknown" };
+
+/** A pending order the desk armed — the keeper executes it. */
+export interface PerpPendingOrder {
+  orderId: number;
+  asset: AssetId;
+  kind: PerpOrderKind;
+  side: PerpSide;
+  /** Notional delta (0 on a close-all trigger), gUSD product units. */
+  sizeUsd: number;
+  /** Collateral delta — increase orders only, gUSD product units. */
+  collateral: number;
+  /** Trigger or acceptable bound, USD per GPU-hour. */
+  price: number;
+  executionFee: number;
+  createdAt: number;
+}
+
+/** The desk's TP/SL request — a trigger order on an existing position.
+ *  `size` is the notional to close on trigger (gUSD product units); null
+ *  closes the whole remaining position. The onchain execution re-verifies
+ *  the trigger against the fresh report (fail-closed). */
+export interface PerpTriggerRequest {
+  asset: AssetId;
+  side: PerpSide;
+  kind: "stop-loss" | "take-profit";
+  /** Trigger level, USD per GPU-hour product units. */
+  triggerPrice: number;
+  size: number | null;
+}

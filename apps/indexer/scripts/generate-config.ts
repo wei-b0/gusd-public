@@ -26,7 +26,16 @@ const deployment = await loadDeployment(
 const address = deployment.addresses;
 const events = {
   GUSD: ["Minted", "Redeemed", "FeesUpdated", "Transfer"],
-  SgUSD: ["Deposit", "Withdraw", "Seeded", "Transfer"],
+  SgUSD: [
+    "Deposit",
+    "Withdraw",
+    "Seeded",
+    "Transfer",
+    "PerpEngineSet",
+    "PerpReservedUpdated",
+    "EngineWithdrawal",
+    "EngineWithdrawalCapSet",
+  ],
   GPUIssuance: ["GpuCreated", "Issued", "IssuanceEnabledSet", "IssuanceFeeSet"],
   GPUToken: ["Transfer"],
   GpuRouter: ["Buy", "Sell"],
@@ -37,6 +46,22 @@ const events = {
   GpuOracle: ["PriceConsumed", "SignerTransferStarted", "SignerAccepted", "EpochLengthSet", "MaxObservationAgeSet"],
   PoolManager: ["Initialize", "Swap", "ModifyLiquidity", "Donate"],
   PositionManager: ["ModifyPosition"],
+  GpuPerpEngine: [
+    "MarketCreated",
+    "MarketParamsUpdated",
+    "MarketEnabled",
+    "MinOrderDelaySet",
+    "OrderCreated",
+    "OrderExecuted",
+    "OrderCancelled",
+    "PositionIncreased",
+    "PositionDecreased",
+    "PositionClosed",
+    "PositionLiquidated",
+    "ClaimableSettled",
+    "Claimed",
+    "FundingAccrued",
+  ],
 } as const;
 const abiFiles: Record<keyof typeof events, string> = {
   GUSD: "abis/gusd.json",
@@ -51,6 +76,7 @@ const abiFiles: Record<keyof typeof events, string> = {
   GpuOracle: "abis/oracle.json",
   PoolManager: "abis/pool_manager.json",
   PositionManager: "abis/position_manager.json",
+  GpuPerpEngine: "abis/perp_engine.json",
 };
 const addresses: Partial<Record<keyof typeof events, string>> = {
   GUSD: address.gusd,
@@ -64,6 +90,7 @@ const addresses: Partial<Record<keyof typeof events, string>> = {
   GpuOracle: address.oracle,
   PoolManager: address.poolManager,
   PositionManager: address.positionManager,
+  GpuPerpEngine: address.perpEngine,
 };
 
 const contracts = Object.keys(events).map((name) => ({

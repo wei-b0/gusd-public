@@ -21,6 +21,7 @@ Per-directory rules live in `apps/contracts/AGENTS.md` (read
 | `apps/contracts` | Foundry: GUSD, GPUIssuance, GPUMarketLiquidity, GPUToken, RevenueLedger, sgUSD, GPUHook, GpuRouter, GpuQuoter, StableRouter, `GpuOracle` (pull oracle). `deployments/<chainId>.json` is the one shared address record |
 | `apps/oracle` | Fastify price API: collectors → benchmark engine → `/v1/prices*`, `/v1/providers`, `/v1/health`, WS `/v1/stream`, SSE `/v1/stream/sse`. Also proxies the indexer as `/v1/protocol/*` (registered only when `INDEXER_SCHEMA` is set) |
 | `apps/attestor` | oracle → signed report loop: polls the benchmark API and serves current attestations (`@gusd/attestor-client` signs the EIP-712 reports the contracts consume) |
+| `apps/keeper` | perp executor: oracle WS candidate stream → offline evaluation against the indexer's perp entities (orders past `minOrderDelay`, triggers, liquidations) → one attestation fetch when work exists → sim-gated broadcast from a funded hot EOA. The only backend service that broadcasts |
 | `apps/indexer` | Envio HyperIndex: chain events → `gusd_index_envio_<env>_v<n>` Postgres schemas; config + ABI JSON + address constants generated at boot from the deployment record (`scripts/generate-config.ts`). Chain 4663 via HyperSync (`ENVIO_API_TOKEN` required, optional RPC fallback), 31337/46630 RPC-only; Hasura disabled, healthz/metrics on :9898. Its HTTP surface stays private to the compose network — reachable only through the oracle's `/v1/protocol` proxy |
 | `apps/web` | Next.js trading desk — the only component NOT containerized |
 | `packages/db` | Drizzle schema, migrations, append-only triggers, repos |
@@ -63,13 +64,22 @@ oracle engine/replay/server, the attestor's watched list, and the web app's
 - Protocol-side canon: `apps/contracts/PROTOCOL.md` §3. Offchain canon:
   `docs/oracle/METHODOLOGY.md` and `docs/oracle/PROVIDERS.md`.
 
-## Methodology (v0.4.0)
+## Methodology (v0.5.0)
 
 `DEFAULT_METHODOLOGY_CONFIG` in `packages/pricing-engine/src/config.ts`
-(version `0.4.0`) is the live methodology; `docs/oracle/METHODOLOGY.md`
+(version `0.5.0`) is the live methodology; `docs/oracle/METHODOLOGY.md`
 specifies it exactly. Thresholds live in config, never in code — a
 methodology change is a new version row, never a mutation, and configs are
 validated by an exhaustive allowlist before they can drive a computation.
+
+**Trading never halts on a gate failure (v0.5.0).** A value that failed its
+gates is never a price; instead the series *pauses* — the last gate-passing
+value is republished with an explicit `stale` flag (failed gates stay on the
+receipt; no movement offset, no confidence band), and the prior is the latest
+candidate carrying a price, so withheld rows never sever the chain. The
+attestor signs numeric candidates regardless of status, so a paused panel
+still trades. Only a panel with no published value within the 24h
+carry-forward window withholds.
 
 Thin-panel overrides (an override may only *relax* gates, and only
 `COLLECTED` providers can be promoted, per panel):
@@ -80,7 +90,8 @@ Thin-panel overrides (an override may only *relax* gates, and only
 - `RTX_4090_PANEL_V1` — promotes `akash`; `minProviders: 3`,
   `requireExecutable: true` (executable floor kept).
 - H100/H200 settle under the untouched global gates (quorum 4, executable
-  required).
+  required) — the v0.4.1 H100 override was retired in v0.5.0; thin-book
+  resilience lives in the pause mechanism, not per-panel patches.
 
 A panel computing below the global quorum publishes `degraded` at best,
 never `healthy`. The v0.3.0 publishing movement allowance lets the published
@@ -106,7 +117,10 @@ The compose stack defaults to the local Anvil posture (account #0 key — a
 public dev key, injected by compose; the attestor IS the deployer there;
 override the whole block in `infra/.env` for remote chains). The attestor
 aborts boot loudly on a chain-id / `ATTESTOR_ORACLE_ADDRESS` / signer
-mismatch — the configured key must equal `GpuOracle.signer()`.
+mismatch when `ATTESTOR_RPC_URL` is set (a read-only boot-time cross-check
+against the deployed `GpuOracle` — `signer()`, epoch grid, `eth_chainId`;
+without the RPC it warns instead) — the configured key must equal
+`GpuOracle.signer()`.
 
 ## Commands
 
@@ -208,7 +222,9 @@ Default `pnpm test` is network-free and skips the gated suites. Turbo's
   integration tests, oracle e2e (replay → API → WS/SSE), and the web
   route-handler/identity integration tests.
 - `RUN_ANVIL_TESTS=1` (needs a local anvil on :8545) runs the web
-  tx-lifecycle tests and the indexer anvil e2e. The indexer e2e is
+  tx-lifecycle tests (trading, perps, tx-store — the perps/trading suites
+  also want a fresh `Deploy.full` chain, see their headers) and the indexer
+  anvil e2e. The indexer e2e is
   self-contained — it boots its own anvil on :18545 and deploys on the
   day grid itself — so it only needs foundry (`~/.foundry/bin`) on PATH
   and the `gusd-postgres` container.

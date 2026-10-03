@@ -14,6 +14,10 @@
     "INDEXER_DEPLOYMENTS_DIR",
     "INDEXER_OFFLINE_CODEGEN",
     "INDEXER_RPC_URL",
+    // The indexer anvil e2e boots its own Deploy.full chain on the engine's
+    // day grid — the two knobs the deploy scripts read (apps/contracts).
+    "ORACLE_EPOCH_LENGTH",
+    "ORACLE_MAX_OBSERVATION_AGE",
     "RUN_ANVIL_TESTS",
     "RUN_DB_TESTS",
     "NEXT_PUBLIC_CHAIN_ID",
@@ -31,7 +35,7 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "lint": {
       "dependsOn": ["^lint"]

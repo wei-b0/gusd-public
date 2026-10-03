@@ -6,6 +6,7 @@
  *
  *   Minted → `to` · Redeemed → `from` · Issued → `to`
  *   Buy / Sell → `recipient` · Deposit / Withdraw → `owner`
+ *   PerpOrderCreated / PerpOrderExecuted / PerpClaimed → `account`
  *
  * `data` is the full decoded arg object through eventToData (bigint →
  * string, hex lowercased). Only chain-derived fields are produced here —
@@ -15,7 +16,8 @@
 import type { Address, Hash } from "viem";
 import { eventToData, type EventKeys } from "../events.js";
 
-/** The closed set of user-facing events the wire contract draws from. */
+/** The closed set of user-facing events the wire contract draws from.
+ *  Web mirror: apps/web/src/domain/indexer.ts INDEXED_EVENT_NAMES. */
 export const INDEXED_EVENT_NAMES = [
   "Minted",
   "Redeemed",
@@ -24,6 +26,9 @@ export const INDEXED_EVENT_NAMES = [
   "Sell",
   "Deposit",
   "Withdraw",
+  "PerpOrderCreated",
+  "PerpOrderExecuted",
+  "PerpClaimed",
 ] as const;
 
 export type IndexedEventName = (typeof INDEXED_EVENT_NAMES)[number];

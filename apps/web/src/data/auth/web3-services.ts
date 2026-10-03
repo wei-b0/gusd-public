@@ -23,6 +23,7 @@ import { getIndexerClient } from "@/data/indexer/indexer-client";
 import { OnChainMintPort } from "@/data/web3/gusd/onchain-mint-port";
 import { OnChainEarnPort } from "@/data/web3/earn/onchain-earn-port";
 import { OnChainTradingPort } from "@/data/web3/trading/onchain-trading-port";
+import { OnChainPerpPort } from "@/data/web3/perps/onchain-perp-port";
 import { AcrossBridgePort } from "@/data/web3/bridge/across";
 import { PrivyAuthPort } from "./privy-auth-port";
 import { disposeAvailabilityCache } from "@/data/web3/trading/quotes";
@@ -146,12 +147,18 @@ export class Web3Services implements Services {
       accountStore: this.accountStore,
       reconcile,
     });
+    this.perp = new OnChainPerpPort({
+      getSession: () => this.auth.getSession(),
+      actions: this.actions,
+      reconcile,
+    });
   }
 
   readonly mint: OnChainMintPort;
   readonly earn: OnChainEarnPort;
   readonly bridge: AcrossBridgePort;
   readonly trading: OnChainTradingPort;
+  readonly perp: OnChainPerpPort;
 
   get marketData() {
     return this.base.marketData;

@@ -73,7 +73,8 @@ export interface IndexerPort {
   ): Promise<readonly IndexedEvent[] | null>;
 }
 
-/** The event names reconciliation draws evidence from — all of them. */
+/** The event names reconciliation draws evidence from — all of them.
+ *  Indexer mirror: apps/indexer/src/projections/user-event.ts. */
 export const INDEXED_EVENT_NAMES = [
   "Minted",
   "Redeemed",
@@ -82,4 +83,7 @@ export const INDEXED_EVENT_NAMES = [
   "Sell",
   "Deposit",
   "Withdraw",
+  "PerpOrderCreated",
+  "PerpOrderExecuted",
+  "PerpClaimed",
 ] as const;

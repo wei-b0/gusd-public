@@ -66,7 +66,12 @@ describe("TxStore lifecycle", () => {
     expect(store.list()[0]?.status).toBe("rejected");
   });
 
-  it("marks a wallet failure as failed without leaking the raw error", async () => {
+  it("marks a wallet failure as failed — stable voice, but the provider's reason is carried", async () => {
+    // The refusal reason MUST survive into the record: a Privy origin or
+    // session refusal and a network drop look identical without it, and
+    // "try again" with no cause hid a real origin misconfiguration for a
+    // whole debugging session (2026-10). The lead voice stays generic so
+    // trader copy never becomes a stack dump; the detail rides after it.
     const store = new TxStore(testDeps());
     const record = await store.run(
       spec(async () => {
@@ -75,7 +80,8 @@ describe("TxStore lifecycle", () => {
       fakeWallet(),
     );
     expect(record.status).toBe("failed");
-    expect(record.error).not.toContain("ERC-7759");
+    expect(record.error).toMatch(/^The wallet refused the request: /);
+    expect(record.error).toContain("ERC-7759");
   });
 
   it("marks an on-chain revert with the block it landed in", async () => {

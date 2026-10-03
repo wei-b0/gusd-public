@@ -24,6 +24,10 @@ export interface AttestorEnv extends AttestorConfig {
   epochLength: number;
   /** Observation floor (seconds) — must match the GpuOracle constructor value and be >= epochLength. */
   maxObservationAge: number;
+  /** Optional read-only RPC: a boot-time cross-check of key/chain/epoch
+   * against the DEPLOYED GpuOracle (docs/mainnet-deploy.md §4). Never
+   * broadcasts — the only requests are eth_chainId and three eth_calls. */
+  rpcUrl?: string;
 }
 
 function intEnv(name: string, raw: string | undefined, fallback: number): number {
@@ -105,6 +109,9 @@ export function parseAttestorEnv(env: NodeJS.ProcessEnv = process.env): Attestor
         : numEnv("ATTESTOR_MAX_BAND_WIDTH_PCT", env.ATTESTOR_MAX_BAND_WIDTH_PCT, 0),
     privateKey: privateKey as `0x${string}`,
     oracleAddress: oracleAddress as `0x${string}`,
+    rpcUrl: env.ATTESTOR_RPC_URL === undefined || env.ATTESTOR_RPC_URL === ""
+      ? undefined
+      : env.ATTESTOR_RPC_URL,
     chainId,
     epochLength,
     maxObservationAge,
