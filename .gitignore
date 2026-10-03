@@ -41,7 +41,10 @@ yarn-error.log*
 .agents
 
 cache
-deployments
+deployments/
+!apps/contracts/deployments/
+apps/contracts/deployments/*
+!apps/contracts/deployments/*.json
 broadcast
 
 charting_library
