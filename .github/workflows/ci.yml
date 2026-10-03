@@ -68,6 +68,11 @@ jobs:
         run: pnpm turbo build --filter='!@gusd/contracts'
       - name: db tests (migrations, append-only, repos)
         run: pnpm --filter @gusd/db test
+      - name: migrate the ci database
+        # The db tests above run in a throwaway database and drop it; the
+        # replay + e2e steps below read DATABASE_URL itself, which nothing
+        # else has migrated.
+        run: pnpm --filter @gusd/db db:migrate
       - name: offline replay into the ci database
         run: ORACLE_REPLAY_FIXTURES=1 node apps/oracle/dist/main.js
       - name: oracle e2e (replay → API → WS/SSE)
