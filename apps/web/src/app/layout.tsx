@@ -1,13 +1,5 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
-import { ServicesProvider } from "@/data/services";
-import { PrivyRoot } from "@/data/auth/privy-root";
-import { SystemBar } from "@/components/shell/system-bar";
-import { ConnectDialog } from "@/components/shell/connect-dialog";
-import { NetworkStrip } from "@/components/shell/network-strip";
-import { FnKeys } from "@/components/shell/fn-keys";
-import { StatusLine } from "@/components/shell/status-line";
-import { TxDevPanel } from "@/components/ui/tx-receipt";
 import "./globals.css";
 
 /**
@@ -36,22 +28,16 @@ export const metadata: Metadata = {
     "The GPU Assets Protocol: a market for GPU assets quoted in gUSD, the protocol's settlement unit. Trade GPU markets at a premium or discount to the gUSD Index benchmarks.",
 };
 
+/**
+ * Bare root: html, glass, type. The machine shell (system bar, function-key
+ * rail, status line) belongs to the product surfaces and lives in the
+ * (shell) group; the entry gate renders without it — nothing on the door
+ * may call a resource the lock itself guards.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={jbMono.variable}>
-      <body>
-        <ServicesProvider>
-          <PrivyRoot>
-            <SystemBar />
-            <NetworkStrip />
-            <FnKeys />
-            <main className="mx-auto w-full max-w-300 px-3 pt-5 pb-20 md:px-5">{children}</main>
-            <TxDevPanel />
-            <StatusLine />
-            <ConnectDialog />
-          </PrivyRoot>
-        </ServicesProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
