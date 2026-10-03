@@ -234,15 +234,19 @@ contract PerpFundingBothSidesTest is PerpBase {
         // due = released 2_495e6 − closeFee 5e6 − 30e6 − 6e6 + 72e6.
         assertEq(engine.claimableOf(alice), 2_526_000_000);
         assertEq(engine.claimableOf(bob), 0);
-        // The remainder rewinds its unattributed share: its checkpoints sit
-        // back at the cumulatives of her open — the debt AND the credit
-        // follow the position, nothing is forgiven or forfeited.
+        // The remainder's unattributed DEBT rewinds into its checkpoints
+        // (back at the cumulatives of her open); its earned share stays in
+        // the balance — the floor slice 72e6 joined the close `due`, the
+        // other half is carried, and the credit checkpoint merely re-snapped
+        // to the market cumulative (no credit rewind exists anymore).
         IGpuPerpEngine.Position memory pos = engine.positions(alice, H100, true);
         assertEq(pos.sizeUsd, 5_000e6);
         assertEq(pos.collateral, 2_495_000_000);
         assertEq(pos.fundingFeeCheckpoint, 0);
-        assertEq(pos.fundingCreditCheckpoint, 0);
         assertEq(pos.borrowCheckpoint, 200_000_000_000_000);
+        assertEq(pos.earnedFunding, 72_000_000);
+        assertEq(pos.fundingCreditCheckpoint, 14_400_000_000_000_000);
+        assertEq(engine.totalEarnedFunding(), 72_000_000);
         // Engine at rest: alice's remainder + bob's escrowed collateral
         // (20_000e6 − 0.1% open fee).
         _assertEngineBalance(2_495_000_000 + 19_960_000_000);
@@ -278,5 +282,111 @@ contract PerpFundingBothSidesTest is PerpBase {
         // due2 = 2_495e6 − 5e6 − 30e6 − 9e6 + 258_666_666 = 2_709_666_666.
         assertEq(engine.claimableOf(alice), 2_526_000_000 + 2_709_666_666);
         assertEq(engine.positions(alice, H100, true).sizeUsd, 0);
+    }
+
+    /// The touch-time credit lands in the POSITION, not the counter: the
+    /// balance grows by the settlement's earned, `claimableOf` stays at
+    /// zero, the accumulator grows with it, and the vault is swept exactly
+    /// the charged side — the credit is accounting, not gUSD moving.
+    function test_increaseTouchAccruesIntoBalance() public {
+        _openSkew();
+        // One more epoch: OI 10k/40k — shorts dominate and pay; the long
+        // credit index climbs 3.6e15 × 4 = 1.44e16 WAD over the window.
+        vm.startPrank(alice);
+        gusd.approve(address(engine), type(uint256).max);
+        uint256 topUp = engine.createOrder(
+            _order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, 10_000e6, 1_000e6, 2_0000, 0)
+        );
+        vm.stopPrank();
+        uint256 vaultBefore = gusd.balanceOf(address(sg));
+        _nextEpoch();
+        vm.prank(bob);
+        engine.executeOrder(topUp, _updateData(H100, 2_0000));
+
+        IGpuPerpEngine.Position memory pos = engine.positions(alice, H100, true);
+        // Settled at the touch: owed 60e6 (the one-sided A→B window) + borrow
+        // 12e6 swept to the vault; earned 144e6 (bob's side paid) accrued
+        // into the balance. Collateral = 4_990e6 − 72e6 + 1_000e6 − 10e6 fee.
+        assertEq(pos.earnedFunding, 144_000_000);
+        assertEq(pos.collateral, 5_908_000_000);
+        assertEq(pos.sizeUsd, 20_000e6);
+        assertEq(engine.totalEarnedFunding(), 144_000_000);
+        assertEq(engine.claimableOf(alice), 0);
+        assertEq(engine.claimableOf(bob), 0);
+        assertEq(gusd.balanceOf(address(sg)) - vaultBefore, 72_000_000);
+        // Reserve floor = three terms: claimable 0 + reservedPnl 0 (the mark
+        // never moved) + the carried balances.
+        assertEq(sg.perpReserved(), 144_000_000);
+    }
+
+    /// Two touches accrue into the balance; the close folds the whole
+    /// carried state plus the final un-accrued window, and the accumulator
+    /// empties with the position.
+    function test_twoTouchAccumulationFoldsAtClose() public {
+        _openSkew();
+        vm.startPrank(alice);
+        gusd.approve(address(engine), type(uint256).max);
+        uint256 topUp = engine.createOrder(
+            _order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, 10_000e6, 1_000e6, 2_0000, 0)
+        );
+        vm.stopPrank();
+        _nextEpoch();
+        vm.prank(bob);
+        engine.executeOrder(topUp, _updateData(H100, 2_0000));
+        assertEq(engine.positions(alice, H100, true).earnedFunding, 144_000_000);
+
+        // One more epoch (OI 20k/40k — shorts still dominate: the ⅓ skew floors
+        // the drift at 1_999_999_999_999_999 WAD, credit per long unit 2× =
+        // 3_999_999_999_999_998), then close. The settlement earns
+        // 79_999_999 more; the full close folds balance 144e6 + 79_999_999.
+        vm.startPrank(alice);
+        uint256 close = engine.createOrder(_order(H100, IGpuPerpEngine.OrderKind.MarketDecrease, true, 0, 0, 2_0000, 0));
+        vm.stopPrank();
+        _nextEpoch();
+        vm.prank(bob);
+        engine.executeOrder(close, _updateData(H100, 2_0000));
+        // due = released 5_908e6 − closeFee 20e6 − borrow 12e6 + 223_999_999.
+        assertEq(engine.claimableOf(alice), 6_099_999_999);
+        assertEq(engine.totalEarnedFunding(), 0);
+        // Engine at rest: bob's escrowed collateral (20_000e6 − 0.1% fee).
+        _assertEngineBalance(19_960_000_000);
+    }
+
+    /// The carried balance folds into the liquidation gate AND the `due`:
+    /// a position whose earned funding was seeded by a top-up touch (here
+    /// 144e6) liquidates with the credit counted — at $1.44 the uPnL-only
+    /// equity is 311e6, but the credited equity is 495e6 and the whole
+    /// balance rides into `due` before the 1% liqFee; the accumulator
+    /// empties and the reserve floor collapses back to one term.
+    function test_liquidationFoldsCarriedBalance() public {
+        _openSkew();
+        vm.startPrank(alice);
+        gusd.approve(address(engine), type(uint256).max);
+        uint256 topUp = engine.createOrder(
+            _order(H100, IGpuPerpEngine.OrderKind.MarketIncrease, true, 10_000e6, 1_000e6, 2_0000, 0)
+        );
+        vm.stopPrank();
+        _nextEpoch();
+        vm.prank(bob);
+        engine.executeOrder(topUp, _updateData(H100, 2_0000));
+        assertEq(engine.positions(alice, H100, true).earnedFunding, 144_000_000);
+
+        // One idle epoch (the ⅓-skew window accrues 79_999_999 more credit to
+        // alice's index — drift floors at 1_999_999_999_999_999, credit 2× =
+        // 3_999_999_999_999_998 — plus 6e14 borrow), then liquidate at $1.43:
+        // uPnL −5_700e6, borrow 12e6 → equity 5_908 − 5_700 + 223_999_999 −
+        // 12e6 = 419_999_999 < 500e6 maintenance (uPnL-only it would be
+        // 196e6 — the carried credits widen the position's life).
+        vm.warp(block.timestamp + 60);
+        vm.prank(bob);
+        engine.liquidate(alice, H100, true, _updateData(H100, 1_4300));
+        // due = 419_999_999 − liqFee 200e6.
+        assertEq(engine.claimableOf(alice), 219_999_999);
+        assertEq(engine.totalClaimable(), 219_999_999);
+        assertEq(engine.totalEarnedFunding(), 0);
+        assertEq(engine.reservedPnl(), 0);
+        assertEq(sg.perpReserved(), 219_999_999);
+        assertEq(engine.positions(alice, H100, true).sizeUsd, 0);
+        _assertEngineBalance(19_960_000_000);
     }
 }

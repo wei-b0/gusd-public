@@ -786,6 +786,11 @@ export interface PerpOpenQuote {
    *  per GPU-hour): a long increase refuses to fill above it, a short
    *  increase below it. */
   acceptablePrice: number;
+  /** Liquidation-price estimate for the position this order opens — the
+   *  delta standalone (an increase into an existing position merges on
+   *  chain with a weighted entry and accrued funding, which this preview
+   *  doesn't re-derive). Null when no maintenance floor applies. */
+  estLiquidationPrice: number | null;
   /** The pinned report price the quote was computed at. */
   referencePrice: number;
   quotedAtMs: number;
@@ -806,12 +811,19 @@ export interface PerpCloseQuote {
   pnl: number;
   closeFee: number;
   executionFee: number;
-  /** Net funding owed since the last on-chain touch (<0 → the position
-   *  earns), gUSD product units — the whole position's, whatever closes. */
+  /** Net funding owed on the closed slice since the last on-chain touch
+   *  (<0 → the slice earns), gUSD product units — the slice's share of the
+   *  whole earned state (the position's carried balance plus the un-accrued
+   *  credit, sliced pro-rata) minus its debt share, i.e. what this close
+   *  actually settles; the remainder keeps its unattributed debt in its
+   *  checkpoints and its earned share in the carried balance on chain. */
   fundingNet: number;
   /** The acceptable-price bound the close arms with (product units): a long
    *  close refuses to fill below it, a short close above it. */
   acceptablePrice: number;
+  /** Liquidation-price estimate for the position that REMAINS after this
+   *  close — null when the close empties the position. */
+  estLiquidationPrice: number | null;
   /** What settles into the claimable balance — never negative: when fees
    *  and funding exceed the close, the engine settles nothing. */
   proceeds: number;
@@ -833,12 +845,17 @@ export interface PerpPositionState {
   collateral: number;
   /** Entry price, USD per GPU-hour product units — raw chain state. */
   entryPrice: number;
+  /** Carried earned-funding credits, gUSD product units — accrues at every
+   *  onchain touch, folds into equity, and monetizes only at close or
+   *  liquidation (never claimable while the position is open). */
+  earnedFunding: number;
   /** The verified report price the marked figures were computed at —
    *  null while no current report priced this read. */
   markPrice: number | null;
   /** Unrealized PnL at the mark price (signed). Null when unmarked. */
   uPnl: number | null;
-  /** collateral + uPnL − accrued debts. Null when unmarked. */
+  /** collateral + uPnL + carried earned funding − accrued debts. Null when
+ *  unmarked. */
   equity: number | null;
   /** The maintenance margin requirement at current size. Null when unmarked. */
   maintenance: number | null;

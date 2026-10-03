@@ -162,6 +162,9 @@ export interface PositionFunding {
   fundingFeeCheckpoint: bigint;
   fundingCreditCheckpoint: bigint;
   borrowCheckpoint: bigint;
+  /** Carried earned-funding credits — the engine folds them into the gate
+   *  equity alongside the un-accrued `s.earned` (G1 lockstep). */
+  earnedFunding: bigint;
   isLong: boolean;
 }
 
@@ -188,11 +191,19 @@ export function settle(m: MarketFunding, adv: AdvancedFunding, p: PositionFundin
   };
 }
 
-/** Equity at `price`: collateral + uPnL + accrued funding credits −
- *  (funding owed + borrow) — the same shape as the engine's decrease,
- *  liquidation gate, and getPosition view (G1 lockstep). */
+/** Equity at `price`: collateral + uPnL + (carried earnedFunding + accrued
+ *  funding credits) − (funding owed + borrow) — the same shape as the
+ *  engine's decrease, liquidation gate, and getPosition view (G1 lockstep;
+ *  the carried balance is a first-class equity term, exactly like
+ *  PerpLiquidation's balanceTotal). */
 export function equity(p: PositionFunding, s: Settlement, price: bigint): bigint {
-  return p.collateral + pnl(p.sizeUsd, p.entryPrice, p.isLong, price) + s.earned - (s.owed + s.borrow);
+  return (
+    p.collateral +
+    pnl(p.sizeUsd, p.entryPrice, p.isLong, price) +
+    p.earnedFunding +
+    s.earned -
+    (s.owed + s.borrow)
+  );
 }
 
 /**

@@ -44,9 +44,11 @@ library PerpViews {
         uint256 earned = PerpMath.fundingEarned(pos.sizeUsd, creditCum, pos.fundingCreditCheckpoint);
         uint256 borrow = PerpMath.fundingOwed(pos.sizeUsd, m.borrowChargePerUnit, pos.borrowCheckpoint);
         v.uPnL = uPnl;
-        v.fundingDue = int256(earned) - int256(owed + borrow);
+        // The position's whole funding state: carried earnedFunding balance +
+        // un-accrued earned − debts (owed + borrow).
+        v.fundingDue = int256(uint256(pos.earnedFunding) + earned) - int256(owed + borrow);
         // Same equity shape as the decrease/liquidation paths: collateral +
-        // uPnL + accrued funding credits − debts — the gate's own figure.
+        // uPnL + funding due (earned credits − debts) — the gate's own figure.
         v.equity = int256(uint256(pos.collateral)) + uPnl + v.fundingDue;
         v.maintenance = PerpMath.maintenance(pos.sizeUsd, m.params.maintenanceMarginBps);
         v.liquidatable = pos.sizeUsd > 0 && v.equity < int256(v.maintenance);
@@ -91,9 +93,10 @@ library PerpViews {
         v.borrowRatePpmPerSec = int256(uint256(m.params.borrowRatePpmPerSec));
     }
 
-    /// @dev Equity at `price` including accrued funding — charges AND earned
-    ///      credits (the funding view without accruing — see getPosition);
-    ///      the exact figure `liquidate`'s gate evaluates.
+    /// @dev Equity at `price` including the whole funding state — the carried
+    ///      earnedFunding balance plus un-accrued charges AND earned credits
+    ///      (the funding view without accruing — see getPosition); the exact
+    ///      figure `liquidate`'s gate evaluates.
     function _equityOf(
         IGpuPerpEngine.Market storage m,
         IGpuPerpEngine.Position storage pos,
@@ -106,7 +109,8 @@ library PerpViews {
         uint256 owed = PerpMath.fundingOwed(pos.sizeUsd, feeCum, pos.fundingFeeCheckpoint);
         uint256 earned = PerpMath.fundingEarned(pos.sizeUsd, creditCum, pos.fundingCreditCheckpoint);
         uint256 borrow = PerpMath.fundingOwed(pos.sizeUsd, m.borrowChargePerUnit, pos.borrowCheckpoint);
-        return int256(uint256(pos.collateral)) + uPnl + int256(earned) - int256(owed + borrow);
+        return int256(uint256(pos.collateral)) + uPnl
+            + int256(uint256(pos.earnedFunding) + earned) - int256(owed + borrow);
     }
 
     function _positionKey(address account, bytes32 gpuId, bool isLong) internal pure returns (bytes32) {

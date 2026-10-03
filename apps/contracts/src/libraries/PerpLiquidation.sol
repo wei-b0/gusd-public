@@ -53,11 +53,14 @@ library PerpLiquidation {
 
         int256 uPnl = PerpMath.pnl(pos.sizeUsd, pos.entryPrice, isLong, price);
         uint256 debts = s.owed + s.borrow;
-        // Same equity shape as the decrease path (GpuPerpEngine._executeDecrease):
-        // collateral + uPnL + accrued funding credits − debts. Excluding the
-        // credits would forfeit a receiver-side position's earned funding at
-        // liquidation AND understate the gate's equity.
-        int256 equity = int256(uint256(pos.collateral)) + uPnl + int256(s.earned) - int256(debts);
+        // The whole earned state — carried balance + this settlement's
+        // un-accrued credit — folds into the settlement: same shape as the
+        // decrease path (GpuPerpEngine._executeDecrease). Equity = collateral
+        // + uPnL + earned funding − debts. Excluding the earned funding
+        // would forfeit a receiver-side position's credits at liquidation
+        // AND understate the gate's equity.
+        uint256 balanceTotal = uint256(pos.earnedFunding) + s.earned;
+        int256 equity = int256(uint256(pos.collateral)) + uPnl + int256(balanceTotal) - int256(debts);
         uint256 maintenance = PerpMath.maintenance(pos.sizeUsd, m.params.maintenanceMarginBps);
         if (equity >= int256(maintenance)) revert IGpuPerpEngine.NotLiquidatable(equity, maintenance);
 
@@ -84,8 +87,12 @@ library PerpLiquidation {
             m.openNotionalShort -= pos.sizeUsd;
         }
         totals.reservedPnl -= pos.reserveShare;
+        // The accumulator tracks Σ carried balances — the un-accrued
+        // `s.earned` share of balanceTotal was never added to it (only
+        // touch-folded earned is), so it must not be subtracted either.
+        totals.totalEarnedFunding -= pos.earnedFunding;
         delete _positions[pk];
-        sgusd.setPerpReserved(totals.totalClaimable + totals.reservedPnl);
+        sgusd.setPerpReserved(totals.totalClaimable + totals.reservedPnl + totals.totalEarnedFunding);
         emit IGpuPerpEngine.PositionLiquidated(account, gpuId, isLong, msg.sender, price, liqFee, badDebt, due);
     }
 

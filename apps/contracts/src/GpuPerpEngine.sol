@@ -35,9 +35,9 @@ import {PerpViews} from "./libraries/PerpViews.sol";
 ///      when the vault is short. The engine holds nothing at rest except
 ///      open-position collateral and pending-order escrow:
 ///      `gUSD.balanceOf(this) == Σ openCollateral + Σ pending (collateral + executionFee)`.
-///      The engine pushes `perpReserved = totalClaimable + reservedPnl` to
-///      sgUSD after every mutation so ordinary sgUSD redemptions cannot
-///      drain funds reserved for perp liabilities.
+///      The engine pushes `perpReserved = totalClaimable + reservedPnl +
+///      totalEarnedFunding` to sgUSD after every mutation so ordinary sgUSD
+///      redemptions cannot drain funds reserved for perp liabilities.
 /// @dev Pull-oracle doctrine (GPUIssuance's): state-changing paths CONSUME
 ///      the report; views VERIFY it — never a cached price. Liquidation is
 ///      deliberately executable while paused: it reduces protocol risk.
@@ -76,6 +76,11 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Σ positive uPnL reserved at last-touch prices.
     function reservedPnl() external view returns (uint256) {
         return _totals.reservedPnl;
+    }
+
+    /// @notice Σ carried earned-funding balances over live positions.
+    function totalEarnedFunding() external view returns (uint256) {
+        return _totals.totalEarnedFunding;
     }
 
     constructor(IERC20 gUSD_, ISgUSD sgusd_, IGpuOracle oracle_, address revenueLedger_, address initialOwner)
@@ -352,7 +357,15 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         uint256 earned = 0;
         if (pos.sizeUsd > 0) {
             (charged, earned) = _chargeFunding(pos, m, o.isLong);
-            if (earned > 0) _creditClaimable(o.account, o.market, earned);
+            if (earned > 0) {
+                // Earned funding accrues INTO the position (equity-inclusive;
+                // monetizes only at close/liquidation) — `claimableOf`
+                // receives close proceeds only. The credit checkpoint has
+                // already re-snapped in settle(), so the balance field is
+                // what carries the credit forward.
+                pos.earnedFunding += uint128(earned);
+                _totals.totalEarnedFunding += earned;
+            }
             // The payer's funding charge is LP revenue: sweep it to the vault
             // NOW. The charge was deducted from pos.collateral, so the gUSD
             // backing it must leave the engine in the same transaction —
@@ -407,15 +420,16 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
             // the fresh-position branch pinned them), so these are the exact
             // values the indexer/keeper needs for offline debt math, clamp
             // rewinds included.
-            pos.fundingFeeCheckpoint, pos.fundingCreditCheckpoint, pos.borrowCheckpoint
+            pos.fundingFeeCheckpoint, pos.fundingCreditCheckpoint, pos.borrowCheckpoint,
+            pos.earnedFunding
         );
         emit OrderExecuted(
             orderId, msg.sender, o.account, o.market, o.kind, o.isLong, price, o.executionFee,
-            // claimableDelta carries the funding credit earned at this touch —
-            // _creditClaimable above grew claimableOf by it, and no other
-            // event carries the delta; the indexer's claimable balance
-            // projection sums exactly this field.
-            o.sizeDeltaUsd, 0, openFee, int256(earned) - int256(charged), earned
+            // claimableDelta is 0 on increases: earned funding accrues into
+            // the position's balance (carried on PositionIncreased), never
+            // into the claimable counter. fundingNet stays the informative
+            // earned − charged log value.
+            o.sizeDeltaUsd, 0, openFee, int256(earned) - int256(charged), 0
         );
     }
 
@@ -443,30 +457,36 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
             _checkTrigger(o.kind, o.isLong, price, o.triggerPrice);
         }
 
-        // Snapshot the checkpoints BEFORE settle — the closed slice's funding
+        // Snapshot the debt checkpoints BEFORE settle — the closed slice's funding
         // share must be computed at the same per-unit deltas the full
         // settlement reads (settle re-snapshots the checkpoints to the
-        // current cumulatives).
+        // current cumulatives). The credit checkpoint needs no snapshot: its
+        // earned folds into the position's balance below and slices from
+        // there.
         uint128 feeCkpt = pos.fundingFeeCheckpoint;
-        uint128 creditCkpt = pos.fundingCreditCheckpoint;
         uint128 borrowCkpt = pos.borrowCheckpoint;
         PerpFunding.Settlement memory s = PerpFunding.settle(m, pos, o.isLong);
+        // The whole earned state — carried balance + this settlement's
+        // un-accrued credit — slices pro-rata at close: fold before slicing.
+        uint256 balanceTotal = uint256(pos.earnedFunding) + s.earned;
         uint256 released = uint256(pos.collateral).mulDiv(sizeDelta, pos.sizeUsd, Math.Rounding.Floor);
         int256 pnlShare = PerpMath.pnl(sizeDelta, pos.entryPrice, o.isLong, price);
         uint256 closeFee = PerpMath.feeBps(sizeDelta, m.params.closeFeeBps);
         // Pro-rata funding attribution: the closed slice settles only ITS
         // share of the position's accrued funding — charges ceil, credits
         // floor (the same per-unit rounding doctrine everywhere else). The
-        // remainder's unattributed share rewinds into its checkpoints below,
-        // so a partial close neither forgives the remainder's debt nor
-        // forfeits its credits (full closes attribute everything anyway).
+        // remainder's unattributed debt rewinds into its checkpoints below;
+        // its earned share stays in the balance field, so a partial close
+        // neither forgives the remainder's debt nor forfeits its credits
+        // (full closes attribute everything anyway).
         uint256 sliceOwed = PerpMath.fundingOwed(
             sizeDelta, o.isLong ? m.fundingChargePerUnitLong : m.fundingChargePerUnitShort, feeCkpt
         );
         uint256 sliceBorrow = PerpMath.fundingOwed(sizeDelta, m.borrowChargePerUnit, borrowCkpt);
-        uint256 sliceEarned = PerpMath.fundingEarned(
-            sizeDelta, o.isLong ? m.fundingCreditPerUnitLong : m.fundingCreditPerUnitShort, creditCkpt
-        );
+        // Earned share: a floor slice of the whole balance — the remainder
+        // keeps `balanceTotal − sliceEarned` (floor remainder ≥ its pro-rata
+        // share → conservation without clamping).
+        uint256 sliceEarned = balanceTotal.mulDiv(sizeDelta, pos.sizeUsd, Math.Rounding.Floor);
         int256 raw = int256(released) + pnlShare - int256(closeFee)
             - int256(sliceOwed + sliceBorrow) + int256(sliceEarned);
         uint256 due = raw > 0 ? uint256(raw) : 0;
@@ -499,25 +519,39 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         }
         if (remaining == 0) {
             _totals.reservedPnl -= pos.reserveShare;
+            // The accumulator tracks Σ carried balances — the un-accrued
+            // `s.earned` share of balanceTotal was never added to it (only
+            // touch-folded earned is), so it must not be subtracted either.
+            _totals.totalEarnedFunding -= pos.earnedFunding;
             delete _positions[pk];
             emit PositionClosed(o.account, o.market, o.isLong, price);
         } else {
             pos.sizeUsd = uint128(remaining);
             pos.collateral -= uint128(released);
-            // The remainder keeps its unattributed funding: uncollected debt
-            // AND uncredited earnings rewind into the fresh checkpoints
-            // (floor, clamped at the cumulative's own delta — the same
-            // clamp pattern _chargeFunding uses).
+            // The remainder keeps its unattributed funding debt — uncollected
+            // charges rewind into the fresh checkpoints (floor, clamped at
+            // the cumulative's own delta, the same clamp pattern
+            // _chargeFunding uses); its earned share is carried in the
+            // balance field (balanceTotal − sliceEarned), so no credit
+            // rewind exists anymore.
+            // Accumulator: replace this position's old carried balance with
+            // its new one (the settlement's earned folds in here at the
+            // slice boundary — it was never in the accumulator before).
+            uint256 carried = uint256(pos.earnedFunding);
+            pos.earnedFunding = uint128(balanceTotal - sliceEarned);
+            _totals.totalEarnedFunding =
+                _totals.totalEarnedFunding - carried + uint256(pos.earnedFunding);
             _rewindFunding(
-                pos, m, o.isLong, remaining, feeCkpt, creditCkpt, borrowCkpt,
-                s.owed - sliceOwed, s.borrow - sliceBorrow, s.earned - sliceEarned
+                pos, m, o.isLong, remaining, feeCkpt, borrowCkpt,
+                s.owed - sliceOwed, s.borrow - sliceBorrow
             );
             _setReserveShare(pos, PerpMath.pnl(remaining, pos.entryPrice, o.isLong, price));
             emit PositionDecreased(
                 o.account, o.market, o.isLong, sizeDelta, pnlShare,
                 int256(sliceEarned) - int256(sliceOwed + sliceBorrow), paidLedger, due,
                 remaining, uint256(pos.collateral),
-                pos.fundingFeeCheckpoint, pos.fundingCreditCheckpoint, pos.borrowCheckpoint
+                pos.fundingFeeCheckpoint, pos.fundingCreditCheckpoint, pos.borrowCheckpoint,
+                pos.earnedFunding
             );
         }
         _pushReservation();
@@ -575,24 +609,23 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @dev After a partial decrease, rewinds the remainder's share of the
-    ///      settled funding into the freshly re-snapshotted checkpoints —
-    ///      uncollected debt AND uncredited earnings — floor-rounded and
-    ///      clamped at the cumulative delta the settlement actually read.
-    ///      The clamp reads the PRE-settle checkpoints (`*Ckpt0`): settle has
-    ///      already re-snapshotted the position's, so its own delta is zero.
-    ///      The amount inputs are the FULL-size settlement's minus the
-    ///      closed slice's attributed share.
+    ///      settled funding DEBT into the freshly re-snapshotted checkpoints
+    ///      — floor-rounded and clamped at the cumulative delta the
+    ///      settlement actually read. (Earned credits are not rewound: the
+    ///      remainder's share is carried in `pos.earnedFunding` —
+    ///      `balanceTotal − sliceEarned`.) The clamp reads the PRE-settle
+    ///      checkpoints (`*Ckpt0`): settle has already re-snapshotted the
+    ///      position's, so its own delta is zero. The amount inputs are the
+    ///      FULL-size settlement's minus the closed slice's attributed share.
     function _rewindFunding(
         Position storage pos,
         Market storage m,
         bool isLong,
         uint256 remaining,
         uint128 feeCkpt0,
-        uint128 creditCkpt0,
         uint128 borrowCkpt0,
         uint256 owedRem,
-        uint256 borrowRem,
-        uint256 earnedRem
+        uint256 borrowRem
     ) internal {
         uint128 feeCum = isLong ? m.fundingChargePerUnitLong : m.fundingChargePerUnitShort;
         uint256 delta = feeCum - feeCkpt0;
@@ -604,12 +637,6 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
         rewind = borrowRem.mulDiv(PerpMath.FUNDING_SCALE, remaining, Math.Rounding.Floor);
         if (rewind > delta) rewind = delta;
         pos.borrowCheckpoint = m.borrowChargePerUnit - uint128(rewind);
-
-        uint128 creditCum = isLong ? m.fundingCreditPerUnitLong : m.fundingCreditPerUnitShort;
-        delta = creditCum - creditCkpt0;
-        rewind = earnedRem.mulDiv(PerpMath.FUNDING_SCALE, remaining, Math.Rounding.Floor);
-        if (rewind > delta) rewind = delta;
-        pos.fundingCreditCheckpoint = creditCum - uint128(rewind);
     }
 
     function _creditClaimable(address account, bytes32 gpuId, uint256 amount) internal {
@@ -628,7 +655,11 @@ contract GpuPerpEngine is IGpuPerpEngine, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     function _pushReservation() internal {
-        sgusd.setPerpReserved(_totals.totalClaimable + _totals.reservedPnl);
+        // Three liability terms: settled close proceeds, unrealized gains at
+        // last-touch prices, and the carried earned-funding balances.
+        sgusd.setPerpReserved(
+            _totals.totalClaimable + _totals.reservedPnl + _totals.totalEarnedFunding
+        );
     }
 
     function _checkTrigger(OrderKind kind, bool isLong, uint256 price, uint128 trigger) internal pure {

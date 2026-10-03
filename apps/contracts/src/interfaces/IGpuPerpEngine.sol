@@ -64,6 +64,12 @@ interface IGpuPerpEngine {
         uint128 borrowCheckpoint;
         uint128 reserveShare; // this position's contribution to `reservedPnl`
         uint64 openedAt;
+        /// @dev Carried funding credits: at every touch the settlement's
+        ///      earned output folds in here (the credit checkpoint re-snaps,
+        ///      so checkpoints alone cannot carry it). Equity-inclusive;
+        ///      monetizes only at close/liquidation — `claimableOf` receives
+        ///      close proceeds only. Starts slot 4 (+1 slot per position).
+        uint128 earnedFunding;
     }
 
     enum OrderKind {
@@ -118,7 +124,7 @@ interface IGpuPerpEngine {
         int256 equity; // collateral + uPnL − accrued debts
         uint256 maintenance;
         bool liquidatable;
-        int256 fundingDue; // earned − owed − borrow, as last accrued on-chain
+        int256 fundingDue; // carried earnedFunding + un-accrued earned − owed − borrow, as last accrued on-chain
     }
 
     /// @notice Market read incl. pro-forma funding rates at current OI.
@@ -136,6 +142,10 @@ interface IGpuPerpEngine {
     struct Totals {
         uint256 totalClaimable;
         uint256 reservedPnl;
+        /// @dev Σ `pos.earnedFunding` over live positions — the third
+        ///      reservation-floor term. Maintained at every balance mutation
+        ///      (increase touch, close slice, full close, liquidation).
+        uint256 totalEarnedFunding;
     }
 
     // ------------------------------------------------------------- events
@@ -149,8 +159,8 @@ interface IGpuPerpEngine {
     event OrderExecuted(uint256 indexed orderId, address indexed executor, address indexed account, bytes32 gpuId, OrderKind kind, bool isLong, uint256 execPrice, uint256 executionFeePaid, uint256 sizeDeltaUsd, int256 realizedPnl, uint256 feesPaid, int256 fundingNet, uint256 claimableDelta);
     event OrderCancelled(uint256 indexed orderId, address indexed account, OrderKind kind, uint256 feeRefunded, uint256 collateralRefunded);
 
-    event PositionIncreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 newSizeUsd, uint256 newCollateral, uint256 newEntryPrice, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint);
-    event PositionDecreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 sizeDeltaUsd, int256 realizedPnl, int256 fundingNet, uint256 closeFee, uint256 claimableDelta, uint256 remainingSizeUsd, uint256 remainingCollateral, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint);
+    event PositionIncreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 newSizeUsd, uint256 newCollateral, uint256 newEntryPrice, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint, uint256 newEarnedFunding);
+    event PositionDecreased(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 sizeDeltaUsd, int256 realizedPnl, int256 fundingNet, uint256 closeFee, uint256 claimableDelta, uint256 remainingSizeUsd, uint256 remainingCollateral, uint128 fundingFeeCheckpoint, uint128 fundingCreditCheckpoint, uint128 borrowCheckpoint, uint256 remainingEarnedFunding);
     event PositionClosed(address indexed account, bytes32 indexed gpuId, bool isLong, uint256 execPrice);
     event PositionLiquidated(address indexed account, bytes32 indexed gpuId, bool isLong, address indexed executor, uint256 execPrice, uint256 liquidationFee, uint256 badDebt, uint256 claimableDelta);
 
@@ -201,6 +211,9 @@ interface IGpuPerpEngine {
     function claimableOf(address account) external view returns (uint256);
     function totalClaimable() external view returns (uint256);
     function reservedPnl() external view returns (uint256);
+    /// @notice Σ `pos.earnedFunding` over live positions (reservation floor
+    ///         term three).
+    function totalEarnedFunding() external view returns (uint256);
     function minOrderDelay() external view returns (uint32);
     function orderNonce() external view returns (uint256);
     function activeTrigger(address account, bytes32 gpuId, bool isLong, uint8 kind) external view returns (uint256 orderId);

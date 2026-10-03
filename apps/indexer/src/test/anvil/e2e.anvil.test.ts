@@ -258,6 +258,25 @@ d("indexer onchain suites (gated)", () => {
         [],
       );
       expect(stats[0]!.order_count).toBe("1"); // the increase — the TP arms in runReprice
+
+      // Entity-schema guard: envio derives table columns from schema.graphql,
+      // NOT from handler insert values — a field added to a handler without a
+      // matching entity is silently dropped at decode (the mock-DB network
+      // suites can't see it). Pin the settlement-redesign columns here.
+      const columns = await schemaQuery<{ table_name: string; column_name: string }>(
+        `select table_name, column_name from information_schema.columns
+           where table_schema = 'gusd_index_envio_e2e_a'
+             and ((table_name = 'PerpPositionIncreased' and column_name = 'new_earned_funding')
+               or (table_name = 'PerpPositionDecreased' and column_name = 'remaining_earned_funding')
+               or (table_name = 'PerpPosition' and column_name = 'earned_funding'))
+           order by table_name`,
+        [],
+      );
+      expect(columns.map((c) => `${c.table_name}.${c.column_name}`)).toEqual([
+        "PerpPosition.earned_funding",
+        "PerpPositionDecreased.remaining_earned_funding",
+        "PerpPositionIncreased.new_earned_funding",
+      ]);
     },
     120_000,
   );

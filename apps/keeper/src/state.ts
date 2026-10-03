@@ -46,6 +46,9 @@ export interface KeeperPosition {
   fundingFeeCheckpoint: bigint;
   fundingCreditCheckpoint: bigint;
   borrowCheckpoint: bigint;
+  /** Carried earned-funding credits — folds into the offline equity exactly
+   *  like the engine's gate (PerpLiquidation's balanceTotal term). */
+  earnedFunding: bigint;
   lastTouchedAtSec: bigint;
 }
 
@@ -253,6 +256,7 @@ export class Book {
       fundingFeeCheckpoint: big(r.funding_fee_checkpoint),
       fundingCreditCheckpoint: big(r.funding_credit_checkpoint),
       borrowCheckpoint: big(r.borrow_checkpoint),
+      earnedFunding: big(r.earned_funding),
       lastTouchedAtSec: big(r.last_touched_at_sec),
     };
   }

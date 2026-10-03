@@ -284,6 +284,22 @@ contract PerpInvariantTest is OracleReports {
     }
 
     function invariant_perpReservedEqualsLiabilities() public view {
-        assertEq(sg.perpReserved(), engine.totalClaimable() + engine.reservedPnl(), "perpReserved");
+        assertEq(
+            sg.perpReserved(),
+            engine.totalClaimable() + engine.reservedPnl() + engine.totalEarnedFunding(),
+            "perpReserved"
+        );
+    }
+
+    /// The carried earned-funding balances are engine-accounting liabilities
+    /// outside its gUSD balance — the accumulator must always equal their
+    /// sum, or the reserve floor drifts and throttles LP redemptions.
+    function invariant_earnedFundingSumEqualsTotal() public view {
+        uint256 sum;
+        for (uint256 i; i < 3; ++i) {
+            sum += engine.positions(traders[i], H100, true).earnedFunding;
+            sum += engine.positions(traders[i], H100, false).earnedFunding;
+        }
+        assertEq(sum, engine.totalEarnedFunding(), "earnedFunding sum");
     }
 }

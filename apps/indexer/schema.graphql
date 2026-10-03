@@ -135,6 +135,7 @@ type PerpPositionIncreased
   fundingFeeCheckpoint: BigInt!
   fundingCreditCheckpoint: BigInt!
   borrowCheckpoint: BigInt!
+  newEarnedFunding: BigInt!
 }
 
 type PerpPositionDecreased
@@ -156,6 +157,7 @@ type PerpPositionDecreased
   fundingFeeCheckpoint: BigInt!
   fundingCreditCheckpoint: BigInt!
   borrowCheckpoint: BigInt!
+  remainingEarnedFunding: BigInt!
 }
 
 type PerpPositionClosed {
@@ -255,6 +257,7 @@ type PerpPosition @index(fields: ["wallet", "gpuId"]) {
   fundingFeeCheckpoint: BigInt
   fundingCreditCheckpoint: BigInt
   borrowCheckpoint: BigInt
+  earnedFunding: BigInt
   openedAtSec: BigInt
   lastTouchedAtSec: BigInt
   closedAtSec: BigInt

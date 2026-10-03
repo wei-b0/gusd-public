@@ -834,9 +834,11 @@ net perp settlement flow
 Perp settlements ride the vault (§29): trader losses net of fees arrive as
 bare gUSD transfers and raise `totalAssets`; trader winnings settle into a
 claimable balance in the perp engine and are paid out of vault liquidity
-under a reservation floor. sgUSD capital therefore carries the perp system's
-directional risk by design — it is the counterparty capital, and the funding
-and borrow fees are what charge that risk to the traders who create it.
+under a reservation floor — a floor that also reserves the engine's carried
+earned-funding balances ahead of their close. sgUSD capital therefore
+carries the perp system's directional risk by design — it is the
+counterparty capital, and the funding and borrow fees are what charge that
+risk to the traders who create it.
 
 ## Treasury
 
@@ -1066,6 +1068,10 @@ fees — its gUSD balance equals Σ open collateral
 accounting-first: wins and losses land in a
 claimable counter and `claim` pays from the
 sgUSD vault, partially when the vault is short.
+Claimable receives close proceeds only — earned
+funding accrues into the position's own balance
+(engine-accounting liabilities outside the
+engine's gUSD balance).
 ```
 
 ---
@@ -1362,11 +1368,19 @@ funding zeroes out in balanced markets).
 - funding charges clamp at the payer's collateral; credits never clamp
 - one-sided markets: the exposed side pays into the vault with settlement
   (no receiver to warehouse it)
+- earned funding accrues INTO the position: every touch folds the
+  settlement's earned output into a per-position `earnedFunding` balance
+  (equity-inclusive — it widens the liquidation gate's equity exactly like
+  un-accrued credits do). The balance monetizes only at close/liquidation:
+  a close slices the whole balance pro-rata (floor — the slice exits into
+  the settlement, the remainder keeps the rest), so `claimableOf` receives
+  **close proceeds only**
 - a partial close settles only its pro-rata share of the accrued funding —
-  the carried remainder keeps its unattributed debt AND credit in its
-  checkpoints (nothing is forgiven or forfeited at the slice boundary)
-- increase-time charges sweep to the vault in-transaction; credits settle
-  into the claimable counter
+  the carried remainder keeps its unattributed debt in its checkpoints and
+  its earned credit in the balance field (nothing is forgiven or forfeited
+  at the slice boundary)
+- increase-time charges sweep to the vault in-transaction; earned credits
+  accrue into the position's balance, never into the claimable counter
 - UI rates are pro-forma views at the current OI — never stored rates
 
 ## Liquidation and claims
@@ -1382,9 +1396,12 @@ funding zeroes out in balanced markets).
   liquidity subject to the per-block cap)` — **partial payment is the
   designed crunch behavior**, the remainder stays claimable
 - a reservation floor (`totalClaimable + Σ positive uPnL at the last touch
-  price`) blocks ordinary sgUSD redemptions from draining the vault ahead
-  of settled claims — it is an LP-fairness floor, not a solvency guarantee;
-  uPnL can grow between touches and partial claims absorb the gap
+  price + Σ carried earnedFunding balances`) blocks ordinary sgUSD
+  redemptions from draining the vault ahead of settled claims — it is an
+  LP-fairness floor, not a solvency guarantee; uPnL can grow between touches
+  and partial claims absorb the gap. The earned-funding balances are
+  engine-accounting liabilities outside its gUSD balance — accounting
+  entries that become vault liabilities when their position closes
 
 ## Execution infrastructure
 

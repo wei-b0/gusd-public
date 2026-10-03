@@ -74,6 +74,7 @@ function mkPosition(over: Partial<KeeperPosition> = {}): KeeperPosition {
     fundingFeeCheckpoint: 0n,
     fundingCreditCheckpoint: 0n,
     borrowCheckpoint: 0n,
+    earnedFunding: 0n,
     lastTouchedAtSec: NOW - 60n,
     ...over,
   };

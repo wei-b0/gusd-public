@@ -108,6 +108,10 @@ export function acceptablePriceBound(
 /**
  * Liquidation-price estimate for the position panel — where equity
  * (collateral + uPnL − funding/borrow debt) crosses the maintenance floor.
+ * `fundingDebt` is the position's whole NET funding state (owed + borrow −
+ * un-accrued earned − the carried earnedFunding balance): a net credit is
+ * negative and widens the headroom, a net debt narrows it — no separate
+ * balance argument, the identity callers compute already includes it.
  * Linearized at the entry (funding debt treated as fixed): a long
  * liquidates as the mark falls, a short as it rises, so the estimate rounds
  * toward the triggering side (floor for longs, ceil for shorts) — the

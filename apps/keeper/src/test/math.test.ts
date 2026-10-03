@@ -154,6 +154,7 @@ describe("liquidation gate", () => {
       fundingFeeCheckpoint: 0n,
       fundingCreditCheckpoint: 0n,
       borrowCheckpoint: 0n,
+      earnedFunding: 0n,
       isLong: true,
     };
     const adv = advanceFunding(mkMarket(), 1n);
@@ -175,6 +176,7 @@ describe("liquidation gate", () => {
       fundingFeeCheckpoint: 0n,
       fundingCreditCheckpoint: 0n,
       borrowCheckpoint: 0n,
+      earnedFunding: 0n,
       isLong: true,
     };
     // Market idle for 60s with a max borrow rate: drift = 100_000 × 60 × 1e18 / 1e6 = 6e18
@@ -237,10 +239,29 @@ describe("equity", () => {
       fundingFeeCheckpoint: 0n,
       fundingCreditCheckpoint: 0n,
       borrowCheckpoint: 0n,
+      earnedFunding: 0n,
       isLong: false,
     };
     const s = { owed: 500n, earned: 200n, borrow: 300n };
     // short at price 27_000 → uPnL +100_000; equity = 100_000 + 100_000 + 200 − 800.
     expect(equity(pos, s, 27_000n)).toBe(199_400n);
+  });
+
+  it("folds the carried earnedFunding balance into the gate (engine lockstep)", () => {
+    const pos = {
+      sizeUsd: 1_000_000n,
+      collateral: 100_000n,
+      entryPrice: 30_000n,
+      fundingFeeCheckpoint: 0n,
+      fundingCreditCheckpoint: 0n,
+      borrowCheckpoint: 0n,
+      earnedFunding: 900n, // credits accrued at earlier touches, carried on the row
+      isLong: false,
+    };
+    const s = { owed: 500n, earned: 200n, borrow: 300n };
+    // short at price 27_000 → uPnL +100_000; equity = 100_000 + 100_000 + 900 + 200 − 800.
+    expect(equity(pos, s, 27_000n)).toBe(200_300n);
+    // The carried balance alone can hold a position above the gate.
+    expect(isLiquidatable(pos, s, 27_000n, 500n)).toBe(false);
   });
 });

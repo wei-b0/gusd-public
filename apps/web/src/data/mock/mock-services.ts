@@ -177,6 +177,10 @@ class PerpPortImpl {
     return null;
   }
 
+  async hasOpenPosition(): Promise<false> {
+    return false;
+  }
+
   async getPosition(): Promise<{ kind: "flat" }> {
     return { kind: "flat" };
   }

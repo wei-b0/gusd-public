@@ -12,12 +12,15 @@
  *    in the checkpoint) is therefore encoded exactly.
  *  - Claimable balances accrue from ONE source: ClaimableSettled is the
  *    engine's single chokepoint (`_creditClaimable` emits it on every path —
- *    decrease `due`, trigger fills, increase-time funding credits,
- *    liquidation `due`), so the balance grows by exactly its `amount` and
- *    shrinks by Claimed.paid. OrderExecuted/PositionLiquidated carry a
+ *    partial-close `due`, full-close `due`, trigger fills, liquidation
+ *    `due`), so the balance grows by exactly its `amount` and shrinks by
+ *    Claimed.paid. Earned funding does NOT touch it: it accrues into the
+ *    position's own balance, carried absolutely on
+ *    PositionIncreased.newEarnedFunding / PositionDecreased
+ *    .remainingEarnedFunding. OrderExecuted/PositionLiquidated carry a
  *    claimableDelta for the LOG row only — folding it in here would
- *    double-count every decrease/credit (ClaimableSettled fires in the same
- *    transaction).
+ *    double-count every decrease/settlement (ClaimableSettled fires in the
+ *    same transaction).
  *  - realizedPnl accrues to PerpPosition.realizedPnlGusd from
  *    OrderExecuted.realizedPnl on decrease-shaped executions ONLY — both
  *    PositionDecreased and PositionLiquidated also carry the figure, and
@@ -287,6 +290,7 @@ handlers.on("GpuPerpEngine:PositionIncreased", async ({ event, context }) => {
     fundingFeeCheckpoint: a.fundingFeeCheckpoint,
     fundingCreditCheckpoint: a.fundingCreditCheckpoint,
     borrowCheckpoint: a.borrowCheckpoint,
+    earnedFunding: a.newEarnedFunding,
     openedAtSec: keys.blockTimestamp,
     lastTouchedAtSec: keys.blockTimestamp,
     // Full zero defaults so a fresh insert never omits a non-null column
@@ -306,6 +310,7 @@ handlers.on("GpuPerpEngine:PositionIncreased", async ({ event, context }) => {
       fundingFeeCheckpoint: a.fundingFeeCheckpoint,
       fundingCreditCheckpoint: a.fundingCreditCheckpoint,
       borrowCheckpoint: a.borrowCheckpoint,
+      earnedFunding: a.newEarnedFunding,
       lastTouchedAtSec: keys.blockTimestamp,
       increaseCount: values.increaseCount,
     });
@@ -320,6 +325,7 @@ handlers.on("GpuPerpEngine:PositionIncreased", async ({ event, context }) => {
     fundingFeeCheckpoint: a.fundingFeeCheckpoint,
     fundingCreditCheckpoint: a.fundingCreditCheckpoint,
     borrowCheckpoint: a.borrowCheckpoint,
+    newEarnedFunding: a.newEarnedFunding,
   });
 });
 
@@ -350,6 +356,7 @@ handlers.on("GpuPerpEngine:PositionDecreased", async ({ event, context }) => {
     fundingFeeCheckpoint: a.fundingFeeCheckpoint,
     fundingCreditCheckpoint: a.fundingCreditCheckpoint,
     borrowCheckpoint: a.borrowCheckpoint,
+    earnedFunding: a.remainingEarnedFunding,
     lastTouchedAtSec: keys.blockTimestamp,
     increaseCount: ZERO,
     realizedPnlGusd: ZERO,
@@ -364,6 +371,7 @@ handlers.on("GpuPerpEngine:PositionDecreased", async ({ event, context }) => {
       fundingFeeCheckpoint: a.fundingFeeCheckpoint,
       fundingCreditCheckpoint: a.fundingCreditCheckpoint,
       borrowCheckpoint: a.borrowCheckpoint,
+      earnedFunding: a.remainingEarnedFunding,
       lastTouchedAtSec: keys.blockTimestamp,
       decreaseCount: values.decreaseCount,
     });
@@ -382,6 +390,7 @@ handlers.on("GpuPerpEngine:PositionDecreased", async ({ event, context }) => {
     fundingFeeCheckpoint: a.fundingFeeCheckpoint,
     fundingCreditCheckpoint: a.fundingCreditCheckpoint,
     borrowCheckpoint: a.borrowCheckpoint,
+    remainingEarnedFunding: a.remainingEarnedFunding,
   });
 });
 

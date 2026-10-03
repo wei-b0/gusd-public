@@ -46,7 +46,7 @@ import { getContracts, type PerpEngineContract } from "../contracts";
 import { simulateWrite } from "../simulate";
 import { planApproval } from "../approvals";
 import { assetForGpuId, assetForWireGpuId, gpuIdForAsset } from "../gpu-id";
-import { GPU_ID_TO_ASSET } from "@/data/oracle/panel-map";
+import { GPU_ID_TO_ASSET, ORACLE_PANELS } from "@/data/oracle/panel-map";
 import { REPORT_BRIDGE_MS, defaultSleep } from "../trading/quotes";
 import {
   acceptablePriceBound,
@@ -116,6 +116,7 @@ function rawPosition(asset: AssetId, side: PerpSide, raw: RawEnginePosition): Pe
     sizeUsd: formatGusdRaw(raw.sizeUsd),
     collateral: formatGusdRaw(raw.collateral),
     entryPrice: unscalePrice(raw.entryPrice),
+    earnedFunding: formatGusdRaw(raw.earnedFunding),
     markPrice: null,
     uPnl: null,
     equity: null,
@@ -214,6 +215,33 @@ export class OnChainPerpPort implements PerpPort {
   }
 
   /**
+   * The claim gate: whether any open position exists on ANY oracle-settled
+   * market, either side — `claimableOf` is wallet-global, so funding
+   * credits and partial-close proceeds from one market land in the same
+   * counter that an open position on another holds hostage. Attestation-free
+   * raw `positions()` reads only (existence, not marks). Null when any read
+   * fails — unreadable is never flat; false without a session.
+   */
+  async hasOpenPosition(): Promise<boolean | null> {
+    const session = this.session();
+    if (!session) return false;
+    const engine = this.engine();
+    const gpuIds = (Object.keys(ORACLE_PANELS) as AssetId[]).map((asset) => gpuIdForAsset(asset));
+    const probes = await Promise.all(
+      gpuIds.flatMap((gpuId) =>
+        [true, false].map((isLong) =>
+          engine.read
+            .positions([session.owner, gpuId, isLong])
+            .then((pos) => pos.sizeUsd > 0n)
+            .catch(() => null),
+        ),
+      ),
+    );
+    if (probes.some((r) => r === null)) return null;
+    return probes.some(Boolean);
+  }
+
+  /**
    * One position probe, in two stages. The raw `positions()` read is
    * attestation-free and always truthful about existence — `flat` only
    * when it saw zero size, never on a failure. When a current report is
@@ -246,10 +274,11 @@ export class OnChainPerpPort implements PerpPort {
       // The position closed between the two reads — the probe saw it settle.
       if (v.position.sizeUsd === 0n) return { kind: "flat" };
       const mmBps = BigInt((await this.engine().read.markets([gpuId])).params.maintenanceMarginBps);
-      // fundingDebt ≡ collateral + uPnL − equity = the position's NET accrued
-      // funding (owed + borrow − earned credits) — exactly what the
-      // estimator wants: a net credit widens the headroom, a net debt
-      // narrows it (the engine's equity includes credits since G1).
+      // fundingDebt ≡ collateral + uPnL − equity = the position's NET
+      // funding state (owed + borrow − un-accrued earned − the carried
+      // earnedFunding balance) — exactly what the estimator wants: a net
+      // credit widens the headroom, a net debt narrows it (the engine's
+      // equity includes the whole funding state since G1).
       const fundingDebt = v.position.collateral + v.uPnL - v.equity;
       const liqPrice = liquidationPriceEstimate(
         v.position.sizeUsd, v.position.collateral, v.position.entryPrice, isLong,
@@ -264,6 +293,7 @@ export class OnChainPerpPort implements PerpPort {
           sizeUsd: formatGusdRaw(v.position.sizeUsd),
           collateral: formatGusdRaw(v.position.collateral),
           entryPrice: unscalePrice(v.position.entryPrice),
+          earnedFunding: formatGusdRaw(v.position.earnedFunding),
           markPrice: unscalePrice(price),
           uPnl: toUsdSigned(v.uPnL),
           equity: toUsdSigned(v.equity),
@@ -346,6 +376,14 @@ export class OnChainPerpPort implements PerpPort {
     }
 
     const executionFee = await this.engine().read.MIN_EXECUTION_FEE();
+    // Where the opened position's equity would cross the maintenance floor,
+    // linearized at the entry with no funding accrued yet (funding drifts
+    // the real boundary over time — the estimate rounds toward the
+    // triggering side so it can only understate the distance).
+    const liqEst = liquidationPriceEstimate(
+      sizeRaw, collateralRaw, price, request.side === "long",
+      BigInt(params.maintenanceMarginBps), 0n,
+    );
     return {
       asset: request.asset,
       side: request.side,
@@ -354,6 +392,7 @@ export class OnChainPerpPort implements PerpPort {
       openFee: formatGusdRaw(feeBps(sizeRaw, BigInt(params.openFeeBps))),
       executionFee: formatGusdRaw(executionFee),
       acceptablePrice: unscalePrice(acceptablePriceBound(price, tolerance(request), request.side === "long", true)),
+      estLiquidationPrice: liqEst === null ? null : unscalePrice(liqEst),
       referencePrice: unscalePrice(price),
       quotedAtMs: Date.now(),
       blockNumber: await this.blockNumber(),
@@ -382,17 +421,23 @@ export class OnChainPerpPort implements PerpPort {
       (await this.engine().read.markets([gpuId]).catch(() => null))?.params.closeFeeBps ?? 0,
     );
     // Pro-rata funding attribution — the engine's G2 shape: the closed slice
-    // settles only ITS share of the accrued funding (charges ceil, credits
-    // floor at the same per-unit deltas the full settlement reads), so the
-    // preview mirrors the decrease tranche exactly. The raw position read
-    // supplies the checkpoints the verified view doesn't carry.
+    // settles only ITS share of the accrued funding (charges ceil at the
+    // same per-unit deltas the full settlement reads), so the preview
+    // mirrors the decrease tranche exactly. The raw position read supplies
+    // the checkpoints and the carried earned balance the verified view
+    // doesn't price.
     const raw = await this.engine().read.positions([session.owner, gpuId, request.side === "long"]);
     const mk = await this.engine().read.markets([gpuId]);
     const feeCum = request.side === "long" ? mk.fundingChargePerUnitLong : mk.fundingChargePerUnitShort;
     const creditCum = request.side === "long" ? mk.fundingCreditPerUnitLong : mk.fundingCreditPerUnitShort;
     const sliceOwed = fundingOwed(sizeRaw, feeCum, raw.fundingFeeCheckpoint);
     const sliceBorrow = fundingOwed(sizeRaw, mk.borrowChargePerUnit, raw.borrowCheckpoint);
-    const sliceEarned = fundingEarned(sizeRaw, creditCum, raw.fundingCreditCheckpoint);
+    // Earned folds BEFORE slicing, exactly like the engine's decrease: the
+    // whole earned state (carried balance + the un-accrued credit since the
+    // last touch) slices pro-rata (floor).
+    const sEarnedWhole = fundingEarned(held, creditCum, raw.fundingCreditCheckpoint);
+    const balanceTotal = raw.earnedFunding + sEarnedWhole;
+    const sliceEarned = mulDiv(balanceTotal, sizeRaw, held, "floor");
     const released = mulDiv(view.position.collateral, sizeRaw, held, "floor");
     const pnlShare = pnl(sizeRaw, view.position.entryPrice, request.side === "long", price);
     const closeFee = feeBps(sizeRaw, closeFeeBps);
@@ -405,6 +450,27 @@ export class OnChainPerpPort implements PerpPort {
     // The bound the close arms with — longs refuse a fill below it, shorts
     // above it (same derivation the submit pins).
     const acceptablePrice = acceptablePriceBound(price, tolerance(request), request.side === "long", false);
+
+    // The remainder's liquidation boundary after this tranche settles — the
+    // remaining figures carry their pro-rata slice of the accrued funding
+    // (net debt narrows the headroom, a net credit widens it), matching the
+    // shape getPosition's estimate reads off the engine's equity. A full
+    // close leaves nothing to liquidate.
+    const remaining = held - sizeRaw;
+    let estLiquidationPrice: number | null = null;
+    if (remaining > 0n) {
+      const remOwed = fundingOwed(remaining, feeCum, raw.fundingFeeCheckpoint);
+      const remBorrow = fundingOwed(remaining, mk.borrowChargePerUnit, raw.borrowCheckpoint);
+      // The remainder keeps its slice of the earned balance (balanceTotal −
+      // sliceEarned) — it widens the headroom like a net credit.
+      const remEarned = balanceTotal - sliceEarned;
+      const remDebt = remOwed + remBorrow - remEarned;
+      const remEst = liquidationPriceEstimate(
+        remaining, view.position.collateral - released, view.position.entryPrice,
+        request.side === "long", BigInt(mk.params.maintenanceMarginBps), remDebt,
+      );
+      estLiquidationPrice = remEst === null ? null : unscalePrice(remEst);
+    }
 
     return {
       asset: request.asset,
@@ -419,6 +485,7 @@ export class OnChainPerpPort implements PerpPort {
       // engine's decrease settles (negative = the position earns).
       fundingNet: toUsdSigned(sliceEarned) - toUsdSigned(sliceOwed + sliceBorrow),
       acceptablePrice: unscalePrice(acceptablePrice),
+      estLiquidationPrice,
       proceeds: toUsdSigned(proceeds),
       shortfall: toUsdSigned(shortfall),
       quotedAtMs: Date.now(),

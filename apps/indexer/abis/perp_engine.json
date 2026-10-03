@@ -317,6 +317,10 @@
       {
         "type": "uint128",
         "name": "borrowCheckpoint"
+      },
+      {
+        "type": "uint256",
+        "name": "newEarnedFunding"
       }
     ]
   },
@@ -377,6 +381,10 @@
       {
         "type": "uint128",
         "name": "borrowCheckpoint"
+      },
+      {
+        "type": "uint256",
+        "name": "remainingEarnedFunding"
       }
     ]
   },

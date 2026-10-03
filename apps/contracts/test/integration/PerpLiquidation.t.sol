@@ -177,6 +177,9 @@ contract PerpLiquidationTest is PerpBase {
         assertEq(engine.markets(H100).fundingCreditPerUnitShort, 39_999_999_999_999_998);
         assertEq(engine.claimableOf(alice), 99_999_999);
         assertEq(engine.totalClaimable(), 99_999_999);
+        // The credit folded in from the settlement (alice never touched) —
+        // the accumulator empties with her position.
+        assertEq(engine.totalEarnedFunding(), 0);
         assertEq(engine.positions(alice, H100, false).sizeUsd, 0);
     }
 

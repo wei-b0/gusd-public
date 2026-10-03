@@ -269,6 +269,12 @@ export interface PerpPort {
   /** The caller's settled claimable balance (gUSD product units); null
    *  without a session. */
   getClaimable(): Promise<number | null>;
+  /** Whether ANY open perp position exists across every oracle-settled
+   *  market, either side — the claim gate: `claimableOf` is a wallet-global
+   *  counter, so one open position anywhere holds the Claim button. Null
+   *  when the reads fail — unreadable is never flat; false without a
+   *  session (nothing of the caller's can be open). */
+  hasOpenPosition(): Promise<boolean | null>;
   /** One position probe: raw figures always; marked figures (uPnL, equity,
    *  maintenance, liquidation distance) only when a current report priced
    *  the read. `flat` only when a successful read saw zero size — a failed

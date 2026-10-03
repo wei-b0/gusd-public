@@ -96,6 +96,7 @@ export function evaluateTick(
       fundingFeeCheckpoint: pos.fundingFeeCheckpoint,
       fundingCreditCheckpoint: pos.fundingCreditCheckpoint,
       borrowCheckpoint: pos.borrowCheckpoint,
+      earnedFunding: pos.earnedFunding,
       isLong: pos.isLong,
     };
     const s = settle(market, adv, p);

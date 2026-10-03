@@ -29,6 +29,13 @@ export const RECEIPT_TIMEOUT_MS = 120_000;
 /** Session-local by design; the oldest record falls off past this. */
 const MAX_RECORDS = 30;
 
+/** The provider's own words, truncated — a refusal reason must survive
+ *  into the record, not dissolve into a generic "try again". */
+function describe(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.length > 300 ? `${message.slice(0, 300)}…` : message;
+}
+
 /** What a receipt wait reports: inclusion status and the block it landed in. */
 export interface ReceiptOutcome {
   status: "success" | "reverted";
@@ -127,7 +134,10 @@ export class TxStore {
       }
       return this.settle(id, {
         status: "failed",
-        error: "The wallet refused the request. Try again.",
+        // Never swallow the provider's own words: a refusal (Privy origin/
+        // session), a network drop and a decode failure all land here, and
+        // "try again" without the reason is how the real cause stays hidden.
+        error: `The wallet refused the request: ${describe(err)}`,
       });
     }
 

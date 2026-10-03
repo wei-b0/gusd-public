@@ -103,6 +103,7 @@ export const GPU_PERP_ENGINE_ABI = [
           { name: "borrowCheckpoint", type: "uint128", internalType: "uint128" },
           { name: "reserveShare", type: "uint128", internalType: "uint128" },
           { name: "openedAt", type: "uint64", internalType: "uint64" },
+          { name: "earnedFunding", type: "uint128", internalType: "uint128" },
         ],
       },
     ],
@@ -125,6 +126,13 @@ export const GPU_PERP_ENGINE_ABI = [
   {
     type: "function",
     name: "reservedPnl",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "totalEarnedFunding",
     inputs: [],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
     stateMutability: "view",
@@ -252,6 +260,7 @@ export const GPU_PERP_ENGINE_ABI = [
               { name: "borrowCheckpoint", type: "uint128", internalType: "uint128" },
               { name: "reserveShare", type: "uint128", internalType: "uint128" },
               { name: "openedAt", type: "uint64", internalType: "uint64" },
+              { name: "earnedFunding", type: "uint128", internalType: "uint128" },
             ],
           },
           { name: "uPnL", type: "int256", internalType: "int256" },
@@ -386,6 +395,7 @@ export const GPU_PERP_ENGINE_ABI = [
       { name: "fundingFeeCheckpoint", type: "uint128", internalType: "uint128" },
       { name: "fundingCreditCheckpoint", type: "uint128", internalType: "uint128" },
       { name: "borrowCheckpoint", type: "uint128", internalType: "uint128" },
+      { name: "newEarnedFunding", type: "uint256", internalType: "uint256" },
     ],
   },
   {
@@ -405,6 +415,7 @@ export const GPU_PERP_ENGINE_ABI = [
       { name: "fundingFeeCheckpoint", type: "uint128", internalType: "uint128" },
       { name: "fundingCreditCheckpoint", type: "uint128", internalType: "uint128" },
       { name: "borrowCheckpoint", type: "uint128", internalType: "uint128" },
+      { name: "remainingEarnedFunding", type: "uint256", internalType: "uint256" },
     ],
   },
   {
