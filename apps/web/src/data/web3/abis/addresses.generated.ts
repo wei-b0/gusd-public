@@ -47,6 +47,34 @@ export interface ProtocolAddresses {
   oracleMaxObservationAge?: number;
 }
 export const DEPLOYMENTS: Record<number, ProtocolAddresses> = {
+  "4663": {
+    "chainId": 4663,
+    "gpuQuoter": "0xA7D430F47E6099AA06FDf4833C6E437af27E578e",
+    "gusd": "0x906B202B1033b04E22C290a5e5BaDaE073f93Fe1",
+    "hook": "0x0694b81B8b8D4C797cca925D4767920a9E76D0cC",
+    "issuance": "0x4eCb3663CC9B72E1e17bB8771B7e19DA44d69f45",
+    "ledger": "0x3657d1Fe6f5Ba6C503455FDf04d5dc4B1e0d377b",
+    "marketLiquidity": "0x3892CbCa36792F7020BEb8e4cF84C11b67fB1F85",
+    "oracle": "0x13904Eee2e7F1E21192f78b42ec88F8bA3985c55",
+    "oracleAttestor": "0xfEed079814cB1fFd2E7aECd3A991A78309e0b5e8",
+    "oracleEpochLength": 60,
+    "oracleMaxObservationAge": 300,
+    "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+    "perpEngine": "0xAe8a661F3E204b3e2D9386EB45b19104C2af7D27",
+    "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "positionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
+    "quoter": "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
+    "router": "0xE7D78Da540619eB730E175e58F5328FD3a8131d2",
+    "sgusd": "0x7EC86A9f676DAB3F6da3F4B0B00A14D7ac0C46A3",
+    "stableRouter": "0xC73f555b9C1E76A7cFE158357715fB02A8e547a0",
+    "stables": [
+      "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+    ],
+    "startBlock": 79006795,
+    "stateView": "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+    "underlying": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+  },
   "31337": {
     "chainId": 31337,
     "gpuQuoter": "0x7a2088a1bFc9d81c55368AE168C2C02570cB814F",
