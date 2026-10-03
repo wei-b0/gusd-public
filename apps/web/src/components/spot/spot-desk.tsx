@@ -56,7 +56,7 @@ import { TuiPanel } from "@/components/ui/panel";
 const RANGES = CHART_RANGES;
 const TABS = ["Overview", "Chart", "Trade", "Activity"] as const;
 
-export function SpotDesk({ asset }: { asset: AssetId }) {
+export function SpotDesk({ asset, initialSide }: { asset: AssetId; initialSide?: "buy" | "sell" }) {
   // The bound market comes from the route — the rail's links are the switch.
   const [range, setRange] = useState<ChartRange>("1h");
   const [tab, setTab] = useState<string>("Overview");

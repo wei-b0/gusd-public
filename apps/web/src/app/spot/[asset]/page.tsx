@@ -6,6 +6,7 @@ import { SpotDesk } from "@/components/spot/spot-desk";
 
 interface Props {
   params: Promise<{ asset: string }>;
+  searchParams: Promise<{ side?: string | string[] }>;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -18,8 +19,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
  *  parent: the breadcrumb reads [Markets] / pair, the way the folded market
  *  detail page oriented its depth. Leveraged exposure trades on the perps
  *  desk, one click deeper on the same market. */
-export default async function SpotAssetPage({ params }: Props) {
+export default async function SpotAssetPage({ params, searchParams }: Props) {
   const { asset } = await params;
+  // ?side=sell lands the desk with the slip already on the sell side —
+  // strict validation: anything but a literal "sell"/"buy" (including an
+  // array value) falls through to the desk's own buy default.
+  const { side } = await searchParams;
+  const initialSide = side === "sell" ? "sell" : side === "buy" ? "buy" : null;
   const assetId = parseAssetId(asset);
   if (!assetId) notFound();
   return (
@@ -35,7 +41,7 @@ export default async function SpotAssetPage({ params }: Props) {
         <h1 className="disp text-[22px] leading-none text-primary">Spot</h1>
         <p className="slug text-dim">Spot desk · analyse and execute</p>
       </div>
-      <SpotDesk asset={assetId} />
+      <SpotDesk asset={assetId} initialSide={initialSide ?? undefined} />
     </div>
   );
 }

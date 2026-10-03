@@ -37,6 +37,7 @@ import type {
   PerpPositionState,
   PerpSide,
 } from "@/domain/types";
+import { carryMark, positionOf } from "@/data/web3/perps/portfolio-book";
 import { CHART_RANGES, marketMove24h, pairName } from "@/domain/types";
 import { Pair } from "@/components/ui/pair";
 import { ActionStatus } from "@/components/ui/action-status";
@@ -126,7 +127,16 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
     short: PerpPositionProbe;
     orders: PerpPendingOrder[] | null;
     claimable: number | null;
-  }>({ long: { kind: "unknown" }, short: { kind: "unknown" }, orders: null, claimable: null });
+    // The claim gate — any open position on ANY market (claimable is
+    // wallet-global). null = unreadable, which blocks too.
+    anyOpen: boolean | null;
+  }>({
+    long: { kind: "unknown" },
+    short: { kind: "unknown" },
+    orders: null,
+    claimable: null,
+    anyOpen: null,
+  });
   const [refreshKey, setRefreshKey] = useState(0);
   const bump = () => setRefreshKey((k) => k + 1);
   // Flips after the first book read resolves, so panel 07 can tell
@@ -141,7 +151,13 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
   // position must not vanish because one poll dropped.
   useEffect(() => {
     if (!connected) {
-      setBook({ long: { kind: "flat" }, short: { kind: "flat" }, orders: null, claimable: null });
+      setBook({
+        long: { kind: "flat" },
+        short: { kind: "flat" },
+        orders: null,
+        claimable: null,
+        anyOpen: null,
+      });
       setBookLoaded(false);
       return;
     }
@@ -152,7 +168,8 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
         perp.getPosition(asset, "short").catch((): PerpPositionProbe => ({ kind: "unknown" })),
         perp.listPendingOrders().catch(() => null),
         perp.getClaimable().catch(() => null),
-      ]).then(([long, short, pending, claim]) => {
+        perp.hasOpenPosition().catch(() => null),
+      ]).then(([long, short, pending, claim, anyOpen]) => {
         if (!alive) return;
         setBookLoaded(true);
         setBook((prev) => ({
@@ -162,6 +179,7 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
           // honest-sounding "nothing armed".
           orders: pending,
           claimable: claim,
+          anyOpen,
         }));
       });
     };
@@ -295,6 +313,7 @@ export function PerpsDesk({ asset }: { asset: AssetId }) {
               connected={connected}
               equity={equity}
               claimable={book.claimable}
+              anyOpen={book.anyOpen}
               onRefresh={bump}
             />
           </div>
@@ -475,6 +494,7 @@ function AccountPanel({
   connected,
   equity,
   claimable,
+  anyOpen,
   onRefresh,
 }: {
   no: string;
@@ -483,6 +503,7 @@ function AccountPanel({
   connected: boolean;
   equity: number | null;
   claimable: number | null;
+  anyOpen: boolean | null;
   onRefresh: () => void;
 }) {
   const { perp } = useServices();
@@ -490,8 +511,15 @@ function AccountPanel({
   const [settled, setSettled] = useState<ActionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // The gate: claimable is wallet-global, so one open position anywhere
+  // holds it — and an unreadable book (anyOpen null) blocks too: claim
+  // never fires off an unreadable position state.
+  const claimBlocked = anyOpen !== false;
+  const claimableReady = claimable !== null && claimable > 0;
+  const canClaim = active === null && claimableReady && !claimBlocked;
+
   async function claim() {
-    if (active !== null || claimable === null || claimable <= 0) return;
+    if (active !== null || claimable === null || claimable <= 0 || claimBlocked) return;
     setError(null);
     try {
       const record = await perp.claim(claimable);
@@ -522,13 +550,20 @@ function AccountPanel({
               <button
                 type="button"
                 onClick={claim}
-                disabled={active !== null || claimable === null || claimable <= 0}
+                disabled={!canClaim}
                 className="slug border border-rule-strong px-2.5 py-0.5 text-dim transition-colors hover:text-amber disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {active !== null ? "Claiming…" : "Claim"}
               </button>
             </dd>
           </div>
+          {claimableReady && claimBlocked ? (
+            <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
+              {anyOpen === null
+                ? "Can't read your positions right now — the Claim button waits until the reads come back."
+                : "One or more positions are open — close them to free the claimable balance for payout."}
+            </p>
+          ) : null}
           {settled && <ActionStatus record={settled} />}
           {error && (
             <p className="border border-amber/40 bg-amber/10 p-2.5 text-[11.5px] leading-relaxed text-amber">
@@ -537,7 +572,9 @@ function AccountPanel({
           )}
           <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
             Closes and triggers first settle into your claimable balance; Claim pays it out of the
-            sgUSD earning balance — a short claim leaves the remainder. Full holdings on{" "}
+            sgUSD earning balance — a short claim leaves the remainder. Claimable settles from
+            close and liquidation proceeds only — earned funding accrues into the position itself
+            and pays out when it closes. Full holdings on{" "}
             <Link href="/portfolio" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
               Portfolio
             </Link>
@@ -564,20 +601,9 @@ type PositionBook = {
   claimable: number | null;
 };
 
-/** A probe's position — raw or marked; null only for flat/unknown. */
-function positionOf(probe: PerpPositionProbe): PerpPositionState | null {
-  return probe.kind === "ok" || probe.kind === "unmarked" ? probe.position : null;
-}
-
-/** An unmarked read keeps the last mark's timestamp, so the footnote's
- *  "last verified Xs ago" stays truthful across a report gap instead of
- *  resetting to "no verified price yet" on every probe cycle. */
-function carryMark(next: PerpPositionProbe, prev: PerpPositionProbe): PerpPositionProbe {
-  if (next.kind !== "unmarked") return next;
-  const prevMarkedAt =
-    prev.kind === "ok" || prev.kind === "unmarked" ? prev.position.markedAt : null;
-  return { kind: "unmarked", position: { ...next.position, markedAt: prevMarkedAt } };
-}
+/** A probe's position and the mark-age carry live in the portfolio book's
+ *  pure layer — the desk and the portfolio share one implementation so a
+ *  live row reads identically on both surfaces. */
 
 function OrderSlip({
   asset,
@@ -816,10 +842,10 @@ function OrderSlip({
         </>
       )}
 
-      {/* tolerance — the price limit the armed order refuses to fill past */}
+      {/* slippage — the price limit the armed order refuses to fill past */}
       <div>
         <p className="slug mb-1 text-[10px] text-dim">
-          PRICE TOLERANCE · {mode === "open" ? (longActive ? "fills below" : "fills above") : longActive ? "closes above" : "closes below"} the limit
+          SLIPPAGE · {mode === "open" ? (longActive ? "fills below" : "fills above") : longActive ? "closes above" : "closes below"} the limit
         </p>
         <div className="flex flex-wrap gap-px border border-rule-strong bg-rule-strong">
           {TOLERANCE_PRESETS_BPS.map((b) => (
@@ -844,13 +870,13 @@ function OrderSlip({
             <>
               <Row label="Collateral in" value={`${fmtGusdLedger(quote.collateral)} gUSD`} />
               <Row label="Position size" value={`${fmtGusdLedger(quote.sizeUsd)} gUSD`} strong />
-              <Row label="Open fee" value={`${fmtGusdLedger(quote.openFee)} gUSD`} />
-              <Row label="Execution fee" value={`${fmtGusdLedger(quote.executionFee)} gUSD`} />
+              <Row label="Collateral in" value={`${fmtGusdLedger(quote.collateral)} gUSD`} />
+              <Row label="Position size" value={`${fmtGusdLedger(quote.sizeUsd)} gUSD`} strong />
+              <Row label="Est. Fees" value={`${fmtGusdLedger(quote.openFee + quote.executionFee)} gUSD`} />
               <Row
-                label={longActive ? "Refuses above" : "Refuses below"}
-                value={fmtGusdPrecise(quote.acceptablePrice)}
+                label="Est. liquidation price"
+                value={quote.estLiquidationPrice === null ? "—" : fmtGusdPrecise(quote.estLiquidationPrice)}
               />
-              <Row label="Settlement price" value={fmtGusdPrecise(quote.referencePrice)} />
             </>
           ) : (
             <Row label="Position size" value="—" strong />
@@ -864,27 +890,21 @@ function OrderSlip({
               strong
               className={quote.pnl >= 0 ? "text-up" : "text-down"}
             />
-            <Row label="Close fee" value={`${fmtGusdLedger(quote.closeFee)} gUSD`} />
-            <Row label="Execution fee" value={`${fmtGusdLedger(quote.executionFee)} gUSD`} />
+            <Row label="Est. Fees" value={`${fmtGusdLedger(quote.closeFee + quote.executionFee)} gUSD`} />
             <Row
-              label={
-                position !== null && quote.sizeUsd < position.sizeUsd
-                  ? "Funding net · whole position"
-                  : "Funding net"
-              }
+              label="Funding net"
               value={fundingCashVoice(quote.fundingNet)}
               className={quote.fundingNet <= 0 ? "text-up" : "text-down"}
             />
             <Row
-              label={longActive ? "Refuses below" : "Refuses above"}
-              value={fmtGusdPrecise(quote.acceptablePrice)}
+              label="Est. liquidation price"
+              value={quote.estLiquidationPrice === null ? "—" : fmtGusdPrecise(quote.estLiquidationPrice)}
             />
             <Row
               label="Settles to claimable"
               value={`${fmtGusdLedger(quote.proceeds)} gUSD`}
               strong
             />
-            <Row label="Settlement price" value={fmtGusdPrecise(quote.referencePrice)} />
           </>
         ) : (
           <Row label="Settles to claimable" value="—" strong />
