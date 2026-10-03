@@ -56,8 +56,8 @@ Deploy variables (env; see `script/Deploy.s.sol`):
 | Variable | Meaning |
 |---|---|
 | `PRIVATE_KEY` | Deployer key (required) |
-| `ORACLE` | Wire an external `IGPUPriceOracle` verbatim; unset deploys `GPUPriceOracle` |
-| `PUBLISHER` | Publisher EOA for the deployed oracle (default: deployer) |
+| `ORACLE` | Wire an external `IGpuOracle` verbatim; unset deploys the pull oracle `GpuOracle` |
+| `ORACLE_ATTESTOR` | The deployed pull oracle's report signer — required on mainnet (default: deployer; a separate key is the production posture) |
 | `ORACLE_MAX_DEVIATION_BPS` | Onchain per-publish deviation bound, 0 = disabled (default) |
 | `TREASURY` | RevenueLedger treasury (default: deployer) |
 | `UNDERLYING` | Existing reserve-asset token (gUSD's `underlying`; default: deploys a mock) |
@@ -143,7 +143,7 @@ $ PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
 Works on Anvil or any testnet with a funded deployer key (same env
-passthrough as `Deploy`: `ORACLE`, `PUBLISHER`, `TREASURY`, `UNDERLYING`, …
+passthrough as `Deploy`: `ORACLE`, `ORACLE_ATTESTOR`, `TREASURY`, `UNDERLYING`, …
 — the inner production deploy reads them). What it adds beyond
 `Deploy.run()`:
 

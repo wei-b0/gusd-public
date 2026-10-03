@@ -117,7 +117,10 @@ The compose stack defaults to the local Anvil posture (account #0 key — a
 public dev key, injected by compose; the attestor IS the deployer there;
 override the whole block in `infra/.env` for remote chains). The attestor
 aborts boot loudly on a chain-id / `ATTESTOR_ORACLE_ADDRESS` / signer
-mismatch — the configured key must equal `GpuOracle.signer()`.
+mismatch when `ATTESTOR_RPC_URL` is set (a read-only boot-time cross-check
+against the deployed `GpuOracle` — `signer()`, epoch grid, `eth_chainId`;
+without the RPC it warns instead) — the configured key must equal
+`GpuOracle.signer()`.
 
 ## Commands
 

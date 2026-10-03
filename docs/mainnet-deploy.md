@@ -12,7 +12,7 @@ production chain's first transactions.
 | Input | Where it goes | How to verify |
 |---|---|---|
 | Deploy key | `PRIVATE_KEY` (env, inline — never a file) | `cast wallet address` |
-| Attestor identity | `ORACLE_ATTESTOR` (address, **required**) | A **separate key** from the deployer — the `GpuOracle` is constructed with it as the report signer; its private key lives in the attestor's infra (`ATTESTOR_PRIVATE_KEY`), never in the deploy env. The attestor aborts boot unless its key matches `GpuOracle.signer()`. |
+| Attestor identity | `ORACLE_ATTESTOR` (address, **required**) | A **separate key** from the deployer — the `GpuOracle` is constructed with it as the report signer; its private key lives in the attestor's infra (`ATTESTOR_PRIVATE_KEY`), never in the deploy env. With `ATTESTOR_RPC_URL` set (§4) the attestor aborts boot unless its key, the chain id, and the epoch grid all match the DEPLOYED `GpuOracle` — it reads `signer()` / `epochLength()` / `maxObservationAge()` + `eth_chainId` at boot; without the RPC a mismatch only surfaces as un-consumable signatures. |
 | Treasury address | `TREASURY` | Receives the non-vault revenue split |
 | Real USDG address on 4663 | `UNDERLYING` | `cast call <addr> "symbol()(string)"` → `USDG`, 6 decimals |
 | Real funding stables on 4663 | `STABLES` (comma-separated) | Canonical issuers only — never a token's self-reported metadata |
@@ -123,10 +123,24 @@ self-bootstrapping design, exercised by real money.
 INDEXER_CHAIN_ID=4663
 ENVIO_API_TOKEN=<hypersync token>          # required for 4663
 INDEXER_RPC_URL=https://rpc.mainnet.chain.robinhood.com   # fallback reads
+# One fresh schema per deployment — a stale name silently resumes the old
+# checkpoints against a new record (docs/indexer/ARCHITECTURE.md).
+INDEXER_SCHEMA=gusd_index_envio_mainnet_v1
 ATTESTOR_CHAIN_ID=4663
 ATTESTOR_ORACLE_ADDRESS=0x…                # from deployments/4663.json ".oracle"
 ATTESTOR_PRIVATE_KEY=0x…                   # the ORACLE_ATTESTOR key — signer only, never sends txs
+ATTESTOR_EPOCH_LENGTH=60                   # must match the deployed GpuOracle's LIVE values (owner-tunable)
+ATTESTOR_MAX_OBSERVATION_AGE=300
+ATTESTOR_RPC_URL=https://rpc.mainnet.chain.robinhood.com  # boot-time posture cross-check (signer/chain/epoch)
 ATTESTOR_ORACLE_URL=http://oracle:8080     # the benchmark API to poll
+
+# The keeper is a default compose service: without these it boots against
+# the 31337/anvil defaults and crash-loops (no RPC on :8545) — or worse,
+# silently targets a stray local chain. Set the block, every line.
+KEEPER_CHAIN_ID=4663
+KEEPER_RPC_URL=https://rpc.mainnet.chain.robinhood.com
+KEEPER_PRIVATE_KEY=0x…                     # a DEDICATED hot key, funded with native gas — never the deployer or attestor key
+KEEPER_MIN_BALANCE_ETH=0.1                 # gas alarm floor (warn) in the keeper's logs
 ```
 
 `pnpm stack:up`, then verify: indexer `/ready` green, oracle `/v1/health`
@@ -134,6 +148,15 @@ healthy, and current attestations flowing — `GET
 <oracle>/v1/prices/:gpu/attestation` must answer `kind: "current"` with a
 report whose signature recovers to `GpuOracle.signer()`. The attestor sends
 no transactions on mainnet (the pull oracle's 0-OpEx-when-idle guarantee).
+
+Two injection caveats: `stack:up`'s oracle-address auto-injection reads
+`deployments/31337.json` for the dev posture and **defers to a non-empty
+`ATTESTOR_ORACLE_ADDRESS` in `infra/.env`** — the value above is the
+authority on a mainnet host. And the hot keeper key needs only native gas
+(it fronts no gUSD — order placers escrow collateral + execution fee at arm
+time, liquidations settle from the position's own collateral); it is paid
+per fill/liquidation in gUSD, so top-ups are gas-shaped, and its balance is
+alarmed in the keeper's logs (`apps/keeper/src/health.ts`).
 
 ## 5) Web build
 
