@@ -133,7 +133,7 @@ contract Deploy is Script, TestnetOnly {
         p.fundingRatePpmPerSec = uint32(vm.envOr("PERP_FUNDING_PPM_PER_SEC", uint256(0)));
         p.borrowRatePpmPerSec = uint32(vm.envOr("PERP_BORROW_PPM_PER_SEC", uint256(0)));
         p.maxOiUsd = uint128(vm.envOr("PERP_MAX_OI", uint256(1_000_000e6)));
-        p.minCollateralUsd = uint128(vm.envOr("PERP_MIN_COLLATERAL", uint256(10e6)));
+        p.minCollateralUsd = uint128(vm.envOr("PERP_MIN_COLLATERAL", uint256(0.5e6)));
         p.maxPositionUsd = uint128(vm.envOr("PERP_MAX_POSITION", uint256(100_000e6)));
     }
 
