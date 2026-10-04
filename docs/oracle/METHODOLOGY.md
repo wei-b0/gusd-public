@@ -1,8 +1,8 @@
-# gUSD Index Methodology — v0.5.0 (four panels, carry-forward pauses)
+# gUSD Index Methodology — v0.5.1 (four panels, carry-forward pauses)
 
 The index is a weighted mean of capped weights over per-provider medians,
 guarded by screens and gates, published only when every gate passes. This
-document specifies v0.5.0 exactly as configured in
+document specifies v0.5.1 exactly as configured in
 `packages/pricing-engine/src/config.ts` (`DEFAULT_METHODOLOGY_CONFIG`) and
 validated by an exhaustive allowlist — thresholds live in config, never in
 code, and a methodology change is a **new version row**, never a mutation.
@@ -45,6 +45,16 @@ their historical rows, but nothing outside the four settles or publishes.
   so withheld rows never sever the chain. Beyond the window — or with no
   prior at all — the panel withholds as before. The v0.4.1 H100 override is
   retired; both flagship panels settle under the global gates again.
+- **v0.5.1** — H100 quorum reduced to 3 (executable floor kept, **no
+  promotions**). Hyperbolic dropped H100 from its catalog entirely on
+  2026-09-30 (its feed now lists only H200), leaving the panel with three
+  settlement-eligible contributors (Lium, RunPod, Vast — two executable)
+  against the global quorum of 4; since v0.5.0 a failed gate pauses rather
+  than halts, the flagship panel sat frozen at its last gate-passing value.
+  The reduced quorum restores a moving series until a fourth
+  settlement-eligible H100 source is onboarded, at which point the override
+  is retired again. Unlike v0.4.1, this is a pure gate relaxation over the
+  panel's own settlement-eligible set — no rate-card principals promoted.
 
 ## Design principles
 
@@ -75,11 +85,11 @@ their historical rows, but nothing outside the four settles or publishes.
 7. **A parser change must fail loudly.** Zero parsed rows from an HTTP 200 is
    a failure, not an empty success.
 
-## Configuration (v0.5.0)
+## Configuration (v0.5.1)
 
 ```jsonc
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "screening": {
     "minProvidersForScreen": 4,   // MAD screen needs ≥4 contributions
     "madScale": 1.4826,           // MAD → σ-consistent scale
@@ -109,9 +119,10 @@ their historical rows, but nothing outside the four settles or publishes.
   // v0.3.0: the publishing movement allowance — ±0.05% around the anchor.
   "movement": { "allowancePct": 0.0005, "slotMs": 30_000,
                 "reversion": 0.7, "stepPct": 0.4 },
-  // v0.4.0: per-panel patches for the two thin launch panels. Only
+  // v0.4.0: per-panel patches for the thin launch panels. Only
   // relaxations validate; unknown panel ids and empty patches are rejected.
   "panelOverrides": {
+    "H100_PANEL_V1":     { "gates": { "minProviders": 3, "requireExecutable": true } },
     "L40S_PANEL_V1":     { "additionalProviders": ["datacrunch", "scaleway", "coreweave"],
                            "gates": { "minProviders": 3, "requireExecutable": false } },
     "RTX_4090_PANEL_V1": { "additionalProviders": ["akash"],
@@ -120,20 +131,20 @@ their historical rows, but nothing outside the four settles or publishes.
 }
 ```
 
-### Per-panel overrides (v0.5.0)
+### Per-panel overrides (v0.5.1)
 
 | Panel | Promoted principals | Gates patch | Why |
 |---|---|---|---|
+| `H100_PANEL_V1` | — | `minProviders: 3`, `requireExecutable: true` | Hyperbolic dropped H100 from its catalog (2026-09-30), leaving three settlement-eligible contributors (Lium, RunPod, Vast — two executable) against the global quorum of 4; a pure gate relaxation over the panel's own set, no promotions. **Temporary** — retire once a fourth settlement-eligible H100 source is onboarded. |
 | `L40S_PANEL_V1` | datacrunch, scaleway, coreweave | `minProviders: 3`, `requireExecutable: false` | Vast's verified+rentable L40S book is too thin to settle alone and RunPod lists without stock; the three principals carry live L40S rate cards. **Temporary** — revert to the global gates once executable L40S order books deepen. |
 | `RTX_4090_PANEL_V1` | akash | `minProviders: 3`, `requireExecutable: true` | Vast + RunPod are executable; Akash's `rtx4090` rate card completes the quorum without giving up the executable floor. |
 
-H100 and H200 have no override: they settle under the global gates — quorum
-4, executable required — exactly as v0.1.0 defined them. (v0.4.1 briefly ran
-an H100 thin-panel override; v0.5.0 retired it in favor of the global
-gate-failure pause.) When a flagship panel's book thins below quorum — as
-H100's did when hyperbolic's H100 listings went quiet on 2026-09-29 — the
-series pauses at its last gate-passing value with an explicit `stale` flag
-instead of halting; see the status rules below.
+H200 has no override: it settles under the global gates — quorum
+4, executable required — exactly as v0.1.0 defined it. H100 briefly ran
+an override in v0.4.1, was retired in v0.5.0, and returns in v0.5.1 after
+Hyperbolic left the H100 market entirely. When a panel's book thins below
+its quorum, the series pauses at its last gate-passing value with an
+explicit `stale` flag instead of halting; see the status rules below.
 
 ## Stage 1 — per-provider aggregation (`aggregateProviderPrice`)
 

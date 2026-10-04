@@ -64,10 +64,10 @@ oracle engine/replay/server, the attestor's watched list, and the web app's
 - Protocol-side canon: `apps/contracts/PROTOCOL.md` §3. Offchain canon:
   `docs/oracle/METHODOLOGY.md` and `docs/oracle/PROVIDERS.md`.
 
-## Methodology (v0.5.0)
+## Methodology (v0.5.1)
 
 `DEFAULT_METHODOLOGY_CONFIG` in `packages/pricing-engine/src/config.ts`
-(version `0.5.0`) is the live methodology; `docs/oracle/METHODOLOGY.md`
+(version `0.5.1`) is the live methodology; `docs/oracle/METHODOLOGY.md`
 specifies it exactly. Thresholds live in config, never in code — a
 methodology change is a new version row, never a mutation, and configs are
 validated by an exhaustive allowlist before they can drive a computation.
@@ -84,14 +84,19 @@ carry-forward window withholds.
 Thin-panel overrides (an override may only *relax* gates, and only
 `COLLECTED` providers can be promoted, per panel):
 
+- `H100_PANEL_V1` — no promotions; `minProviders: 3`, `requireExecutable:
+  true` (v0.5.1 — hyperbolic dropped H100 from its catalog Sep 2026, leaving
+  three settlement-eligible contributors). Temporary until a fourth
+  settlement-eligible H100 source is onboarded.
 - `L40S_PANEL_V1` — promotes `datacrunch`, `scaleway`, `coreweave`;
   `minProviders: 3`, `requireExecutable: false`. Temporary until executable
   L40S order books deepen.
 - `RTX_4090_PANEL_V1` — promotes `akash`; `minProviders: 3`,
   `requireExecutable: true` (executable floor kept).
-- H100/H200 settle under the untouched global gates (quorum 4, executable
-  required) — the v0.4.1 H100 override was retired in v0.5.0; thin-book
-  resilience lives in the pause mechanism, not per-panel patches.
+- H200 settles under the untouched global gates (quorum 4, executable
+  required) — the v0.4.1 H100 override was retired in v0.5.0 and reinstated
+  (promotion-free, quorum 3) in v0.5.1 after hyperbolic left the H100
+  market entirely; thin-book resilience still lives in the pause mechanism.
 
 A panel computing below the global quorum publishes `degraded` at best,
 never `healthy`. The v0.3.0 publishing movement allowance lets the published
