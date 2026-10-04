@@ -2,12 +2,14 @@ import type { PricingTier } from "@gusd/types";
 import { SETTLEMENT_PANELS } from "@gusd/gpu-catalog";
 
 /**
- * Methodology v0.5.0 configuration. Thresholds live in config, never in
+ * Methodology v0.5.1 configuration. Thresholds live in config, never in
  * code: a methodology change is a new config + new version, validated by the
  * exhaustive allowlist below before it can drive a computation. v0.5.0
- * extends the stale carry-forward to failed gates — a gate failure pauses
+ * extended the stale carry-forward to failed gates — a gate failure pauses
  * the series at the last gate-passing value instead of halting it — and
- * retires v0.4.1's temporary H100 panel override.
+ * retired v0.4.1's H100 override; v0.5.1 reinstates a reduced H100 quorum
+ * after Hyperbolic dropped H100 from its catalog (Sep 2026), leaving the
+ * panel one settlement-eligible provider short of the global quorum.
  * per-panel overrides so thin panels can settle — promoted COLLECTED
  * principals on a reduced quorum, with the engine capping override panels at
  * `degraded`.
@@ -138,7 +140,7 @@ export interface PanelOverride {
 }
 
 export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
-  version: "0.5.0",
+  version: "0.5.1",
   screening: {
     minProvidersForScreen: 4,
     madScale: 1.4826,
@@ -173,13 +175,23 @@ export const DEFAULT_METHODOLOGY_CONFIG: MethodologyConfig = {
   // ±0.05% of the computed anchor (mean-reverting, deterministic). Confessed
   // on the methodology page; the anchor is never moved by it.
   movement: { allowancePct: 0.0005, slotMs: 30_000, reversion: 0.7, stepPct: 0.4 },
-  // The v0.4.0 launch universe (H100/H200/L40S/RTX 4090). H100/H200 keep the
-  // full global quorum; the two thin panels run on reduced quorums over named
-  // principals and are capped at `degraded` by the engine. Since v0.5.0 a
-  // gate failure on any panel pauses the series (stale carry-forward) rather
-  // than halting it — thin-book resilience lives there, not in per-panel
-  // overrides.
+  // The v0.4.0 launch universe (H100/H200/L40S/RTX 4090). H200 keeps the
+  // full global quorum; the three thin panels run on reduced quorums over
+  // named principals and are capped at `degraded` by the engine. Since
+  // v0.5.0 a gate failure on any panel pauses the series (stale
+  // carry-forward) rather than halting it. v0.5.1 reduced H100's quorum
+  // after Hyperbolic dropped H100 from its catalog — the panel was paused
+  // (frozen at its last gate-passing value) for as long as it lacked a
+  // fourth settlement-eligible contributor, despite three live ones.
   panelOverrides: {
+    H100_PANEL_V1: {
+      // Hyperbolic left the H100 market (Sep 2026); Lium + Vast carry live
+      // executable books and RunPod lists at a rate card. Quorum drops to 3
+      // with the executable floor kept — the RTX 4090 shape, without
+      // promoting anyone. Temporary: revert to the global gates once a
+      // fourth settlement-eligible H100 source is onboarded.
+      gates: { minProviders: 3, requireExecutable: true },
+    },
     L40S_PANEL_V1: {
       // Vast's verified+rentable L40S book is too thin to settle alone and
       // RunPod lists without stock; DataCrunch/Scaleway/CoreWeave carry live
