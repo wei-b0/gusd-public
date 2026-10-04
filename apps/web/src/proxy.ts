@@ -2,11 +2,16 @@ import { NextResponse, type NextRequest } from "next/server";
 import { GATE_API_PATH, GATE_COOKIE, GATE_PATH, GATE_TOKEN, gateNextParam } from "@/server/gate";
 
 /**
- * Site-wide entry gate. Every route sits behind the access phrase until the
- * browser carries the gate cookie (httpOnly, 30 days, set by POST /api/gate —
- * see src/app/gate/page.tsx). Hardcoded per brief: a light door for preview
- * deployments, not access control.
+ * Site-wide entry gate — currently DISABLED. The gate code is preserved for
+ * future re-enable: the phrase/cookie truth lives in src/server/gate.ts, the
+ * door page at src/app/gate/page.tsx, and POST /api/gate still sets the
+ * cookie. Flip GATE_ENABLED to true to turn the door back on.
  *
+ * When enabled:
+ *  - Every route sits behind the access phrase until the browser carries the
+ *    gate cookie (httpOnly, 30 days, set by POST /api/gate — see
+ *    src/app/gate/page.tsx). Hardcoded per brief: a light door for preview
+ *    deployments, not access control.
  *  - Unauthenticated page requests rewrite to /gate, keeping the URL so the
  *    phrase lands the visitor where they were headed (?next=).
  *  - Unauthenticated API requests get a plain 401 JSON — fetch never follows
@@ -17,7 +22,10 @@ import { GATE_API_PATH, GATE_COOKIE, GATE_PATH, GATE_TOKEN, gateNextParam } from
  *    entirely — the pages that reference them are gated, so hashed asset
  *    URLs are useless without one.
  */
-export function proxy(request: NextRequest) {
+const GATE_ENABLED: boolean = false;
+
+/** The gate's enforcement, kept verbatim for the next time the door closes. */
+function gate(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const authed = request.cookies.get(GATE_COOKIE)?.value === GATE_TOKEN;
 
@@ -40,6 +48,13 @@ export function proxy(request: NextRequest) {
   url.pathname = GATE_PATH;
   url.search = gateNextParam(pathname + search);
   return NextResponse.rewrite(url);
+}
+
+export function proxy(request: NextRequest) {
+  if (GATE_ENABLED) {
+    return gate(request);
+  }
+  return NextResponse.next();
 }
 
 export const config = {
