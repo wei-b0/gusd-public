@@ -36,7 +36,7 @@ export const ASSET_SPECS: Record<AssetId, AssetSpec> = {
     vendor: "nvidia",
     vramGb: 80,
     formFactor: "SXM",
-    note: "The most liquid market in the GPU asset class. Deepest book, tightest pricing.",
+    note: "The most liquid market in the GPU class. Deepest book, tightest pricing.",
   },
   H200: {
     id: "H200",

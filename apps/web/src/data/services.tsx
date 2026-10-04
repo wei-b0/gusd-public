@@ -89,7 +89,7 @@ export function useServices(): Services {
   return services;
 }
 
-/** Live list of all GPU asset markets, ordered by traded volume. */
+/** Live list of all GPU markets, ordered by traded volume. */
 export function useMarkets(): Market[] {
   const { marketData } = useServices();
   // One cached snapshot per hook instance: useSyncExternalStore compares with

@@ -23,9 +23,9 @@ const jbMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "gUSD — The GPU Assets Protocol",
+  title: "gUSD — Capital markets for GPU compute",
   description:
-    "The GPU Assets Protocol: a market for GPU assets quoted in gUSD, the protocol's settlement unit. Trade GPU markets at a premium or discount to the gUSD Index benchmarks.",
+    "Capital markets for GPU compute: spot markets and perpetuals on GPU compute prices, quoted in gUSD. Trade GPU markets at a premium or discount to the gUSD Index benchmarks.",
 };
 
 /**

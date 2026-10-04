@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Portfolio spot book — the wallet's GPU asset positions marked to the
+ * Portfolio spot book — the wallet's GPU positions marked to the
  * displayed price (venue price when a market layer exists, else the API's
  * Index — never a simulated stand-in), with Trade and Sell controls. The
  * marking math moved verbatim from the portfolio page.

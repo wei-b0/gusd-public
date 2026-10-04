@@ -39,7 +39,7 @@ const DAY_SEC = 86_400;
 export interface ProtocolMarketState {
   /** Pool rows by poolId. */
   pools: Readonly<Record<string, PoolDto>>;
-  /** GPU asset rows by lowercase gpuId (asset→pool resolution). */
+  /** GPU rows by lowercase gpuId (gpu→pool resolution). */
   gpus: Readonly<Record<string, GpuAssetDto>>;
   /** Swap tape per pool, OLDEST-FIRST (port contract), capped. */
   swaps: Readonly<Record<string, readonly SwapTapeDto[]>>;

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This is the gUSD monorepo: a GPU-hour-backed stablecoin protocol. An
+This is the gUSD monorepo: capital markets for GPU compute. An
 offchain benchmark oracle computes GPU-hour prices from live provider data,
 an attestor signs them into EIP-712 reports that trades embed and the
 onchain `GpuOracle` verifies (pull oracle — no publisher daemon), an indexer

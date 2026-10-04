@@ -4,7 +4,7 @@
  * SystemBar — the machine's top rule: wordmark, command line, connection
  * control, live UTC clock. Present on every route. The command line speaks
  * the product's own names — markets, spot H200, perps H200, oracle, gusd —
- * and a bare GPU asset routes to that market's spot desk. `terminal` remains
+ * and a bare GPU routes to that market's spot desk. `terminal` remains
  * a legacy alias for spot.
  */
 
@@ -109,7 +109,7 @@ export function SystemBar() {
       <div className="mx-auto flex h-12 w-full max-w-360 items-center gap-3 px-3 md:px-5">
         <Link href="/" className="flex shrink-0 items-baseline gap-2.5 outline-none">
           <span className="disp text-[19px] leading-none text-bright">gUSD</span>
-          <span className="slug hidden text-dim md:inline">The GPU Assets Protocol</span>
+          <span className="slug hidden text-dim md:inline">Capital markets for GPU compute</span>
         </Link>
 
         <form onSubmit={submit} className="ml-1 flex min-w-0 flex-1 items-center sm:ml-4">
@@ -117,7 +117,7 @@ export function SystemBar() {
           <input
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
-            aria-label="Command line — type a product name or GPU asset"
+            aria-label="Command line — type a product name or GPU"
             placeholder="spot H200"
             spellCheck={false}
             autoCapitalize="none"

@@ -1,20 +1,18 @@
 # gUSD
 
-**The GPU Assets Protocol.**
+**Capital markets for GPU compute.**
 
-gUSD creates onchain spot markets for exposure to GPU compute prices. The protocol combines a live GPU-hour benchmark, oracle-priced primary issuance, Uniswap v4 markets, protocol-owned market liquidity, a reserve-backed settlement asset, and a savings layer.
+gUSD creates onchain capital markets for GPU compute prices — spot markets and perpetuals. The protocol combines a live GPU-hour benchmark, oracle-priced primary issuance, Uniswap v4 markets, protocol-owned market liquidity, a reserve-backed settlement asset, and a savings layer.
 
 **Live:** [gusd.lol](https://gusd.lol)  
 **Network:** Robinhood Chain mainnet · chain ID `4663`
-
-**Uniswap v4:** [`docs/uniswap-integration.md`](docs/uniswap-integration.md) — integration map with contracts, addresses, and line-level pointers · [`FEEDBACK.md`](FEEDBACK.md)
 
 ## What gUSD is
 
 The protocol has three core asset layers:
 
 - **gUSD** — the protocol settlement asset. On Robinhood Chain, gUSD is backed 1:1 by USDG.
-- **GPU assets** — fungible ERC-20 assets representing the economic value of one hour of a specific GPU configuration.
+- **GPU tokens** — fungible ERC-20 tokens representing the economic value of one hour of a specific GPU configuration.
 - **sgUSD** — a non-rebasing savings/revenue-sharing vault for gUSD.
 
 The launch settlement universe is intentionally small:
@@ -26,7 +24,7 @@ The launch settlement universe is intentionally small:
 | L40S | `L40S_48GB` |
 | RTX 4090 | `RTX_4090_24GB` |
 
-The broader oracle catalogue contains additional GPUs for collection and research, but only these four are settlement panels, onchain GPU assets, and tradable protocol markets at launch.
+The broader oracle catalogue contains additional GPUs for collection and research, but only these four are settlement panels, onchain GPU tokens, and tradable protocol markets at launch.
 
 ## Protocol architecture
 
@@ -96,7 +94,7 @@ The protocol reuses Robinhood Chain's canonical v4 infrastructure rather than de
 
 The launch configuration does not require third-party LP depth. Primary issuance capital creates protocol-owned market depth, and `GPUMarketLiquidity` can recenter that inventory around a moving oracle reference.
 
-Ordinary secondary trading does **not** mint or burn GPU assets:
+Ordinary secondary trading does **not** mint or burn GPU tokens:
 
 - **BUY** — consumes existing market inventory when available; primary issuance supplies new inventory when required by the protocol path.
 - **SELL** — sells GPU inventory into available market depth.
@@ -291,11 +289,9 @@ The V1 design is built around a few explicit boundaries:
 - `docs/indexer/ARCHITECTURE.md` — indexing architecture
 - `apps/indexer/README.md` — Envio indexer operations
 - `apps/contracts/README.md` — contract development and deployment notes
-- [`docs/uniswap-integration.md`](docs/uniswap-integration.md) — Uniswap v4 integration map for judges
-- [`FEEDBACK.md`](FEEDBACK.md) — Uniswap Developer Feedback submission file
 
 ## Current scope
 
-V1 is deliberately a spot protocol. It does not provide perpetuals, leverage, user short positions, lending markets, GPU-NAV redemption, algorithmic gUSD stabilization, or protocol-operated cross-chain gUSD.
+V1 is a spot-and-perps protocol. It does not provide lending markets, GPU-NAV redemption, algorithmic gUSD stabilization, or protocol-operated cross-chain gUSD.
 
 Those are separate future products, not hidden assumptions in the V1 solvency model.

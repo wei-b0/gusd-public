@@ -81,7 +81,7 @@ export interface ProtocolClient {
   ): Promise<SwapsBody>;
   /** Per-asset protocol stats (catalog joined at the API boundary). */
   listGpus(): Promise<GpusBody>;
-  /** One GPU asset, or null on 404 (never seen — a legitimate answer). */
+  /** One GPU token, or null on 404 (never seen — a legitimate answer). */
   getGpu(gpuParam: string): Promise<GpuAssetDto | null>;
   /** Protocol aggregates + the sgUSD vault. Either may be null pre-data. */
   getStats(): Promise<StatsBody>;

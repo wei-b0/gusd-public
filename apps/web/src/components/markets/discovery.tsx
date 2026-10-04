@@ -49,7 +49,7 @@ export function MarketsDiscovery() {
           discovery carries the section's own caption only. */}
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3 border-b border-rule-strong pb-3">
         <p className="slug text-dim">
-          GPU asset markets & perpetuals · priced in <Gusd />
+          GPU markets & perpetuals · priced in <Gusd />
         </p>
       </div>
 

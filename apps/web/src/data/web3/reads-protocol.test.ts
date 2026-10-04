@@ -184,7 +184,7 @@ describe("balances", () => {
 });
 
 describe("positions", () => {
-  it("derives raw positions from gpu assets × indexed balances", async () => {
+  it("derives raw positions from gpu tokens × indexed balances", async () => {
     h.fetchResponder = (url) => {
       h.fetchCalls.push(url);
       if (url.endsWith("/gpus")) {
@@ -313,7 +313,7 @@ describe("positions", () => {
 });
 
 describe("registration", () => {
-  it("maps the gpu asset + registered pool row", async () => {
+  it("maps the gpu token + registered pool row", async () => {
     h.fetchResponder = (url) => {
       h.fetchCalls.push(url);
       if (url.endsWith(`/gpus/${H100_GPU_ID}`)) {

@@ -52,7 +52,7 @@ Preload reads remain enabled. Writes are collected in an in-memory overlay
 during preload and committed through generated entity APIs during the commit
 pass, preserving dependencies between events in the same batch.
 
-The main read models are pools, GPU assets, oracle state, wallet balances,
+The main read models are pools, GPU tokens, oracle state, wallet balances,
 wallet cost basis, vault positions, user events, hourly pool statistics, daily
 protocol statistics, protocol totals, and the sgUSD vault singleton.
 
