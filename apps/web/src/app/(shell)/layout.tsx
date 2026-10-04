@@ -2,6 +2,7 @@ import { ServicesProvider } from "@/data/services";
 import { PrivyRoot } from "@/data/auth/privy-root";
 import { SystemBar } from "@/components/shell/system-bar";
 import { ConnectDialog } from "@/components/shell/connect-dialog";
+import { WelcomeCards } from "@/components/shell/welcome-cards";
 import { NetworkStrip } from "@/components/shell/network-strip";
 import { FnKeys } from "@/components/shell/fn-keys";
 import { StatusLine } from "@/components/shell/status-line";
@@ -23,6 +24,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
         <TxDevPanel />
         <StatusLine />
         <ConnectDialog />
+        <WelcomeCards />
       </PrivyRoot>
     </ServicesProvider>
   );

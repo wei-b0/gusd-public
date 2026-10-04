@@ -5,7 +5,8 @@
  * control, live UTC clock. Present on every route. The command line speaks
  * the product's own names — markets, spot H200, perps H200, oracle, gusd —
  * and a bare GPU routes to that market's spot desk. `terminal` remains
- * a legacy alias for spot.
+ * a legacy alias for spot. `help` (alias `about`) reopens the welcome
+ * cards — orientation the user can replay, not a route the shell serves.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -15,6 +16,7 @@ import { parseAssetId, type WalletSession } from "@/domain/types";
 import { fmtAddress, fmtClock, fmtFull } from "@/domain/format";
 import { Gusd, SGusd } from "@/components/ui/pair";
 import { useAccount, useServices, useWalletSession } from "@/data/services";
+import { welcome } from "@/data/onboarding/welcome-store";
 import { stableConfig } from "@/data/web3/stables";
 import {
   chainIdFromCaip2,
@@ -69,6 +71,10 @@ function resolveCommand(raw: string): string | null {
       return "/portfolio";
     case "protocol":
       return "/protocol";
+    case "addresses":
+    case "contracts":
+      // The deployment record as a page — reference, not a user mode.
+      return "/contract-addresses";
     default:
       return parseAssetId(head) ? `/spot/${parseAssetId(head)}` : null;
   }
@@ -89,6 +95,14 @@ export function SystemBar() {
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    const parts = raw.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    // A bare help/about opens the welcome cards — orientation, not a route.
+    if ((parts[0] === "help" || parts[0] === "about") && parts.length === 1) {
+      setError(null);
+      setRaw("");
+      welcome.replay();
+      return;
+    }
     const href = resolveCommand(raw);
     if (!href) {
       const code = raw.trim().toUpperCase();
