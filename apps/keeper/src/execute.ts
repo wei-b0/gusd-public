@@ -262,11 +262,13 @@ export class Executor {
       return;
     }
 
-    // Broadcast + wait for the receipt.
+    // Broadcast + wait for the receipt. `account` must be the account OBJECT:
+    // an address string makes viem defer signing to the node via
+    // eth_sendTransaction, which remote RPCs reject.
     let hash: `0x${string}`;
     try {
       hash = await this.walletClient.sendTransaction({
-        account: this.account.address,
+        account: this.account,
         to: this.engineAddress,
         data: this.encodeCall(item, attestation.updateData),
       });
