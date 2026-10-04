@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * SpotDesk — the spot desk: analyse and execute a GPU asset market in a
+ * SpotDesk — the spot desk: analyse and execute a GPU market in a
  * single dense composition. The desk is deliberately the only spot surface
  * with depth and a trade ticket: the chart, statistics, the Index feed,
  * both tapes, the GPU reference, and the order slip. There is no unbound

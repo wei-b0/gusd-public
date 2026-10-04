@@ -3,7 +3,7 @@
 /**
  * AllTape — every market's prints on one tape, newest first, each print
  * tagged with its market. The multi-market read: trade activity across all
- * GPU asset markets at a glance.
+ * GPU markets at a glance.
  */
 
 import { useMemo, useRef, useSyncExternalStore } from "react";

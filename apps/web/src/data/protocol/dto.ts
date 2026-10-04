@@ -188,7 +188,7 @@ export interface SwapsBody {
   nextCursor?: string;
 }
 
-// --- GPU assets -------------------------------------------------------------------
+// --- GPU tokens -------------------------------------------------------------------
 
 export interface GpuCatalogDto {
   id: string;

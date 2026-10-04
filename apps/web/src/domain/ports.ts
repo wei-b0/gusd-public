@@ -50,7 +50,7 @@ import type {
 } from "./types";
 
 export interface MarketDataPort {
-  /** All GPU asset markets, ordered by traded volume. */
+  /** All GPU markets, ordered by traded volume. */
   listMarkets(): Market[];
   /** Full snapshot for one market, or null for an unknown asset. */
   getSnapshot(asset: AssetId, range?: ChartRange): MarketSnapshot | null;

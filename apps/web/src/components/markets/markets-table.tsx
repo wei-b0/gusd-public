@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * MarketsTable — the discovery table. Every GPU asset market as a pair on
+ * MarketsTable — the discovery table. Every GPU market as a pair on
  * one ruled board: its last-48h shape, one canonical price, 24h movement,
  * and — when a market layer prices the row independently of the benchmark —
  * the Index price and the premium or discount the gap forms. Built for

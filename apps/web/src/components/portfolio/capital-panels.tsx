@@ -2,7 +2,7 @@
 
 /**
  * Portfolio capital panels — liquid gUSD and earning sgUSD as the `dl`
- * ledger rows the product thinks in ("GPU assets → positions, gUSD →
+ * ledger rows the product thinks in ("GPU tokens → positions, gUSD →
  * available capital, sgUSD → earning capital"). Moved verbatim from the
  * portfolio page; the `Line` helper is the shared row grammar.
  */

@@ -159,7 +159,7 @@ function ModelStrip({ connected }: { connected: boolean }) {
       <CapitalCell
         token="gUSD"
         role="Liquid capital"
-        desc="The settlement unit. Acquires GPU assets and deploys into earning."
+        desc="The settlement unit. Acquires GPU exposure and deploys into earning."
       />
       <CapitalCell
         token="sgUSD"

@@ -14,7 +14,7 @@ Implementation agents should use this specification to derive an architecture ra
 
 # 1. Protocol Thesis
 
-gUSD is a protocol-native monetary layer for an onchain GPU asset economy.
+gUSD is a protocol-native monetary layer for onchain GPU capital markets.
 
 The system consists of:
 
@@ -930,7 +930,7 @@ gUSD becomes:
 - fee accounting asset,
 - future financial primitive.
 
-This creates a coherent monetary system around GPU assets rather than merely a collection of token pairs.
+This creates a coherent monetary system around GPU capital markets rather than merely a collection of token pairs.
 
 ---
 

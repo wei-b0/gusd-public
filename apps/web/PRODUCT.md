@@ -27,7 +27,7 @@ gUSD builds financial products and markets around that information.
 
 The gUSD product consists of several closely related layers:
 
-- GPU Assets
+- GPU Markets
 - Markets
 - Spot
 - Perps
@@ -44,9 +44,9 @@ These should feel like parts of one coherent financial system rather than separa
 
 ---
 
-# GPU Assets
+# GPU Markets
 
-gUSD creates financial assets associated with specific GPU classes.
+gUSD creates financial markets on specific GPU classes.
 
 The initial GPU catalogue is:
 
@@ -62,7 +62,7 @@ Within the product, individual assets should normally be referred to simply by t
 - L40S
 - etc.
 
-Collectively, they are referred to as **GPU assets**.
+Collectively, they are referred to as **GPU tokens**.
 
 The primary product experience should not unnecessarily emphasize that these are crypto tokens.
 
@@ -83,9 +83,9 @@ rather than repeatedly seeing terminology such as:
 
 ---
 
-# GPU Asset Markets
+# GPU Markets
 
-Each GPU asset can trade against gUSD.
+Each GPU token can trade against gUSD.
 
 Initial markets conceptually include:
 
@@ -100,7 +100,7 @@ These are financial markets.
 
 They are not marketplaces for purchasing actual compute.
 
-A GPU asset has a market price determined by market activity.
+A GPU token has a market price determined by market activity.
 
 That market price is distinct from the reference price of the underlying GPU compute market.
 
@@ -108,7 +108,7 @@ That market price is distinct from the reference price of the underlying GPU com
 
 # gUSD
 
-gUSD is the common quote and settlement asset across GPU asset markets.
+gUSD is the common quote and settlement asset across GPU markets.
 
 Conceptually:
 
@@ -123,8 +123,8 @@ This gives GPU markets a shared monetary layer rather than creating a collection
 
 Within the application, gUSD represents liquid capital that can be:
 
-- used to acquire GPU assets
-- received when GPU assets are sold
+- used to acquire GPU tokens
+- received when GPU tokens are sold
 - deployed into earning products
 - used in protocol liquidity/capital products where applicable
 
@@ -139,7 +139,7 @@ sgUSD is the earning layer associated with gUSD capital.
 The conceptual user model is:
 
 ```text
-GPU assets → market exposure
+GPU tokens → market exposure
 
 gUSD       → liquid capital
 
@@ -149,14 +149,14 @@ sgUSD      → earning capital
 A familiar financial analogy is:
 
 ```text
-GPU assets     → investment positions
+GPU tokens     → investment positions
 
 gUSD           → cash balance
 
 sgUSD          → earning / savings balance
 ```
 
-sgUSD should not be treated as another GPU asset.
+sgUSD should not be treated as another GPU token.
 
 Its role is different.
 
@@ -209,7 +209,7 @@ The gUSD Index provides reference benchmarks for underlying GPU compute prices.
 This is a critical distinction:
 
 ```text
-Index price != GPU asset market price
+Index price != GPU market price
 ```
 
 For example:
@@ -224,7 +224,7 @@ Basis         +3.29%
 
 The **Index** represents a normalized reference value derived from the underlying GPU compute rental market.
 
-The **Market price** represents the price at which the financial GPU asset is currently trading.
+The **Market price** represents the price at which the GPU token is currently trading.
 
 The difference between these values may be represented as:
 
@@ -338,7 +338,7 @@ The web product should provide a designed Data surface without inventing product
 
 # Markets
 
-Markets is the main discovery surface for GPU assets.
+Markets is the main discovery surface for GPU markets.
 
 Users should be able to compare GPU markets using information such as:
 
@@ -352,13 +352,13 @@ Users should be able to compare GPU markets using information such as:
 - market activity
 - historical charts
 
-The Markets experience should make the GPU asset class understandable as a whole.
+The Markets experience should make the GPU class understandable as a whole.
 
 ---
 
-# GPU Asset Detail
+# GPU Market Detail
 
-Every GPU asset has one detailed surface: its desk. There is no separate
+Every GPU has one detailed surface: its desk. There is no separate
 market detail page — Markets is the discovery board, and clicking an asset
 anywhere in the product opens its desk, where analysis and execution live
 under one roof: the spot desk (`/spot/[asset]`) trades the asset itself, and
@@ -386,18 +386,18 @@ Underlying GPU rental market
             ↓
         gUSD Index
             ↓
-      GPU asset market
+      GPU market
 ```
 
 The underlying market informs the benchmark.
 
-The GPU asset itself trades on gUSD.
+The GPU token itself trades on gUSD.
 
 ---
 
 # Spot
 
-Spot is the professional trading interface for GPU asset markets — the one
+Spot is the professional trading interface for GPU markets — the one
 place users trade the assets themselves. Every asset's depth (chart,
 statistics, the Index feed, activity) and its order entry live here together;
 Markets is discovery only. Provider/reference observations live on the
@@ -405,7 +405,7 @@ Oracle's Benchmarks tab, which the desk's Index feed links to.
 
 Spot ships the full interaction model today:
 
-- GPU asset selector
+- GPU selector
 - price chart
 - market statistics
 - Index
@@ -453,7 +453,7 @@ Portfolio provides a unified view of a user's gUSD activity and holdings.
 Conceptually it may include:
 
 - total portfolio value
-- GPU asset positions
+- GPU positions
 - gUSD balance
 - sgUSD balance/value
 - vault positions
@@ -465,7 +465,7 @@ Conceptually it may include:
 The portfolio model should reinforce:
 
 ```text
-GPU assets → positions
+GPU tokens → positions
 
 gUSD       → available capital
 
@@ -478,7 +478,7 @@ sgUSD      → earning capital
 
 Protocol is the technical/onchain layer behind the product.
 
-The product architecture currently assumes that GPU asset markets are built using:
+The product architecture currently assumes that GPU markets are built using:
 
 - Uniswap v4 pools
 - custom gUSD Uniswap v4 hooks
@@ -494,7 +494,7 @@ Uniswap v4 provides the underlying swap/liquidity infrastructure.
 Custom gUSD hooks are intended to implement protocol-specific behavior around areas such as:
 
 - oracle pricing
-- GPU asset issuance
+- GPU issuance
 - mint/burn behavior
 - underwriting
 - fees
@@ -508,7 +508,7 @@ The frontend should consume protocol functionality through appropriate adapters/
 
 # Issuance
 
-GPU asset issuance is tied to market demand/buy activity rather than representing a freely available unlimited mint interface.
+GPU issuance is tied to market demand/buy activity rather than representing a freely available unlimited mint interface.
 
 ---
 
@@ -614,7 +614,7 @@ Public product surfaces must not require authentication.
 Users should be able to access:
 
 - Markets
-- GPU asset pages
+- GPU market pages
 - Index
 - charts
 - provider/reference pricing
@@ -699,7 +699,7 @@ They may never connect a wallet.
 
 Users interested in:
 
-- GPU asset exposure
+- GPU exposure
 - price movements
 - basis
 - market opportunities

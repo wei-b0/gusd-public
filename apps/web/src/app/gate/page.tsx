@@ -27,7 +27,7 @@ export default async function GatePage({
       <div className="w-full max-w-100">
         <div className="flex items-baseline gap-2.5">
           <span className="disp text-[19px] leading-none text-bright">gUSD</span>
-          <span className="slug text-dim">The GPU Assets Protocol</span>
+          <span className="slug text-dim">Capital markets for GPU compute</span>
         </div>
 
         <div className="mt-4 border border-rule-strong bg-panel">

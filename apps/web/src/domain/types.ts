@@ -10,7 +10,7 @@
 /** viem is the app's chain vocabulary; its types may cross the domain seam. */
 import type { Hex, WalletClient, Address } from "viem";
 
-/** GPU asset classes traded on gUSD. Product language: the bare GPU name. */
+/** GPU classes traded on gUSD. Product language: the bare GPU name. */
 export type AssetId = "H100" | "H200" | "L40S" | "RTX4090";
 
 export const ASSET_IDS = ["H100", "H200", "L40S", "RTX4090"] as const;
@@ -59,7 +59,7 @@ export interface AssetSpec {
   note: string;
 }
 
-/** One GPU asset trading against gUSD.
+/** One GPU token trading against gUSD.
  *
  *  Source doctrine: every displayed GPU price comes from exactly one place —
  *  the API/data layer. Market-layer facts (the venue price, traded volume,
@@ -71,7 +71,7 @@ export interface AssetSpec {
  *  allowances. */
 export interface Market {
   asset: AssetSpec;
-  /** Last traded market price, gUSD per GPU asset unit. Null when no market
+  /** Last traded market price, gUSD per GPU token. Null when no market
    *  data source exists — never a simulated stand-in. */
   marketPrice: number | null;
   /** Market price change over trailing 24h, percent. Null without a market

@@ -68,7 +68,7 @@ export default function HomePage() {
           <ul className="divide-y divide-rule">
             <RoadmapRow
               status="live"
-              title="GPU asset markets on mainnet"
+              title="GPU markets on mainnet"
               detail="H100, H200, L40S, and RTX 4090 trade against the gUSD Index, settled on Robinhood Chain."
             />
             <RoadmapRow
