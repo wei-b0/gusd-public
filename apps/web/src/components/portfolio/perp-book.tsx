@@ -208,12 +208,6 @@ export function PerpBook({ book, no }: { book: PerpPortfolioBook; no: string }) 
                   : "One or more perp positions are open — close them to free the claimable balance for payout."}
               </p>
             ) : null}
-            <p className="pt-1 slug text-[10px] leading-relaxed text-dim">
-              Closes and triggers first settle into your claimable balance; Claim pays it out of
-              the sgUSD earning balance — a short claim leaves the remainder. Claimable settles
-              from close and liquidation proceeds only — earned funding accrues into the position
-              itself and pays out when it closes.
-            </p>
           </div>
           {closeSettled && (
             <div className="px-3.5 pb-3.5">

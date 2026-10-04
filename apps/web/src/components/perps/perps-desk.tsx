@@ -570,16 +570,6 @@ function AccountPanel({
               {error}
             </p>
           )}
-          <p className="pt-1 text-[10.5px] leading-relaxed text-dim">
-            Closes and triggers first settle into your claimable balance; Claim pays it out of the
-            sgUSD earning balance — a short claim leaves the remainder. Claimable settles from
-            close and liquidation proceeds only — earned funding accrues into the position itself
-            and pays out when it closes. Full holdings on{" "}
-            <Link href="/portfolio" className="text-data underline decoration-rule-strong underline-offset-2 hover:text-bright">
-              Portfolio
-            </Link>
-            .
-          </p>
         </div>
       ) : (
         <p className="p-3.5 text-[11.5px] leading-relaxed text-dim">
@@ -807,9 +797,8 @@ function OrderSlip({
                   key={l}
                   type="button"
                   onClick={() => setLeverage(l)}
-                  className={`num flex-1 py-1.5 text-[12px] transition-colors ${
-                    effLeverage === l ? "rev" : "bg-panel text-dim hover:text-data"
-                  }`}
+                  className={`num flex-1 py-1.5 text-[12px] transition-colors ${effLeverage === l ? "rev" : "bg-panel text-dim hover:text-data"
+                    }`}
                 >
                   {l}×
                 </button>
@@ -830,9 +819,8 @@ function OrderSlip({
                   key={p}
                   type="button"
                   onClick={() => setClosePct(p)}
-                  className={`num flex-1 py-1.5 text-[12px] transition-colors ${
-                    closePct === p ? "rev" : "bg-panel text-dim hover:text-data"
-                  }`}
+                  className={`num flex-1 py-1.5 text-[12px] transition-colors ${closePct === p ? "rev" : "bg-panel text-dim hover:text-data"
+                    }`}
                 >
                   {p}%
                 </button>
@@ -853,9 +841,8 @@ function OrderSlip({
               key={b}
               type="button"
               onClick={() => setToleranceBps(b)}
-              className={`num flex-1 py-1.5 text-[12px] transition-colors ${
-                toleranceBps === b ? "rev" : "bg-panel text-dim hover:text-data"
-              }`}
+              className={`num flex-1 py-1.5 text-[12px] transition-colors ${toleranceBps === b ? "rev" : "bg-panel text-dim hover:text-data"
+                }`}
             >
               {num(b / 100)}%
             </button>
@@ -955,9 +942,8 @@ function OrderSlip({
         type="button"
         onClick={onSubmit}
         disabled={active !== null || !validInput || quote === null || quote === undefined || gate !== null || quoteGate !== null || mark === null}
-        className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 hover:opacity-90 ${
-          longActive ? "rev-g" : "rev-d"
-        }`}
+        className={`slug w-full py-2.5 text-rev-fg transition-opacity disabled:cursor-not-allowed disabled:opacity-40 hover:opacity-90 ${longActive ? "rev-g" : "rev-d"
+          }`}
       >
         {active !== null ? (
           "Arming…"
